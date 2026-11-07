@@ -20,7 +20,7 @@ Document schema and prompt versions have their own compatibility rules and don't
 
 After CI on `main`, and every 30 minutes, [`release/plan-release.py`](../../release/plan-release.py) releases `main` if:
 
-- the image changed since the last release;
+- the image changed since the last published GitHub release, so a run which failed after tagging gets replaced by the next one;
 - CI passed for that commit;
 - `main` hasn't moved for 30 minutes;
 - no Renovate update to the image is about to land. This wait ends once the head is 90 minutes old.

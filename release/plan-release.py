@@ -197,10 +197,10 @@ def plan(repository, sha, forced):
     head = main_head(repository)
     if head != sha:
         return False, f"main has moved on to {head}; a later run decides for it", "none", None
-    described = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", sha],
-                               capture_output=True, text=True)
-    # Before the first release, everything in the image counts as changed.
-    previous = described.stdout.strip() if described.returncode == 0 else "none"
+    # A tag alone doesn't count: a run which failed after tagging leaves one without a GitHub release, and the next
+    # release replaces it. Before the first release, everything in the image counts as changed.
+    previous = run("gh", "release", "list", "--repo", repository, "--limit", "1", "--exclude-drafts", "--exclude-pre-releases",
+                   "--json", "tagName", "--jq", '.[0].tagName // "none"') or "none"
     dockerfile = run("git", "show", f"{sha}:Dockerfile")
     # The Dockerfile counts by its published stages, so it is compared on its own.
     paths = [path for path in image_paths(dockerfile) if path != "Dockerfile"]
