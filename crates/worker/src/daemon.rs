@@ -599,6 +599,11 @@ mod tests {
                 status: 502,
                 message: "bad gateway".into(),
             },
+            WorkerError::Http {
+                operation: "record".into(),
+                status: 404,
+                message: "404 page not found".into(),
+            },
         ];
         let result = daemon.retrying(Duration::from_secs(60), &Cancellation::default(), || {
             failures.pop().map_or(Ok("accepted"), Err)

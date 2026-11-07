@@ -57,13 +57,14 @@ pub enum WorkerError {
 }
 
 impl WorkerError {
-    /// The orchestrator or its proxy is away, as during a restart.
+    /// The orchestrator or its proxy is away, as during a restart. A proxy which routes by
+    /// container labels has no route while the container is gone, so it answers 404.
     pub(crate) fn is_transient(&self) -> bool {
         matches!(
             self,
             Self::Unreachable(_)
                 | Self::Http {
-                    status: 502..=504,
+                    status: 404 | 502..=504,
                     ..
                 }
         )
