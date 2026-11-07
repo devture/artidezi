@@ -44,7 +44,7 @@ FROM runtime AS development
 USER root
 COPY --from=docker.io/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 /usr/local/ /usr/local/
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 wget \
+ && apt-get install -y --no-install-recommends libatomic1 python3 wget \
  && rm -rf /var/lib/apt/lists/* \
  && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.0
 USER artidezi
