@@ -46,7 +46,7 @@ COPY --from=docker.io/node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 wget \
  && rm -rf /var/lib/apt/lists/* \
- && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
+ && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@0.99.2
 USER artidezi
 
 # Keep the default build as the minimal production image.
