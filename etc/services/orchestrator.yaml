@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+instance:
+  name: local
+  bot_identity: {name: ArtiDezi, email: artidezi@local.invalid}
+  data_dir: /data
+  admin_token_ref: admin-token
+model_endpoints:
+  scripted: {provider: none, auth_mode: none, credential_ref: none}
+worker_pools:
+  local:
+    harness_sandbox: disabled
+    harnesses: [fake]
+    workers:
+      local-demo-worker: {token_ref: worker-token}
+agent_profiles:
+  demo:
+    harness: fake
+    harness_version_constraint: '*'
+    model: success
+    model_endpoint: scripted
+    worker_pool: local
+  demo-needs-input:
+    harness: fake
+    harness_version_constraint: '*'
+    model: needs_input
+    model_endpoint: scripted
+    worker_pool: local
+  demo-failing-check:
+    harness: fake
+    harness_version_constraint: '*'
+    model: failing_check
+    model_endpoint: scripted
+    worker_pool: local
+forges:
+  local:
+    provider: forgejo
+    api_base_url: http://forgejo:3000
+    web_base_url: http://artidezi-forgejo.127.0.0.1.nip.io:${ARTIDEZI_FORGEJO_PORT}
+    credential_ref: forgejo-token
+    bot_login: artidezi
+projects:
+  playground:
+    description: >-
+      A private local sandbox with a scripted demo agent. The demo records your request as a
+      Markdown change; it does not interpret instructions or call a model. Use the other demo
+      profiles to explore requests for input and failed checks. Nothing leaves this local stack.
+    default_agent_profile: demo
+    allowed_agent_profiles: [demo, demo-needs-input, demo-failing-check]
+    default_delivery_mode: merge_request
+    allowed_delivery_modes: [merge_request]
+    draft_merge_requests: false
+    network:
+      command_egress: {mode: blocked, denied_domains: [], private_network: blocked, allowed_private_endpoints: []}
+      web_search: {mode: disabled, domain_scope: public_internet}
+    limits:
+      wall_clock_seconds: 60
+      result_json_max_bytes: 65536
+      max_commits_per_repository: 5
+      max_diff_bytes_per_repository: 65536
+      max_commit_message_bytes: 1024
+    effects:
+      merge_renovate_merge_request_on_safe_verdict: false
+      publish_adaptation_merge_requests: true
+    repositories:
+      playground:
+        forge: local
+        remote: artidezi/playground
+        branch: main
+        description: A throwaway fixture for local UI and full-stack development.
+        agent_access: read_write
+        allowed_paths: ['notes/*.md', 'FAIL_CHECK']
+        verification_recipe:
+          - name: fixture-check
+            command: [sh, -c, 'test ! -f FAIL_CHECK && test -n "$(find notes -name "*.md" -print -quit)"']
+            timeout_seconds: 10

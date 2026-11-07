@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-License-Identifier: Apache-2.0
+orchestrator_url: http://orchestrator:8080
+allow_insecure_orchestrator_url: true
+token_file: /secrets/worker-token
+worker_pool: local
+worker_id: local-demo-worker
+workspaces_root: /workspaces
+poll_seconds: 2
+fake_script: /agent/demo-agent.py

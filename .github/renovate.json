@@ -1,0 +1,100 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"extends": [
+		"config:recommended",
+		"helpers:pinGitHubActionDigests"
+	],
+	"labels": [
+		"dependencies"
+	],
+	"packageRules": [
+		{
+			"matchManagers": [
+				"dockerfile"
+			],
+			"pinDigests": true
+		},
+		{
+			"description": "Digests change only together with their versions: a digest refresh alone would rebuild and release an otherwise unchanged image.",
+			"matchManagers": [
+				"dockerfile"
+			],
+			"matchUpdateTypes": [
+				"digest"
+			],
+			"enabled": false
+		},
+		{
+			"description": "One pull request bumps the Rust toolchain pin and the Dockerfile's rust build image together; they must match.",
+			"matchPackageNames": [
+				"rust",
+				"docker.io/rust"
+			],
+			"groupName": "Rust toolchain"
+		},
+		{
+			"description": "The local stack and the contract tests run the same Forgejo.",
+			"matchPackageNames": [
+				"codeberg.org/forgejo/forgejo"
+			],
+			"groupName": "Forgejo"
+		}
+	],
+	"customManagers": [
+		{
+			"customType": "regex",
+			"managerFilePatterns": [
+				".github/workflows/rust.yml"
+			],
+			"matchStrings": [
+				"CARGO_DENY_VERSION: \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+			],
+			"datasourceTemplate": "crate",
+			"depNameTemplate": "cargo-deny",
+			"versioningTemplate": "semver"
+		},
+		{
+			"customType": "regex",
+			"managerFilePatterns": [
+				"rust-toolchain.toml"
+			],
+			"matchStrings": [
+				"channel = \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+			],
+			"datasourceTemplate": "docker",
+			"depNameTemplate": "rust",
+			"packageNameTemplate": "docker.io/rust",
+			"versioningTemplate": "docker"
+		},
+		{
+			"customType": "regex",
+			"managerFilePatterns": [
+				"scripts/forgejo-test.sh"
+			],
+			"matchStrings": [
+				"ARTIDEZI_FORGEJO_IMAGE:-codeberg\\.org/forgejo/forgejo:(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+			],
+			"datasourceTemplate": "docker",
+			"depNameTemplate": "codeberg.org/forgejo/forgejo",
+			"versioningTemplate": "docker"
+		},
+		{
+			"customType": "regex",
+			"managerFilePatterns": [
+				"Dockerfile"
+			],
+			"matchStrings": [
+				"@earendil-works/pi-coding-agent@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+			],
+			"datasourceTemplate": "npm",
+			"depNameTemplate": "@earendil-works/pi-coding-agent",
+			"versioningTemplate": "semver"
+		}
+	],
+	"prConcurrentLimit": 3,
+	"rebaseWhen": "behind-base-branch",
+	"automerge": false,
+	"lockFileMaintenance": {
+		"enabled": true
+	}
+}

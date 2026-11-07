@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# cargo-deny (https://embarkstudios.github.io/cargo-deny/): CI fails on vulnerable, unmaintained or yanked dependencies,
+# on licenses outside this list and on crates from anywhere but crates.io.
+
+[graph]
+# The image's (musl) and the development hosts' targets: dependencies of other platforms don't count.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+all-features = true
+
+[advisories]
+# Every RustSec advisory fails, including unmaintained and unsound crates and yanked versions.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with Apache-2.0.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# ArtiDezi's own crates are not published.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# The workspace's own crates depend on each other by path (none is published).
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

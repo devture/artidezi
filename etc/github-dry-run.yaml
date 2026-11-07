@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-License-Identifier: Apache-2.0
+# Replace the App identity, repository and worker settings before use. This example validates
+# structurally; its placeholder identity cannot authenticate. Nothing is published until a project opts in.
+schema_version: 1
+instance:
+  name: github-pilot
+  bot_identity: {name: ArtiDezi, email: bot@example.invalid}
+  data_dir: /var/lib/artidezi
+  admin_token_ref: admin-token
+model_endpoints:
+  personal:
+    provider: openai
+    auth_mode: chatgpt_login
+    credential_ref: codex-login
+worker_pools:
+  isolated:
+    harness_sandbox: disabled
+    harnesses: [codex]
+    workers:
+      worker-1: {token_ref: worker-1-token}
+agent_profiles:
+  maintenance:
+    harness: codex
+    harness_version_constraint: '=0.154.0'
+    model: gpt-6-astra
+    model_settings: {model_reasoning_effort: xhigh}
+    model_endpoint: personal
+    worker_pool: isolated
+forges:
+  github-example:
+    provider: github
+    api_base_url: https://api.github.com
+    web_base_url: https://github.com
+    credential_ref: github-app-key
+    bot_login: example-maintenance[bot]
+    github_app:
+      client_id: Iv.REPLACE_ME
+      installation_id: 1
+      account: example
+projects:
+  application:
+    description: >
+      An application and its deployment configuration. Evaluate dependency changes against its
+      actual compatibility requirements and release process. Operator decisions require human input.
+    default_agent_profile: maintenance
+    allowed_agent_profiles: [maintenance]
+    # Manual tasks need effects.allow_manual_github_publication; discovery defaults to dry run.
+    default_delivery_mode: merge_request
+    allowed_delivery_modes: [merge_request]
+    draft_merge_requests: true
+    network:
+      command_egress:
+        mode: public_internet
+        denied_domains: []
+        private_network: blocked
+        allowed_private_endpoints: []
+      web_search: {mode: live, domain_scope: public_internet}
+    limits:
+      wall_clock_seconds: 3600
+      result_json_max_bytes: 262144
+      max_commits_per_repository: 20
+      max_diff_bytes_per_repository: 2097152
+      max_commit_message_bytes: 8192
+    effects:
+      merge_renovate_merge_request_on_safe_verdict: false
+      publish_adaptation_merge_requests: false
+    repositories:
+      application:
+        forge: github-example
+        remote: example/application
+        branch: main
+        description: Application code, dependencies and deployment definitions.
+        # Worktree edits are allowed for local candidate patches, never for forge publication.
+        agent_access: read_write
+        setup_recipe: []
+        verification_recipe: []
+    # Omit this block during authentication preflight to keep discovery inactive.
+    pull_requests:
+      poll_interval_seconds: 600
+      settle_seconds: 120
+      max_runs_per_pull_request: 3
+      max_active_tasks: 1
+      repositories: [application]
+      handlers:
+        - id: dependency-updates
+          authors: ['renovate[bot]']
+          mode: dry_run
+          action: assess
+          wait_for_checks_to_finish: true
+          require_successful_checks: false
+          instructions: >
+            Review upstream release notes, configuration changes and test coverage. Run suitable
+            checks in the worker and state their limits. Request human input for migrations or
+            uncertain compatibility. If adaptation is needed, prepare the complete candidate locally.
+            Keep the result concise. Do not release, approve, merge or change updater settings.

@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-License-Identifier: Apache-2.0
+# A first deployment: 1 Forgejo repository, Codex with an API key and 1 worker pool.
+# See docs/user-guide/installing.md. Replace the addresses, names and model.
+schema_version: 1
+instance:
+  name: example
+  bot_identity: {name: ArtiDezi, email: artidezi@example.com}
+  data_dir: /var/lib/artidezi
+  admin_token_ref: admin-token
+model_endpoints:
+  openai:
+    provider: openai
+    auth_mode: openai_api_key
+    # On the worker: <credentials_root>/openai/api_key
+    credential_ref: openai
+worker_pools:
+  maintenance:
+    harness_sandbox: disabled
+    harnesses: [codex]
+    workers:
+      worker-1: {token_ref: worker-1-token}
+agent_profiles:
+  codex:
+    harness: codex
+    # Pin the version installed on your workers, e.g. '=1.2.3'.
+    harness_version_constraint: '*'
+    model: REPLACE_ME
+    model_endpoint: openai
+    worker_pool: maintenance
+forges:
+  forgejo:
+    provider: forgejo
+    api_base_url: https://forgejo.example.com
+    credential_ref: forgejo-token
+    bot_login: artidezi
+projects:
+  myapp:
+    description: A web application.
+    default_agent_profile: codex
+    allowed_agent_profiles: [codex]
+    default_delivery_mode: merge_request
+    allowed_delivery_modes: [merge_request]
+    draft_merge_requests: false
+    network:
+      command_egress:
+        mode: public_internet
+        denied_domains: []
+        private_network: blocked
+        allowed_private_endpoints: []
+      web_search: {mode: disabled, domain_scope: public_internet}
+    limits:
+      wall_clock_seconds: 3600
+      result_json_max_bytes: 262144
+      max_commits_per_repository: 20
+      max_diff_bytes_per_repository: 2097152
+      max_commit_message_bytes: 8192
+    effects:
+      merge_renovate_merge_request_on_safe_verdict: false
+      publish_adaptation_merge_requests: true
+    repositories:
+      myapp:
+        forge: forgejo
+        remote: acme/myapp
+        branch: main
+        description: The application's source.
+        agent_access: read_write
+        verification_recipe:
+          - name: tests
+            command: [just, test]
+            timeout_seconds: 900

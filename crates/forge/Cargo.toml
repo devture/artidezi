@@ -1,0 +1,33 @@
+[package]
+name = "artidezi-forge"
+description = "Forge adapters: the orchestrator's provider-neutral view of GitHub, Forgejo and the test fake"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+test-fixtures = []
+
+[dependencies]
+artidezi-contract.workspace = true
+artidezi-git.workspace = true
+git2.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ureq = { version = "3.5", features = ["json"] }
+base64 = "0.23"
+openssl = { version = "0.10", features = ["vendored"] }
+
+[dev-dependencies]
+artidezi-contract.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "."]
+
+[workspace.package]
+version = "0.0.0"
+publish = false
+edition = "2024"
+authors = ["Slavi Pantaleev <slavi@devture.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/devture/artidezi"
+rust-version = "1.99"
+
+[workspace.dependencies]
+anyhow = "1.0"
+argon2 = "0.6.0"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10.4"
+clap = { version = "4.6", features = ["derive"] }
+git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
+hex = "0.4"
+regex = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2.6"
+schemars = { version = "1.2", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }
+semver = "1"
+sha2 = "0.11"
+tempfile = "3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ulid = "3"
+
+artidezi-contract = { path = "crates/contract" }
+artidezi-config = { path = "crates/config" }
+artidezi-store = { path = "crates/store" }
+artidezi-git = { path = "crates/git" }
+artidezi-harness = { path = "crates/harness" }
+artidezi-forge = { path = "crates/forge" }
+artidezi-worker = { path = "crates/worker" }
+artidezi-orchestrator = { path = "crates/orchestrator" }
+artidezi-server = { path = "crates/server" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[package]
+name = "artidezi"
+description = "The maintenance agent that pushes the boring buttons"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["env"] }
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+tokio = { version = "1.54", features = ["rt-multi-thread"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ureq = { version = "3.5", features = ["json", "platform-verifier"] }
+artidezi-contract.workspace = true
+artidezi-config.workspace = true
+artidezi-forge.workspace = true
+artidezi-orchestrator.workspace = true
+artidezi-server.workspace = true
+artidezi-store.workspace = true
+artidezi-worker.workspace = true
+schemars.workspace = true
+
+[lints]
+workspace = true

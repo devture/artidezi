@@ -1,0 +1,109 @@
+name: Rust validation
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: CalVer release version embedded into the binary; empty builds report "dev"
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: Dependency advisories, licenses and sources
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      CARGO_DENY_VERSION: "0.20.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: deny-cache
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/rust.yml') }}
+      - name: Install cargo-deny with locked dependencies
+        if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny --version "=$CARGO_DENY_VERSION"
+      # Fetches the current RustSec advisories: a new advisory fails CI without any change here (see deny.toml).
+      - run: cargo deny --locked check
+
+  reuse:
+    name: REUSE compliance
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+
+  candidate:
+    name: Rust ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s release -p 'test_*.py'
+      - name: Install pinned Rust toolchain
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tomllib
+          toolchain = tomllib.loads(pathlib.Path('rust-toolchain.toml').read_text())['toolchain']
+          command = ['rustup', 'toolchain', 'install', toolchain['channel'],
+                     '--profile', toolchain.get('profile', 'minimal')]
+          for component in toolchain.get('components', []):
+              command.extend(['--component', component])
+          subprocess.run(command, check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('RUSTUP_TOOLCHAIN=' + toolchain['channel'] + '\n')
+          PY
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+        with:
+          key: ${{ matrix.arch }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --locked --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
+      # The forge contract suite, against a throwaway Forgejo container.
+      - run: scripts/forgejo-test.sh --locked
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: artidezi:candidate
+          build-args: ${{ inputs.version && format('ARTIDEZI_VERSION={0}', inputs.version) || '' }}
+          cache-from: type=gha,scope=rust-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=rust-${{ matrix.arch }}
+      - name: Smoke-test the image
+        env:
+          EXPECTED: ${{ inputs.version || 'dev' }}
+        run: test "$(docker run --rm artidezi:candidate --version)" = "artidezi $EXPECTED"
+      - name: Export the tested image for release assembly
+        env:
+          ARCHIVE: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
+        run: docker image save --output "$ARCHIVE" artidezi:candidate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
+          retention-days: 3
+          overwrite: true
+          if-no-files-found: error

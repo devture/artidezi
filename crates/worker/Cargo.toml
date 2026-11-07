@@ -1,0 +1,30 @@
+[package]
+name = "artidezi-worker"
+description = "ArtiDezi worker supervisor: prepares workspaces, runs the harness, collects commits and verification"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+artidezi-contract.workspace = true
+artidezi-git.workspace = true
+artidezi-harness.workspace = true
+chrono.workspace = true
+git2.workspace = true
+hex.workspace = true
+nix = { version = "0.31", features = ["signal", "fs"], default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+signal-hook = { version = "0.4.6", default-features = false }
+tempfile.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ureq = { version = "3.5", features = ["json", "platform-verifier"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tools for local development, installed into var/mise by the justfile's `mise` recipes.
+[tools]
+prek = "0.5.10"

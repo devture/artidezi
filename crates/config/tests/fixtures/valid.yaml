@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+#
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+
+instance:
+  name: personal
+  bot_identity:
+    name: ArtiDezi
+    email: artidezi@example.invalid
+  data_dir: /var/lib/artidezi
+  admin_token_ref: admin-token
+
+model_endpoints:
+  openai-chatgpt-personal:
+    provider: openai
+    auth_mode: chatgpt_login
+    credential_ref: personal-worker-codex
+  fake:
+    provider: none
+    auth_mode: none
+    credential_ref: none
+
+worker_pools:
+  personal:
+    harness_sandbox: disabled
+    harnesses: [codex, fake]
+    workers:
+      w1: {token_ref: worker-w1-token}
+
+agent_profiles:
+  codex-personal:
+    harness: codex
+    harness_version_constraint: "=0.154.0"
+    model: gpt-6-astra
+    # Passed through as `-c key=value`; keys are Codex's own config keys.
+    model_settings:
+      model_reasoning_effort: xhigh
+    model_endpoint: openai-chatgpt-personal
+    worker_pool: personal
+  # Cheap profile for real-model smoke tests and low-stakes tasks; tasks may select it when
+  # a project allows it.
+  codex-cheap:
+    harness: codex
+    harness_version_constraint: "=0.154.0"
+    model: gpt-5.6-luna
+    model_settings:
+      model_reasoning_effort: low
+    model_endpoint: openai-chatgpt-personal
+    worker_pool: personal
+  fake:
+    harness: fake
+    harness_version_constraint: "*"
+    model: none
+    model_endpoint: fake
+    worker_pool: personal
+
+forges:
+  forge-acme:
+    provider: forgejo
+    api_base_url: https://forge.example.invalid
+    credential_ref: forge-token
+    bot_login: artidezi[bot]
+
+projects:
+  acme-roles:
+    description: >
+      Ansible roles of the Acme ecosystem. Each role packages one
+      self-hostable service; the acme-playbook repository consumes released role versions.
+    agent_instructions: >-
+      Follow the repository's documented development workflow. Inspect only the components relevant
+      to the task, and preserve compatibility with the configured read-only consumer.
+    default_agent_profile: codex-personal
+    allowed_agent_profiles: [codex-personal, codex-cheap, fake]
+    default_delivery_mode: merge_request
+    allowed_delivery_modes: [merge_request, merge_request_with_automerge, direct_push_fast_forward]
+    draft_merge_requests: false
+    network:
+      command_egress:
+        mode: public_internet
+        denied_domains: []
+        private_network: blocked
+        allowed_private_endpoints: []
+      web_search:
+        mode: live
+        domain_scope: public_internet
+    limits:
+      wall_clock_seconds: 5400
+      result_json_max_bytes: 262144
+      max_commits_per_repository: 20
+      max_diff_bytes_per_repository: 2097152
+      max_commit_message_bytes: 8192
+    effects:
+      merge_renovate_merge_request_on_safe_verdict: false
+      publish_adaptation_merge_requests: true
+    repositories:
+      ansible-role-notes:
+        forge: forge-acme
+        remote: acme/ansible-role-notes
+        branch: main
+        description: Ansible role for a notes service.
+        agent_access: read_write
+        verification_recipe:
+          - name: molecule
+            command: [molecule, test]
+            timeout_seconds: 2400
+        tagging:
+          agent_may_propose: true
+          allowed_pattern: 'v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+'
+      acme-playbook:
+        forge: forge-acme
+        remote: acme/acme-playbook
+        branch: main
+        description: The playbook that integrates all Acme roles; read for context only.
+        agent_access: read_only

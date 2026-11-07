@@ -1,0 +1,23 @@
+[package]
+name = "artidezi-git"
+description = "Git operations for ArtiDezi: bare caches, credential-free snapshots, series collection and re-creation"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+git2.workspace = true
+globset = "0.4"
+nix = { version = "0.31", features = ["signal"], default-features = false }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,43 @@
+[package]
+name = "artidezi-server"
+description = "ArtiDezi orchestrator HTTP server: worker API, admin API and maintenance loop"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+argon2.workspace = true
+artidezi-contract.workspace = true
+artidezi-orchestrator.workspace = true
+artidezi-store.workspace = true
+artidezi-config.workspace = true
+axum = "0.8"
+futures-util = "0.3"
+chrono.workspace = true
+chrono-tz.workspace = true
+hex.workspace = true
+pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
+getrandom = "0.4"
+subtle = "2.6"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-util"] }
+tracing.workspace = true
+
+[dev-dependencies]
+artidezi-git.workspace = true
+artidezi-forge.workspace = true
+git2.workspace = true
+ureq = { version = "3.5", features = ["json"] }
+artidezi-harness.workspace = true
+artidezi-worker.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

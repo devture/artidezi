@@ -1,0 +1,21 @@
+[package]
+name = "artidezi-harness"
+description = "Harness adapters: how a job becomes a Codex (or fake) invocation on the worker"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+artidezi-contract.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+nix = { version = "0.31", features = ["signal"], default-features = false }
+
+[lints]
+workspace = true

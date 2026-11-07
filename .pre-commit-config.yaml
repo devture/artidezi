@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Git hooks run by prek (`just prek-install-git-pre-commit-hook`).
+repos:
+  - repo: local
+    hooks:
+      # The release scripts read the image's paths from the Dockerfile:
+      # a Dockerfile they cannot read fails here, before it reaches CI.
+      - id: test-release
+        name: Release Script Tests
+        entry: just release-test
+        language: system
+        files: '^(release/|Dockerfile$)'
+        pass_filenames: false

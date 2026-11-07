@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-License-Identifier: Apache-2.0
+name: artidezi-dev
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:17.0.1
+    ports:
+      - '127.0.0.1:${ARTIDEZI_FORGEJO_PORT:-3081}:3000'
+    environment:
+      FORGEJO__security__INSTALL_LOCK: 'true'
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__server__ROOT_URL: 'http://artidezi-forgejo.127.0.0.1.nip.io:${ARTIDEZI_FORGEJO_PORT:-3081}/'
+      FORGEJO__server__HTTP_PORT: '3000'
+      FORGEJO__server__DISABLE_SSH: 'true'
+      FORGEJO__service__DISABLE_REGISTRATION: 'true'
+      FORGEJO__repository__DEFAULT_BRANCH: main
+      FORGEJO__repository__DEFAULT_PRIVATE: private
+      FORGEJO__actions__ENABLED: 'false'
+      FORGEJO__log__LEVEL: Warn
+    volumes:
+      - forgejo:/data
+    networks: [forge]
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:3000/api/v1/version']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  orchestrator:
+    image: artidezi:local
+    build:
+      context: ../..
+      target: development
+    user: '${ARTIDEZI_UID}:${ARTIDEZI_GID}'
+    command: ['serve', '--config', '/config/orchestrator.yaml', '--secrets-dir', '/secrets', '--listen', '0.0.0.0:8080', '--tick-seconds', '3', '--ui-enabled', '--ui-insecure-cookie']
+    ports:
+      - '127.0.0.1:${ARTIDEZI_UI_PORT:-3080}:8080'
+    volumes:
+      - ../../var/services/config:/config:ro
+      - ../../var/services/secrets:/secrets:ro
+      - ../../var/services/data:/data
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    networks: [forge, worker]
+    depends_on:
+      forgejo:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/healthz']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  worker:
+    image: artidezi:local
+    pull_policy: never
+    user: '${ARTIDEZI_UID}:${ARTIDEZI_GID}'
+    command: ['worker', '--config', '/config/worker.yaml']
+    volumes:
+      - ../../var/services/config/worker.yaml:/config/worker.yaml:ro
+      - ../../var/services/secrets/worker-token:/secrets/worker-token:ro
+      - ../../var/services/credentials:/credentials:ro
+      - ../../var/services/workspaces:/workspaces
+      - ./demo-agent.py:/agent/demo-agent.py:ro
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    networks: [worker]
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+networks:
+  forge: {}
+  # The worker is isolated from Forgejo by using a separate network, but needs
+  # outbound access to the configured model endpoint for real-harness tests.
+  worker: {}
+volumes:
+  forgejo: {}

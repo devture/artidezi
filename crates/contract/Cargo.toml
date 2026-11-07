@@ -1,0 +1,22 @@
+[package]
+name = "artidezi-contract"
+description = "Versioned documents exchanged between the ArtiDezi orchestrator, worker supervisor and agent"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+semver.workspace = true
+chrono.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
