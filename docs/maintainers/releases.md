@@ -25,7 +25,7 @@ After CI on `main`, and every 30 minutes, [`release/plan-release.py`](../../rele
 - `main` hasn't moved for 30 minutes;
 - no Renovate update to the image is about to land. This wait ends once the head is 90 minutes old.
 
-The image's paths are the Dockerfile's `COPY` sources plus `Dockerfile` and `.dockerignore`, so documentation-only commits don't cause a release.
+The image's paths are the `COPY` sources of the stages that the last stage builds on, plus those stages themselves and `.dockerignore`. So neither documentation nor a change to the `development` stage, like a Pi bump, causes a release.
 Keep each `COPY` on 1 line without JSON syntax, or the release scripts refuse it.
 
 For a release sooner, start the workflow by hand with `gh workflow run release.yml`.

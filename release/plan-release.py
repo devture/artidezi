@@ -9,7 +9,8 @@ To fold a burst of commits into 1 release, an unforced run waits until main's he
 (sleeping in the run, since GitHub delays or drops the scheduled runs that would retry),
 and while another Renovate update to the image may still land (an open PR, or a branch that Renovate merges itself
 once its CI passes) until the head was pushed QUIET_CAP ago.
-The image's paths come from the Dockerfile's COPY sources; Renovate updates elsewhere never hold a release back.
+The image's paths come from the COPY sources of the Dockerfile's published stages; Renovate updates elsewhere, including
+to the stages that only development uses, never cause a release or hold one back.
 Writes `release`, `version`, `previous` (the previous release tag, or "none") and `reason` to $GITHUB_OUTPUT.
 """
 import datetime
@@ -46,13 +47,37 @@ def next_version(tags, today):
     return f"{today:%Y.%m.%d}.{max(counters) + 1 if counters else 0}"
 
 
+def published_dockerfile(dockerfile):
+    """The Dockerfile without the stages that its last stage, the published image, does not build on."""
+    preamble, stages = [], []
+    for line in dockerfile.splitlines():
+        words = [word for word in line.split() if not word.startswith("--")]
+        if words[:1] and words[0].upper() == "FROM":
+            name = words[3].lower() if len(words) > 3 and words[2].upper() == "AS" else None
+            stages.append({"name": name, "needs": {words[1].lower()}, "lines": []})
+        if stages:
+            stages[-1]["lines"].append(line)
+            stages[-1]["needs"].update(match.lower() for match in re.findall(r"--from=(\S+)", line))
+        else:
+            preamble.append(line)
+    named = {stage["name"]: stage for stage in stages if stage["name"]}
+    published, pending = [], stages[-1:]
+    while pending:
+        stage = pending.pop()
+        if not any(stage is seen for seen in published):
+            published.append(stage)
+            pending.extend(named[need] for need in stage["needs"] if need in named)
+    kept = [stage for stage in stages if any(stage is seen for seen in published)]
+    return "\n".join(preamble + [line for stage in kept for line in stage["lines"]])
+
+
 def image_paths(dockerfile):
-    """The paths that end up in the published image: the build-context sources of the Dockerfile's COPY/ADD
-    instructions (not those copied from another stage or image), plus the Dockerfile and .dockerignore.
+    """The paths that end up in the published image: the build-context sources of the COPY/ADD instructions of its
+    stages (not those copied from another stage or image), plus the Dockerfile and .dockerignore.
     Raises ValueError for COPY/ADD forms it cannot read reliably, rather than guessing."""
     paths = {"Dockerfile", ".dockerignore"}
     found = False
-    for line in dockerfile.splitlines():
+    for line in published_dockerfile(dockerfile).splitlines():
         if line.upper().split()[:1] not in (["COPY"], ["ADD"]):
             continue
         if line.rstrip().endswith("\\") or "[" in line:
@@ -176,8 +201,12 @@ def plan(repository, sha, forced):
                                capture_output=True, text=True)
     # Before the first release, everything in the image counts as changed.
     previous = described.stdout.strip() if described.returncode == 0 else "none"
-    paths = image_paths(run("git", "show", f"{sha}:Dockerfile"))
-    changed = previous == "none" or subprocess.run(["git", "diff", "--quiet", previous, sha, "--", *paths]).returncode != 0
+    dockerfile = run("git", "show", f"{sha}:Dockerfile")
+    # The Dockerfile counts by its published stages, so it is compared on its own.
+    paths = [path for path in image_paths(dockerfile) if path != "Dockerfile"]
+    changed = (previous == "none"
+               or subprocess.run(["git", "diff", "--quiet", previous, sha, "--", *paths]).returncode != 0
+               or published_dockerfile(run("git", "show", f"{previous}:Dockerfile")) != published_dockerfile(dockerfile))
     main_ci = ci_run(repository, sha, "main")
     ci = ci_result(main_ci)
     # Without a CI run nothing is released, so the age does not matter then.
@@ -186,7 +215,13 @@ def plan(repository, sha, forced):
                          "--json", "number,headRefName,headRefOid,isDraft,mergeable,reviewDecision,statusCheckRollup"))
 
     def update_changes_image(tip):
-        return changes_image(json.loads(run("gh", "api", f"repos/{repository}/compare/{sha}...{tip}")), paths)
+        comparison = json.loads(run("gh", "api", f"repos/{repository}/compare/{sha}...{tip}"))
+        if changes_image(comparison, paths):
+            return True
+        if not changes_image(comparison, ["Dockerfile"]):
+            return False
+        theirs = run("gh", "api", "-H", "Accept: application/vnd.github.raw", f"repos/{repository}/contents/Dockerfile?ref={tip}")
+        return published_dockerfile(theirs) != published_dockerfile(dockerfile)
 
     landing = [f"#{pr['number']}" for pr in sorted(prs, key=lambda pr: pr["number"])
                if may_land_soon(pr) and update_changes_image(pr["headRefOid"])]

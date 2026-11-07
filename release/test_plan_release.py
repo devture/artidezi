@@ -43,6 +43,35 @@ class ImagePaths(unittest.TestCase):
                 plan.image_paths(dockerfile)
 
 
+
+class PublishedDockerfile(unittest.TestCase):
+    DOCKERFILE = """# A comment
+FROM rust:1 AS build
+COPY src src
+FROM ubuntu:26.04 AS runtime
+COPY --from=build /out /usr/local/bin/out
+FROM runtime AS development
+RUN npm install tool@1
+COPY scripts scripts
+FROM runtime AS final
+CMD ["serve"]
+"""
+
+    def test_a_development_stage_is_left_out(self):
+        changed = self.DOCKERFILE.replace("tool@1", "tool@2")
+        self.assertEqual(plan.published_dockerfile(changed), plan.published_dockerfile(self.DOCKERFILE))
+        self.assertNotIn("scripts", plan.image_paths(self.DOCKERFILE))
+
+    def test_every_stage_the_image_builds_on_counts(self):
+        for old, new in (("rust:1", "rust:2"), ("COPY src src", "COPY src lib"), ("ubuntu:26.04", "ubuntu:26.10"), ('["serve"]', '["run"]')):
+            self.assertNotEqual(plan.published_dockerfile(self.DOCKERFILE.replace(old, new)),
+                                plan.published_dockerfile(self.DOCKERFILE), old)
+
+    def test_a_stage_copied_from_counts(self):
+        dockerfile = "FROM a AS tool\nRUN x\nFROM b AS final\nCOPY --from=tool /x /x\n"
+        self.assertIn("RUN x", plan.published_dockerfile(dockerfile))
+
+
 class ChangesImage(unittest.TestCase):
     PATHS = ["Cargo.lock", "Dockerfile", "src"]
 

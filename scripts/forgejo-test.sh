@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-IMAGE="${ARTIDEZI_FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:17.0.1}"
+IMAGE="${ARTIDEZI_FORGEJO_IMAGE:-data.forgejo.org/forgejo/forgejo:17.0.1}"
 PORT="${ARTIDEZI_FORGEJO_PORT:-$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')}"
 NAME="artidezi-forgejo-$$"
 USER_NAME=artidezi

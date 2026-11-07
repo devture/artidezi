@@ -3,7 +3,7 @@
 name: artidezi-dev
 services:
   forgejo:
-    image: codeberg.org/forgejo/forgejo:17.0.1
+    image: data.forgejo.org/forgejo/forgejo:17.0.1
     ports:
       - '127.0.0.1:${ARTIDEZI_FORGEJO_PORT:-3081}:3000'
     environment:

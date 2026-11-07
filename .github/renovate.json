@@ -34,16 +34,9 @@
 			"groupName": "Rust toolchain"
 		},
 		{
-			"description": "Only the development image has Pi, so a bump would release an unchanged image. It follows the version the worker role pins, by hand.",
-			"matchPackageNames": [
-				"@earendil-works/pi-coding-agent"
-			],
-			"enabled": false
-		},
-		{
 			"description": "The local stack and the contract tests run the same Forgejo.",
 			"matchPackageNames": [
-				"codeberg.org/forgejo/forgejo"
+				"data.forgejo.org/forgejo/forgejo"
 			],
 			"groupName": "Forgejo"
 		}
@@ -80,10 +73,10 @@
 				"scripts/forgejo-test.sh"
 			],
 			"matchStrings": [
-				"ARTIDEZI_FORGEJO_IMAGE:-codeberg\\.org/forgejo/forgejo:(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+				"ARTIDEZI_FORGEJO_IMAGE:-data\\.forgejo\\.org/forgejo/forgejo:(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
 			],
 			"datasourceTemplate": "docker",
-			"depNameTemplate": "codeberg.org/forgejo/forgejo",
+			"depNameTemplate": "data.forgejo.org/forgejo/forgejo",
 			"versioningTemplate": "docker"
 		},
 		{
