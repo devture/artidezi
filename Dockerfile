@@ -42,7 +42,7 @@ CMD ["serve", "--config", "/etc/artidezi/artidezi.yaml", "--secrets-dir", "/etc/
 # The local scripted worker uses Python, and never receives model credentials or a Docker socket.
 FROM runtime AS development
 USER root
-COPY --from=docker.io/node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d /usr/local/ /usr/local/
+COPY --from=docker.io/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 /usr/local/ /usr/local/
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 wget \
  && rm -rf /var/lib/apt/lists/* \
