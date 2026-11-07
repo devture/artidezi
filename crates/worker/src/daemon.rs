@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use artidezi_contract::common::RepositoryId;
+use artidezi_contract::common::{ArtifactRef, RepositoryId};
 use artidezi_contract::job::Harness;
 use artidezi_contract::wire::*;
 use artidezi_harness::HarnessAdapter;
@@ -23,6 +23,8 @@ use crate::{
     AttemptInputs, Cancellation, PreviousInputs, Result, WorkerConfig, WorkerError, io_err,
     run_attempt_cancellable,
 };
+
+const RETRY_PAUSE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -278,7 +280,7 @@ impl Daemon {
             let lease_ttl_seconds = lease.lease_ttl_seconds;
             let every = Duration::from_secs((lease_ttl_seconds / 3).clamp(1, 30));
             std::thread::spawn(move || {
-                let mut last_confirmed = std::time::Instant::now();
+                let mut last_confirmed = Instant::now();
                 let ttl = Duration::from_secs(lease_ttl_seconds);
                 let step = Duration::from_millis(250);
                 'outer: loop {
@@ -307,7 +309,7 @@ impl Daemon {
                                 break;
                             }
                         }
-                        Ok(()) => last_confirmed = std::time::Instant::now(),
+                        Ok(()) => last_confirmed = Instant::now(),
                     }
                 }
             })
@@ -344,30 +346,35 @@ impl Daemon {
                 ))
             })?;
 
+        let lease_ttl = Duration::from_secs(lease.lease_ttl_seconds);
+        let download = |artifact: &ArtifactRef, path: &std::path::Path| {
+            self.retrying(lease_ttl, cancellation, || {
+                self.client.download(&attempt_id, artifact, path)
+            })
+        };
+
         // Fetch every bundle the job references.
         std::fs::create_dir_all(inputs_dir).map_err(io_err(inputs_dir))?;
         let mut snapshot_bundles = BTreeMap::new();
         let mut input_ref_bundles = BTreeMap::new();
         for repo in &job.repositories {
             let path = inputs_dir.join(format!("{}.snapshot.bundle", repo.id));
-            self.client
-                .download(&attempt_id, &repo.snapshot_bundle, &path)?;
+            download(&repo.snapshot_bundle, &path)?;
             snapshot_bundles.insert(repo.id.clone(), path);
             for input in &repo.input_refs {
                 let path = inputs_dir.join(format!("{}.{}.bundle", repo.id, input.name));
-                self.client.download(&attempt_id, &input.bundle, &path)?;
+                download(&input.bundle, &path)?;
                 input_ref_bundles.insert((repo.id.clone(), input.name.clone()), path);
             }
         }
         let previous = match &job.previous_attempt {
             Some(prev) => {
                 let doc_path = inputs_dir.join("previous-attempt.json");
-                self.client
-                    .download(&attempt_id, &prev.attempt_document, &doc_path)?;
+                download(&prev.attempt_document, &doc_path)?;
                 let result_document = match &prev.result_document {
                     Some(r) => {
                         let p = inputs_dir.join("previous-result.json");
-                        self.client.download(&attempt_id, r, &p)?;
+                        download(r, &p)?;
                         Some(std::fs::read(&p).map_err(io_err(&p))?)
                     }
                     None => None,
@@ -375,7 +382,7 @@ impl Daemon {
                 let mut commit_bundles: BTreeMap<RepositoryId, PathBuf> = BTreeMap::new();
                 for (repo_id, bundle) in &prev.commit_bundles {
                     let p = inputs_dir.join(format!("previous-{repo_id}.bundle"));
-                    self.client.download(&attempt_id, bundle, &p)?;
+                    download(bundle, &p)?;
                     commit_bundles.insert(repo_id.clone(), p);
                 }
                 Some(PreviousInputs {
@@ -390,7 +397,7 @@ impl Daemon {
             serde_json::to_vec_pretty(job).map_err(|e| WorkerError::Invalid(e.to_string()))?;
         // The record must reference the job by the orchestrator's stored hash, which may differ
         // from our re-serialization; run_attempt hashes what it is given.
-        let job_bytes = match self.fetch_job_bytes(&attempt_id, lease) {
+        let job_bytes = match self.fetch_job_bytes(&attempt_id, lease, cancellation) {
             Ok(bytes) => bytes,
             Err(_) => job_bytes,
         };
@@ -421,25 +428,47 @@ impl Daemon {
         let mut artifacts = BTreeMap::new();
         for staged in &output.artifacts {
             cancellation.check()?;
-            let stored = self
-                .client
-                .upload(&attempt_id, &staged.artifact, &staged.path)?;
+            let stored = self.retrying(lease_ttl, cancellation, || {
+                self.client
+                    .upload(&attempt_id, &staged.artifact, &staged.path)
+            })?;
             artifacts.insert(staged.name.clone(), stored);
         }
         let record_path = output.workspace.join("out/attempt.json");
         let record: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&record_path).map_err(io_err(&record_path))?)
                 .map_err(|e| WorkerError::Invalid(e.to_string()))?;
-        let response = self.client.record(
-            &attempt_id,
-            &RecordRequest {
-                worker_id: self.config.worker.worker_id.clone(),
-                record,
-                artifacts,
-            },
-        )?;
+        let request = RecordRequest {
+            worker_id: self.config.worker.worker_id.clone(),
+            record,
+            artifacts,
+        };
+        let response = self.retrying(lease_ttl, cancellation, || {
+            self.client.record(&attempt_id, &request)
+        })?;
         output.cleanup()?;
         Ok(response.attempt_state)
+    }
+
+    /// Waits out an orchestrator restart instead of giving up on the attempt.
+    /// The lease is what the orchestrator would wait for, so waiting longer gains nothing.
+    fn retrying<T>(
+        &self,
+        patience: Duration,
+        cancellation: &Cancellation,
+        mut send: impl FnMut() -> Result<T>,
+    ) -> Result<T> {
+        let deadline = Instant::now() + patience;
+        loop {
+            cancellation.check()?;
+            match send() {
+                Err(error) if error.is_transient() && Instant::now() < deadline => {
+                    tracing::warn!("retrying: {error}");
+                    self.pause(RETRY_PAUSE);
+                }
+                result => return result,
+            }
+        }
     }
 
     fn check_lease(&self, attempt_id: &str) -> Result<()> {
@@ -457,7 +486,12 @@ impl Daemon {
     }
 
     /// The stored `job.json` bytes, so `attempt.json` can reference the same hash.
-    fn fetch_job_bytes(&self, attempt_id: &str, lease: &LeaseResponse) -> Result<Vec<u8>> {
+    fn fetch_job_bytes(
+        &self,
+        attempt_id: &str,
+        lease: &LeaseResponse,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<u8>> {
         let path = self
             .config
             .worker
@@ -465,8 +499,10 @@ impl Daemon {
             .join("inputs")
             .join(attempt_id)
             .join("job.json");
-        self.client
-            .download(attempt_id, &lease.job_artifact, &path)?;
+        let lease_ttl = Duration::from_secs(lease.lease_ttl_seconds);
+        self.retrying(lease_ttl, cancellation, || {
+            self.client.download(attempt_id, &lease.job_artifact, &path)
+        })?;
         std::fs::read(&path).map_err(io_err(&path))
     }
 
@@ -497,9 +533,9 @@ impl Daemon {
     }
 
     fn pause(&self, duration: Duration) {
-        let deadline = std::time::Instant::now() + duration;
+        let deadline = Instant::now() + duration;
         while !self.shutdown.is_cancelled() {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
@@ -550,6 +586,54 @@ mod tests {
             fake_script: Some("/bin/true".into()),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn retrying_waits_out_an_orchestrator_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = daemon(dir.path());
+        let mut failures = vec![
+            WorkerError::Unreachable("connection refused".into()),
+            WorkerError::Http {
+                operation: "record".into(),
+                status: 502,
+                message: "bad gateway".into(),
+            },
+        ];
+        let result = daemon.retrying(Duration::from_secs(60), &Cancellation::default(), || {
+            failures.pop().map_or(Ok("accepted"), Err)
+        });
+        assert_eq!(result.unwrap(), "accepted");
+    }
+
+    #[test]
+    fn retrying_stops_at_a_refusal_or_the_deadline_or_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = daemon(dir.path());
+        let mut tries = 0;
+        let refused = daemon.retrying(Duration::from_secs(60), &Cancellation::default(), || {
+            tries += 1;
+            Err::<(), _>(WorkerError::Http {
+                operation: "record".into(),
+                status: 409,
+                message: "attempt is lost".into(),
+            })
+        });
+        assert!(matches!(
+            refused,
+            Err(WorkerError::Http { status: 409, .. })
+        ));
+        assert_eq!(tries, 1);
+
+        let expired = daemon.retrying(Duration::ZERO, &Cancellation::default(), || {
+            Err::<(), _>(WorkerError::Unreachable("connection refused".into()))
+        });
+        assert!(matches!(expired, Err(WorkerError::Unreachable(_))));
+
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let revoked = daemon.retrying(Duration::from_secs(60), &cancellation, || Ok(()));
+        assert!(matches!(revoked, Err(WorkerError::Cancelled)));
     }
 
     #[test]

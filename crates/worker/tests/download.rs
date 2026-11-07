@@ -4,6 +4,7 @@
 use std::io::{BufRead, Write};
 
 use artidezi_contract::common::ArtifactRef;
+use artidezi_worker::WorkerError;
 use artidezi_worker::client::Client;
 use sha2::Digest;
 
@@ -56,4 +57,15 @@ fn a_body_larger_than_the_artifact_is_refused() {
         .download("att", &expected, &dir.path().join("artifact"))
         .unwrap_err();
     assert!(error.to_string().contains("download"));
+}
+
+#[test]
+fn an_absent_orchestrator_is_told_apart_from_a_bad_response() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let error = Client::new(&url, "token")
+        .heartbeat("att", "worker")
+        .unwrap_err();
+    assert!(matches!(error, WorkerError::Unreachable(_)), "{error:?}");
 }

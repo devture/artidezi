@@ -51,7 +51,23 @@ pub enum WorkerError {
     #[error("harness error: {0}")]
     Harness(#[from] artidezi_harness::HarnessError),
     #[error("{0}")]
+    Unreachable(String),
+    #[error("{0}")]
     Invalid(String),
+}
+
+impl WorkerError {
+    /// The orchestrator or its proxy is away, as during a restart.
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Unreachable(_)
+                | Self::Http {
+                    status: 502..=504,
+                    ..
+                }
+        )
+    }
 }
 
 pub type Result<T> = std::result::Result<T, WorkerError>;

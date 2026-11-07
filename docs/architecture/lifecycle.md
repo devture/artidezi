@@ -89,6 +89,9 @@ worker can lease a replacement after expiry and its next poll. This timing assum
 controller, database and local storage. An alive supervisor can still heartbeat while a command
 is stuck; command timeouts and the independent frozen execution ceiling bound that case.
 
+A worker retries its downloads, uploads and report for up to one lease TTL while the orchestrator
+is unreachable, so a restart doesn't discard the attempt.
+
 `worker_pools.<name>.lost_attempt_retries` opts into zero to three replacement executions (default
 zero). A replacement gets a new attempt/job identity and number but retains the exact prompt,
 repository snapshots, source head, policy and existing revision context. The prompt's header can

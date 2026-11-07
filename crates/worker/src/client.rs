@@ -92,7 +92,7 @@ impl Client {
             .post(self.url(path))
             .header("Authorization", &self.auth())
             .send_json(payload)
-            .map_err(|e| WorkerError::Invalid(format!("{what}: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("{what}: {e}")))?;
         let status = response.status().as_u16();
         if status == 204 {
             return Ok(None);
@@ -100,7 +100,7 @@ impl Client {
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| WorkerError::Invalid(format!("{what}: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("{what}: {e}")))?;
         if !(200..300).contains(&status) {
             return Err(Self::fail(status, &body, what));
         }
@@ -151,7 +151,7 @@ impl Client {
             )))
             .header("Authorization", &self.auth())
             .call()
-            .map_err(|e| WorkerError::Invalid(format!("download: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("download: {e}")))?;
         let status = response.status().as_u16();
         let bytes = response
             .body_mut()
@@ -159,7 +159,7 @@ impl Client {
             // One byte over the size: reaching the limit exactly is an error, even at the end of the body.
             .limit(artifact.size.saturating_add(1).max(MIN_DOWNLOAD_LIMIT))
             .read_to_vec()
-            .map_err(|e| WorkerError::Invalid(format!("download: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("download: {e}")))?;
         if !(200..300).contains(&status) {
             return Err(Self::fail(
                 status,
@@ -196,12 +196,12 @@ impl Client {
             .header("Authorization", &self.auth())
             .header("Content-Type", "application/octet-stream")
             .send(&bytes[..])
-            .map_err(|e| WorkerError::Invalid(format!("upload: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("upload: {e}")))?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| WorkerError::Invalid(format!("upload: {e}")))?;
+            .map_err(|e| WorkerError::Unreachable(format!("upload: {e}")))?;
         if !(200..300).contains(&status) {
             return Err(Self::fail(status, &body, "upload"));
         }
