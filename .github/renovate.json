@@ -15,9 +15,10 @@
 			"pinDigests": true
 		},
 		{
-			"description": "Digests change only together with their versions: a digest refresh alone would rebuild and release an otherwise unchanged image.",
+			"description": "Digests change only together with their versions: a digest refresh alone would rebuild and release an otherwise unchanged image, and for an action it means that a tag moved.",
 			"matchManagers": [
-				"dockerfile"
+				"dockerfile",
+				"github-actions"
 			],
 			"matchUpdateTypes": [
 				"digest"
@@ -31,6 +32,13 @@
 				"docker.io/rust"
 			],
 			"groupName": "Rust toolchain"
+		},
+		{
+			"description": "Only the development image has Pi, so a bump would release an unchanged image. It follows the version the worker role pins, by hand.",
+			"matchPackageNames": [
+				"@earendil-works/pi-coding-agent"
+			],
+			"enabled": false
 		},
 		{
 			"description": "The local stack and the contract tests run the same Forgejo.",
