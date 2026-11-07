@@ -25,6 +25,7 @@ use crate::{
 };
 
 const RETRY_PAUSE: Duration = Duration::from_secs(1);
+const HEARTBEAT_RETRY_PAUSE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -279,14 +280,17 @@ impl Daemon {
             let worker_id = self.config.worker.worker_id.clone();
             let lease_ttl_seconds = lease.lease_ttl_seconds;
             let every = Duration::from_secs((lease_ttl_seconds / 3).clamp(1, 30));
+            // Renew as soon as the orchestrator returns: the lease may be about to expire.
+            let retry = every.min(HEARTBEAT_RETRY_PAUSE);
             std::thread::spawn(move || {
                 let mut last_confirmed = Instant::now();
                 let ttl = Duration::from_secs(lease_ttl_seconds);
                 let step = Duration::from_millis(250);
+                let mut wait = every;
                 'outer: loop {
                     // Sleep in small steps so the join after the attempt returns promptly.
                     let mut slept = Duration::ZERO;
-                    while slept < every {
+                    while slept < wait {
                         if stop.load(Ordering::Relaxed) {
                             break 'outer;
                         }
@@ -308,8 +312,12 @@ impl Daemon {
                                 cancellation.cancel();
                                 break;
                             }
+                            wait = retry;
                         }
-                        Ok(()) => last_confirmed = Instant::now(),
+                        Ok(()) => {
+                            last_confirmed = Instant::now();
+                            wait = every;
+                        }
                     }
                 }
             })
