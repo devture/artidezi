@@ -743,3 +743,29 @@ fn transient_retry_backoff_budget_and_maintenance_survive_restart() {
     db.set_discovery_paused(false, "operator").unwrap();
     assert!(!db.discovery_paused().unwrap());
 }
+
+#[test]
+fn a_database_from_a_newer_version_is_refused_and_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("newer.sqlite");
+    drop(Db::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert!(version > 0);
+    connection
+        .pragma_update(None, "user_version", version + 1)
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        Db::open(&path),
+        Err(artidezi_store::StoreError::SchemaTooNew { .. })
+    ));
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let after: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(after, version + 1);
+}

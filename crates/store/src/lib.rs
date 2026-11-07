@@ -21,8 +21,8 @@ pub use db::Db;
 pub enum StoreError {
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("migration error: {0}")]
-    Migration(#[from] rusqlite_migration::Error),
+    #[error("the database has {found} migrations applied, but this version knows only {known}")]
+    SchemaTooNew { found: i64, known: i64 },
     #[error("i/o error at {path}: {source}")]
     Io {
         path: String,

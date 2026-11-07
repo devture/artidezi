@@ -9,7 +9,6 @@ use artidezi_config::model::DeliveryMode;
 use artidezi_contract::common::{ArtifactRef, Outcome};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use rusqlite_migration::{M, Migrations};
 
 use crate::model::*;
 use crate::{Result, StoreError};
@@ -38,8 +37,20 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_worker_offers.sql"),
 ];
 
-fn migrations() -> Migrations<'static> {
-    Migrations::new(MIGRATIONS.iter().map(|sql| M::up(sql)).collect())
+/// Brings the schema up to date in one transaction. `user_version` counts the applied migrations.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let known = MIGRATIONS.len() as i64;
+    let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if found > known {
+        return Err(StoreError::SchemaTooNew { found, known });
+    }
+    let tx = conn.transaction()?;
+    for sql in &MIGRATIONS[found as usize..] {
+        tx.execute_batch(sql)?;
+    }
+    tx.pragma_update(None, "user_version", known)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Unsynchronized implementation. Only accessed through a Db handle holding its connection lock.
@@ -211,7 +222,7 @@ impl ConnectionDb {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        migrations().to_latest(&mut conn)?;
+        migrate(&mut conn)?;
         Ok(Self { conn })
     }
 
