@@ -62,6 +62,8 @@ The orchestrator is a container image, [`ghcr.io/devture/artidezi`](https://gith
 The worker is the same program as a static binary, attached to each [GitHub release](https://github.com/devture/artidezi/releases).
 See [Installing](docs/user-guide/installing.md).
 
+To deploy with Ansible, use the [orchestrator](https://github.com/mother-of-all-self-hosting/ansible-role-artidezi-orchestrator) and [worker](https://github.com/mother-of-all-self-hosting/ansible-role-artidezi-worker) roles, or [mash-playbook](https://github.com/mother-of-all-self-hosting/mash-playbook), which wires them up for you.
+
 ## Documentation
 
 Start at the [documentation index](docs/README.md), or go straight to a topic:

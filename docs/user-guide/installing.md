@@ -23,6 +23,12 @@ Pin a release rather than `latest`, and upgrade on purpose. There is no fixed re
 
 [Releases](../maintainers/releases.md#what-a-release-publishes) explains how to verify what you download.
 
+## With Ansible
+
+The [orchestrator](https://github.com/mother-of-all-self-hosting/ansible-role-artidezi-orchestrator) and [worker](https://github.com/mother-of-all-self-hosting/ansible-role-artidezi-worker) roles do the steps below for you.
+[mash-playbook](https://github.com/mother-of-all-self-hosting/mash-playbook) uses them: see its [orchestrator](https://github.com/mother-of-all-self-hosting/mash-playbook/blob/main/components/artidezi_orchestrator/README.md) and [worker](https://github.com/mother-of-all-self-hosting/mash-playbook/blob/main/components/artidezi_worker/README.md) guides.
+You still need a [forge account](#forge-account).
+
 ## Forge account
 
 ArtiDezi acts as its own account. For GitHub, follow [GitHub enrollment](github-enrollment.md) instead.
