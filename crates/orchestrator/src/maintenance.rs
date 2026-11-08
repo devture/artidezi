@@ -92,6 +92,13 @@ impl Orchestrator {
                 Err(e) => report.errors.push(format!("{}: {e}", task.id)),
             }
         }
+        for task in self.db.list_tasks(Some(TaskState::NeedsHuman))? {
+            match self.recheck_failed_source_checks(&task, now) {
+                Ok(state) if state != task.state => report.reconciled.push((task.id, state)),
+                Ok(_) => {}
+                Err(e) => report.errors.push(format!("{}: {e}", task.id)),
+            }
+        }
         for task in self.db.list_tasks(Some(TaskState::AwaitingReview))? {
             match self.reconcile_task(&task.id) {
                 Ok(state) => report.reconciled.push((task.id, state)),

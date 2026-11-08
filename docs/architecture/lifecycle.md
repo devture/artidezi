@@ -161,7 +161,8 @@ Durable plans precede Git/API effects. A process restart during incomplete deliv
 explicit retry. A task explicitly in `waiting_for_ci` retains its scheduled check and can resume
 the accepted result automatically without another worker. If the head changes before any
 publication activity, the superseded-result recovery described above can instead retire it
-and let discovery assess the new revision.
+and let discovery assess the new revision. A hold for failed checks at approval/merge is rechecked:
+green checks on the same head retry delivery, and a new head retires the task the same way.
 For a proposal that changes a path the forge adapter protects, an admin can record a grant bound to the
 validated attempt record and immediately retry. The grant is an event before any forge effect;
 ordinary retry can later reconcile a lost response, while a new attempt requires a new grant.

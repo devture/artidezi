@@ -163,6 +163,8 @@ observed a newer head, without retrying its obsolete inputs or overriding explic
 to settle; its run count is retained, and exhaustion pauses it. Other authority/identity changes,
 failed/needs-human results and explicit operator pauses retain their holds. CI-wait
 reconciliation uses the same guard; discovery leaves that decision to the delivery reconciler.
+A delivery hold for failed checks also retires on a new head, even after its approval was published,
+because it is recheckable only when no approval or merge outcome is unconfirmed; see [GitHub internals](github-integration.md#safe-source-actions).
 Awaiting proposals suppress new evaluations; source movement holds them. Resume/feedback checks
 planned branches for open PRs before creating another task. Human merges are observed without
 source-merge or tag effects. See [GitHub internals](github-integration.md#scoped-publication).

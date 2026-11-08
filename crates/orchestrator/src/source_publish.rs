@@ -435,6 +435,7 @@ impl Orchestrator {
     ) -> Result<()> {
         match self.publish_source_result_inner(task, attempt, job, record, result) {
             Err(OrchestratorError::WaitingForCi) => self.wait_for_source_ci(task),
+            Err(OrchestratorError::ChecksFailed) => self.hold_for_failed_checks(task, attempt),
             Err(error) => {
                 if self.reschedule_superseded_source(task, attempt, &error)? {
                     Ok(())
@@ -698,13 +699,8 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Agent judgment is only one gate. Fresh forge checks and review objections are independent.
-    pub(crate) fn require_source_action_ready(
-        &self,
-        task: &Task,
-        policy: &ResolvedProjectPolicy,
-    ) -> Result<()> {
-        self.require_source_fresh(task, policy, false)?;
+    /// Whether any reviewer's latest decision requests changes. Unknown review states fail closed.
+    pub(crate) fn source_changes_requested(&self, policy: &ResolvedProjectPolicy) -> Result<bool> {
         let source = policy.source_pull_request.as_ref().unwrap();
         let repo = &policy.repositories[&source.repository_id];
         let forge = self.forge(&repo.forge)?;
@@ -723,15 +719,30 @@ impl Orchestrator {
                 ReviewState::Commented | ReviewState::Dismissed => {}
             }
         }
-        if decisions
+        Ok(decisions
             .values()
-            .any(|s| *s == artidezi_forge::ReviewState::ChangesRequested)
-        {
+            .any(|s| *s == artidezi_forge::ReviewState::ChangesRequested))
+    }
+
+    /// Agent judgment is only one gate. Fresh forge checks and review objections are independent.
+    pub(crate) fn require_source_action_ready(
+        &self,
+        task: &Task,
+        policy: &ResolvedProjectPolicy,
+    ) -> Result<()> {
+        self.require_source_fresh(task, policy, false)?;
+        if self.source_changes_requested(policy)? {
             return Err(invalid(
                 "A reviewer has requested changes; maintainer input required",
             ));
         }
-        match forge.get_merge_request(&repo.remote, source.number)?.checks {
+        let source = policy.source_pull_request.as_ref().unwrap();
+        let repo = &policy.repositories[&source.repository_id];
+        match self
+            .forge(&repo.forge)?
+            .get_merge_request(&repo.remote, source.number)?
+            .checks
+        {
             artidezi_forge::ChecksState::Success => Ok(()),
             artidezi_forge::ChecksState::Absent | artidezi_forge::ChecksState::Inconclusive => {
                 Err(invalid(
@@ -739,9 +750,7 @@ impl Orchestrator {
                 ))
             }
             artidezi_forge::ChecksState::Pending => Err(OrchestratorError::WaitingForCi),
-            artidezi_forge::ChecksState::Failure => Err(invalid(
-                "Current forge checks failed; inspect the failure before retrying delivery",
-            )),
+            artidezi_forge::ChecksState::Failure => Err(OrchestratorError::ChecksFailed),
         }
     }
 

@@ -148,6 +148,15 @@ schedules a fresh evaluation of the new head. The normal settle window, CI wait,
 and existing run budget still apply; superseding work does not refund or renew that budget.
 This also applies to an accepted result waiting for CI before any publication activity.
 Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
+
+Failed checks at the moment of automatic approval or merge hold the task as needing attention and
+show the source as paused with “Current forge checks failed”. CI failures are often temporary (a
+forge outage or flaky runner), so the controller rechecks that hold every two minutes without a
+model run. When a re-run turns the same head green, delivery continues through the usual review,
+freshness and policy gates, reusing an approval that was already posted. When the source moves to
+a new head, the held task closes and the new head is evaluated after settling, within the existing
+run budget. Checks that stay red keep the hold. A later explicit pause, a reviewer requesting
+changes, an earlier approval or merge whose response was lost, or any other hold still needs a person.
 Changed source identity/routing, draft or closed state, and any possible prior publication still
 require inspection. **Retry publication** continues to reuse the recorded result and never queues
 a new model run; use **Resume evaluations** or task feedback to recover an older held assessment

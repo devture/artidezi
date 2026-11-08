@@ -154,7 +154,8 @@ Read/effect races remain, so repository required checks, up-to-date rules and st
 must enforce the operator's final policy. Do not grant the App bypass permission. Missing CI stays
 pending and errors never become green checks. ArtiDezi neither changes protection nor falls back to
 another merge method. Failed gates hold the task for inspection/retry. Pending checks on an otherwise
-eligible unchanged result use a distinct `waiting_for_ci` state.
+eligible unchanged result use a distinct `waiting_for_ci` state. Failed checks hold the task too,
+but that hold is rechecked (below).
 
 [CI continuation](../../crates/orchestrator/src/source_ci.rs) stores the waiting transition and a
 next-check deadline atomically in SQLite (`source_ci_waits`). Maintenance reserves the next deadline
@@ -167,7 +168,21 @@ task to `working` before effectful delivery, which repeats the existing gates an
 receipts. If checks become pending again, delivery can return to waiting. Ambiguous write failures
 remain explicit recovery, including crashes after entering `working`. Human pause/close, fresh
 evaluation or any other departure from waiting deletes the scheduled check. Human holds
-are never promoted automatically.
+are never promoted automatically, with one exception.
+
+The source-action gate reports failed checks as a distinct error. During first delivery that gate
+runs before an approval is planned and again after it is published. An explicit retry can also
+reach it after a lost approval or merge response, so a planned approval without a published receipt,
+or any planned merge, keeps an ordinary hold. Otherwise the controller pauses the source and, in one
+transaction, records a `task.needs_human` event marked `"recheck": "failed_checks"`, enters
+`needs_human` and schedules a `source_ci_waits` deadline for the held task. Maintenance claims that deadline on the same cadence
+only while the marked event is the task's latest hold, no `discovery.paused` event follows it and
+the source still links and pauses for this task. If the frozen head's checks are green, it records
+`delivery.checks_recovered` and runs the ordinary publication retry, which repeats every gate and
+reuses an exact existing approval. If the head moved and no reviewer's latest decision requests
+changes, it closes the task through the superseded-result path (`assessment.superseded` with `"cause": "failed_checks"`) so discovery assesses the new head
+after settling within the retained budget. Red, pending or absent checks and closed sources keep
+the hold; forge read errors retry later; other errors convert it into an ordinary hold.
 
 Local HTTP/worker tests cover explicit approval versus merge, controller safety gates and advisory
 risk/evidence context, CI pending/failing, review objections, moved source/target, authority revocation, API head races,

@@ -55,6 +55,12 @@ pub enum OrchestratorError {
     },
     #[error("Approval/merge is waiting for successful current forge checks")]
     WaitingForCi,
+    /// Automatic approval/merge found failed checks on the assessed head. The hold is rechecked
+    /// and released when that head's checks pass or the source moves to a new head.
+    #[error(
+        "Current forge checks failed; delivery continues automatically if they pass on this head"
+    )]
+    ChecksFailed,
 }
 
 pub type Result<T> = std::result::Result<T, OrchestratorError>;

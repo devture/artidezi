@@ -53,6 +53,7 @@ pub struct State {
     pub lose_merge_response: bool,
     pub merge_on_approval: bool,
     pub pending_on_approval: bool,
+    pub fail_on_approval: bool,
     pub move_head_on_merge: bool,
     pub conclusion: String,
     pub requests: Vec<Request>,
@@ -94,6 +95,7 @@ impl Fixture {
             lose_merge_response: false,
             merge_on_approval: false,
             pending_on_approval: false,
+            fail_on_approval: false,
             move_head_on_merge: false,
             conclusion: "success".into(),
             requests: vec![],
@@ -355,6 +357,9 @@ fn reply(r: &Request, state: &mut State) -> Reply {
             state.reviews.push(value.clone());
             if state.pending_on_approval && r.body["event"] == "APPROVE" {
                 state.conclusion = "running".into();
+            }
+            if state.fail_on_approval && r.body["event"] == "APPROVE" {
+                state.conclusion = "failure".into();
             }
             if state.merge_on_approval && r.body["event"] == "APPROVE" {
                 state.open = false;
