@@ -262,6 +262,28 @@ impl Db {
             .claim_source_ci_check(task_id, now, next_check_at)
     }
 
+    pub fn hold_for_source_check(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        actor: &str,
+        hold: serde_json::Value,
+        next_check_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.connection()
+            .hold_for_source_check(task_id, attempt_id, actor, hold, next_check_at)
+    }
+
+    pub fn claim_held_source_check(
+        &mut self,
+        task_id: &str,
+        now: DateTime<Utc>,
+        next_check_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.connection()
+            .claim_held_source_check(task_id, now, next_check_at)
+    }
+
     pub fn get_attempt(&self, id: &str) -> Result<Attempt> {
         self.connection().get_attempt(id)
     }

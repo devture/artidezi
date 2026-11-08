@@ -578,11 +578,83 @@ impl ConnectionDb {
         now: DateTime<Utc>,
         next_check_at: DateTime<Utc>,
     ) -> Result<bool> {
+        self.claim_source_check_in(task_id, TaskState::WaitingForCi, now, next_check_at)
+    }
+
+    /// Records a recheckable hold, its `needs_human` state and its recheck deadline in one
+    /// transaction, so a crash can never leave a marked hold without a scheduled check.
+    pub fn hold_for_source_check(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        actor: &str,
+        hold: serde_json::Value,
+        next_check_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let task = self.get_task(task_id)?;
+        if task.state != TaskState::NeedsHuman
+            && !task.state.can_transition_to(TaskState::NeedsHuman)
+        {
+            return Err(StoreError::InvalidTransition {
+                entity: "task",
+                id: task_id.into(),
+                from: task.state.as_str().into(),
+                to: TaskState::NeedsHuman.as_str().into(),
+            });
+        }
+        let tx = self.conn.transaction()?;
+        Self::insert_event(
+            &tx,
+            Some(task_id),
+            Some(attempt_id),
+            actor,
+            "task.needs_human",
+            hold,
+        )?;
+        if task.state != TaskState::NeedsHuman {
+            tx.execute(
+                "UPDATE tasks SET state = 'needs_human', updated_at = ?2 WHERE id = ?1",
+                params![task_id, ts(Utc::now())],
+            )?;
+            Self::insert_event(
+                &tx,
+                Some(task_id),
+                None,
+                actor,
+                "task.state_changed",
+                serde_json::json!({"from": task.state, "to": TaskState::NeedsHuman}),
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO source_ci_waits (task_id, next_check_at) VALUES (?1, ?2)
+             ON CONFLICT(task_id) DO UPDATE SET next_check_at = excluded.next_check_at",
+            params![task_id, ts(next_check_at)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn claim_held_source_check(
+        &mut self,
+        task_id: &str,
+        now: DateTime<Utc>,
+        next_check_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.claim_source_check_in(task_id, TaskState::NeedsHuman, now, next_check_at)
+    }
+
+    fn claim_source_check_in(
+        &mut self,
+        task_id: &str,
+        state: TaskState,
+        now: DateTime<Utc>,
+        next_check_at: DateTime<Utc>,
+    ) -> Result<bool> {
         Ok(self.conn.execute(
             "UPDATE source_ci_waits SET next_check_at = ?3 WHERE task_id = ?1
              AND next_check_at <= ?2
-             AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND state = 'waiting_for_ci')",
-            params![task_id, ts(now), ts(next_check_at)],
+             AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND state = ?4)",
+            params![task_id, ts(now), ts(next_check_at), state.as_str()],
         )? == 1)
     }
 
