@@ -39,6 +39,18 @@
 				"data.forgejo.org/forgejo/forgejo"
 			],
 			"groupName": "Forgejo"
+		},
+		{
+			"description": "Pi and Node.js only go into the unpublished development image, which CI builds and smoke-tests: merge minor and patch bumps once checks pass.",
+			"matchPackageNames": [
+				"@earendil-works/pi-coding-agent",
+				"docker.io/node"
+			],
+			"matchUpdateTypes": [
+				"minor",
+				"patch"
+			],
+			"automerge": true
 		}
 	],
 	"customManagers": [
