@@ -208,6 +208,35 @@ impl ConnectionDb {
         Ok(())
     }
 
+    /// Writes a consistent copy of the database to `dest`, replacing it atomically, so that a file
+    /// backup taken while the orchestrator runs always contains one intact database.
+    pub fn snapshot_to(&self, dest: &Path) -> Result<()> {
+        let io = |path: &Path, source: std::io::Error| StoreError::Io {
+            path: path.display().to_string(),
+            source,
+        };
+        let dir = dest.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+        let mut partial = dest.as_os_str().to_owned();
+        partial.push(".partial");
+        let partial = std::path::PathBuf::from(partial);
+        match std::fs::remove_file(&partial) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(&partial, e)),
+            _ => {}
+        }
+        let target = partial
+            .to_str()
+            .ok_or_else(|| io(&partial, std::io::Error::other("path is not UTF-8")))?;
+        self.conn.execute("VACUUM INTO ?1", [target])?;
+        std::fs::File::open(&partial)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| io(&partial, e))?;
+        std::fs::rename(&partial, dest).map_err(|e| io(dest, e))?;
+        std::fs::File::open(dir)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| io(dir, e))
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         Self::init(conn)
@@ -1118,6 +1147,45 @@ impl ConnectionDb {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_is_a_complete_database_and_replaces_the_previous_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ConnectionDb::open(&dir.path().join("state.sqlite")).unwrap();
+        let dest = dir.path().join("backup").join("state.sqlite");
+        let artifact = ArtifactRef {
+            sha256: "a".repeat(64),
+            size: 10,
+        };
+        db.snapshot_to(&dest).unwrap();
+        assert!(
+            !ConnectionDb::open(&dest)
+                .unwrap()
+                .artifact_was_deleted(&artifact.sha256)
+                .unwrap()
+        );
+
+        db.record_artifact_deletion(&artifact, Utc::now(), "test")
+            .unwrap();
+        std::fs::write(
+            dir.path().join("backup").join("state.sqlite.partial"),
+            "stale",
+        )
+        .unwrap();
+        db.snapshot_to(&dest).unwrap();
+        assert!(
+            ConnectionDb::open(&dest)
+                .unwrap()
+                .artifact_was_deleted(&artifact.sha256)
+                .unwrap()
+        );
+        assert!(
+            !dir.path()
+                .join("backup")
+                .join("state.sqlite.partial")
+                .exists()
+        );
+    }
 
     #[test]
     fn deletion_receipts_require_full_sync_and_restore_the_connection_after_failure() {

@@ -151,6 +151,13 @@ impl Db {
             .record_artifact_deletion(artifact, now, reason)
     }
 
+    /// Writes a consistent copy of the database to `dest`, replacing it atomically, so that a file
+    /// backup taken while the orchestrator runs always contains one intact database. Other database
+    /// calls wait while the copy is written.
+    pub fn snapshot_to(&self, dest: &Path) -> Result<()> {
+        self.connection().snapshot_to(dest)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             inner: Arc::new(Mutex::new(ConnectionDb::open(path)?)),
