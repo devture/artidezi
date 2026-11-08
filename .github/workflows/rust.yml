@@ -96,6 +96,18 @@ jobs:
         env:
           EXPECTED: ${{ inputs.version || 'dev' }}
         run: test "$(docker run --rm artidezi:candidate --version)" = "artidezi $EXPECTED"
+      # The local stack's image (Dockerfile `development` stage): not published, but its Pi and Node.js bumps should not break it unnoticed.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: development
+          load: true
+          push: false
+          tags: artidezi:development
+          cache-from: type=gha,scope=rust-${{ matrix.arch }}
+      - name: Smoke-test the development image
+        run: docker run --rm --entrypoint sh artidezi:development -c 'pi --version && python3 --version && wget --version >/dev/null'
       - name: Export the tested image for release assembly
         env:
           ARCHIVE: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
