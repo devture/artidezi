@@ -186,8 +186,13 @@ Requests are authenticated before their body is read. Requests other than upload
 
 The configured data directory holds SQLite, immutable artifacts and Git caches. Keep it on a local
 filesystem. Back up the database together with its referenced artifacts, plus configuration and
-separately managed secrets. A stopped instance provides a simple consistent backup point; copying
-only the SQLite main file while WAL writes are active is not a reliable live backup procedure.
+separately managed secrets.
+
+You can back up the data directory while the orchestrator runs. A copy of the live
+`artidezi.sqlite` taken that way may be inconsistent, so the orchestrator also writes a consistent
+copy to `backup/artidezi.sqlite` at startup and then hourly. The orchestrator never reads it. To
+restore from it, stop the orchestrator, move it over `artidezi.sqlite` and delete
+`artidezi.sqlite-wal` and `artidezi.sqlite-shm`. Tasks from the last hour are then missing.
 Do not delete caches while tasks are outstanding: candidate/imported Git objects can be useful for
 recovery even where published objects could be refetched.
 

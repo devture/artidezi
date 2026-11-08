@@ -51,10 +51,15 @@ impl Orchestrator {
     }
 
     pub fn tick_at(&mut self, now: DateTime<Utc>) -> Result<TickReport> {
-        let mut report = TickReport {
-            lost_attempts: self.state_access().recover_expired_at(now)?,
-            ..Default::default()
-        };
+        let mut report = TickReport::default();
+        // First, so that a failure elsewhere in the tick never leaves the backup copy stale.
+        if self.last_snapshot.is_none_or(|last| {
+            let age = now.signed_duration_since(last).num_seconds();
+            !(0..crate::SNAPSHOT_INTERVAL_SECONDS).contains(&age)
+        }) {
+            self.snapshot_database(now, &mut report);
+        }
+        report.lost_attempts = self.state_access().recover_expired_at(now)?;
         self.reject_unfinished_validations()?;
         if self.db.discovery_paused()? {
             return Ok(report);
@@ -68,7 +73,16 @@ impl Orchestrator {
         {
             self.last_artifact_cleanup = now;
             match self.cleanup_artifacts_at(now, true) {
-                Ok(cleanup) => report.artifact_cleanup = Some(cleanup),
+                Ok(cleanup) => {
+                    // A copy that still references deleted files would block later cleanups.
+                    if cleanup.removed_bytes > 0
+                        || cleanup.expired_bundle_files > 0
+                        || cleanup.orphan_files > 0
+                    {
+                        self.snapshot_database(now, &mut report);
+                    }
+                    report.artifact_cleanup = Some(cleanup);
+                }
                 Err(error) => report.errors.push(format!("artifact cleanup: {error}")),
             }
         }
@@ -92,6 +106,13 @@ impl Orchestrator {
         report.errors.extend(discovery.errors);
         report.errors.extend(follow_up.errors);
         Ok(report)
+    }
+
+    fn snapshot_database(&mut self, now: DateTime<Utc>, report: &mut TickReport) {
+        self.last_snapshot = Some(now);
+        if let Err(error) = self.db.snapshot_to(&self.snapshot_path) {
+            report.errors.push(format!("database snapshot: {error}"));
+        }
     }
 
     pub fn cleanup_artifacts_at(

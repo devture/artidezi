@@ -59,6 +59,11 @@ pub enum OrchestratorError {
 
 pub type Result<T> = std::result::Result<T, OrchestratorError>;
 
+/// The database copy that file backups rely on, relative to the data directory. Never opened by
+/// the orchestrator; restoring means stopping it and moving this file over `artidezi.sqlite`.
+pub const SNAPSHOT_PATH: &str = "backup/artidezi.sqlite";
+const SNAPSHOT_INTERVAL_SECONDS: i64 = 3600;
+
 pub struct Orchestrator {
     pub config: Config,
     pub db: Db,
@@ -67,6 +72,8 @@ pub struct Orchestrator {
     forges: BTreeMap<String, Box<dyn ForgeAdapter>>,
     bot: Identity,
     last_artifact_cleanup: chrono::DateTime<chrono::Utc>,
+    snapshot_path: PathBuf,
+    last_snapshot: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Orchestrator {
@@ -120,6 +127,8 @@ impl Orchestrator {
             forges,
             bot,
             last_artifact_cleanup: chrono::Utc::now(),
+            snapshot_path: data_dir.join(SNAPSHOT_PATH),
+            last_snapshot: None,
         };
         // A crash can occur after accepting an upload but before finishing remote publication.
         // Startup only makes it actionable; it never retries a remote effect automatically.

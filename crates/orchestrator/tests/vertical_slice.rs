@@ -791,6 +791,47 @@ fn manual_proposal_changing_protected_paths_waits_for_authorization() {
 }
 
 #[test]
+fn ticks_keep_an_hourly_database_snapshot_for_file_backups() {
+    let mut w = World::new();
+    let snapshot = w
+        .root
+        .join("data")
+        .join(artidezi_orchestrator::SNAPSHOT_PATH);
+    let start = chrono::Utc::now();
+    let task = w
+        .orchestrator
+        .create_manual_task("roles", "Do the thing.", "slavi", &TaskSelection::default())
+        .unwrap();
+    let in_snapshot = |id: &str| {
+        artidezi_store::Db::open(&snapshot)
+            .unwrap()
+            .get_task(id)
+            .is_ok()
+    };
+
+    w.orchestrator.tick_at(start).unwrap();
+    assert!(in_snapshot(&task.id));
+
+    let later = w
+        .orchestrator
+        .create_manual_task(
+            "roles",
+            "Another thing.",
+            "slavi",
+            &TaskSelection::default(),
+        )
+        .unwrap();
+    w.orchestrator
+        .tick_at(start + Duration::minutes(59))
+        .unwrap();
+    assert!(!in_snapshot(&later.id));
+    w.orchestrator
+        .tick_at(start + Duration::minutes(60))
+        .unwrap();
+    assert!(in_snapshot(&later.id));
+}
+
+#[test]
 fn attempt_left_uploaded_by_a_crash_is_rejected_on_the_next_tick() {
     let mut w = World::new();
     let task = w

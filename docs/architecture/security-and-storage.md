@@ -157,6 +157,6 @@ Changing retention durations or disabling cleanup does not restore previously ex
 
 Git caches live under `caches/` and contain fetched/imported/recreated objects. Published history can
 be refetched, but unpublished candidate material and active work require care; retain the whole data
-directory for a straightforward backup. SQLite state and referenced artifacts must remain consistent.
+directory for a straightforward backup; its `backup/artidezi.sqlite` is a consistent database copy, at most an hour old. SQLite state and referenced artifacts must remain consistent.
 Configuration and credentials are separate backup concerns. At-rest encryption, evidence retention schedules,
 clean verifier provisioning and a tested operator restore workflow are future operational decisions.
