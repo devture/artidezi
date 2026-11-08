@@ -123,6 +123,13 @@ def branch_may_land(changes, ci):
     return changes and ci.upper() not in FAILED
 
 
+def unsettled_branches(branches, prs, closed_tips):
+    """Renovate branches still worth checking: those with an open PR are judged by the PR, and a branch whose tip is
+    the head of a closed or merged PR is a leftover (a squash merge doesn't put that commit on main)."""
+    with_prs = {pr["headRefName"] for pr in prs}
+    return [(name, tip) for name, tip in branches if name not in with_prs and tip not in closed_tips]
+
+
 def minutes(age):
     return f"{int(age.total_seconds() // 60)} min"
 
@@ -225,13 +232,14 @@ def plan(repository, sha, forced):
 
     landing = [f"#{pr['number']}" for pr in sorted(prs, key=lambda pr: pr["number"])
                if may_land_soon(pr) and update_changes_image(pr["headRefOid"])]
-    # Branches with a PR are judged by the PR above.
     branches = run("gh", "api", "--paginate", f"repos/{repository}/branches?per_page=100",
                    "--jq", '.[] | select(.name | startswith("renovate/")) | .name + " " + .commit.sha').splitlines()
-    for name, tip in sorted(branch.split() for branch in branches):
-        if name not in {pr["headRefName"] for pr in prs}:
-            if branch_may_land(update_changes_image(tip), ci_result(ci_run(repository, tip))):
-                landing.append(name)
+    closed_tips = set(run("gh", "pr", "list", "--repo", repository, "--base", "main", "--author", "app/renovate",
+                          "--state", "all", "--limit", "200", "--json", "headRefOid,state",
+                          "--jq", '.[] | select(.state != "OPEN") | .headRefOid').splitlines())
+    for name, tip in unsettled_branches(sorted(branch.split() for branch in branches), prs, closed_tips):
+        if branch_may_land(update_changes_image(tip), ci_result(ci_run(repository, tip))):
+            landing.append(name)
     release, reason, wait = decide(forced=forced, changed=changed, ci=ci, age=age, landing=landing)
     return release, f"{reason} (previous release {previous})", previous, wait
 

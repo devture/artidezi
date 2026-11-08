@@ -119,6 +119,12 @@ class LandingSoon(unittest.TestCase):
 
 
 class BranchMayLand(unittest.TestCase):
+    def test_branches_with_an_open_pr_or_left_over_from_a_closed_one_are_skipped(self):
+        branches = [("renovate/a", "1"), ("renovate/b", "2"), ("renovate/c", "3"), ("renovate/d", "4")]
+        prs = [{"headRefName": "renovate/a"}]
+        # renovate/d was updated after its PR closed, so its new tip may land again.
+        self.assertEqual(plan.unsettled_branches(branches, prs, {"2", "40"}), [("renovate/c", "3"), ("renovate/d", "4")])
+
     def test_branches_ahead_of_main_may_land_unless_their_ci_failed(self):
         for ci in ["success", "in_progress", "queued", "missing"]:
             with self.subTest(ci=ci):
