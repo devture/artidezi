@@ -5,7 +5,10 @@
 //! its source budget; discovery must freeze and assess the new revision before any publication.
 
 use artidezi_config::ResolvedProjectPolicy;
-use artidezi_contract::{common::Outcome, result::AgentResult};
+use artidezi_contract::{
+    common::{CommitSha, Outcome},
+    result::AgentResult,
+};
 use artidezi_store::model::*;
 use chrono::{Duration, Utc};
 
@@ -72,7 +75,7 @@ impl Orchestrator {
             .source_pull_request
             .as_ref()
             .expect("checked authority");
-        let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+        let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
         if (tracked.paused && !incomplete)
             || tracked.last_task_id.as_deref() != Some(&task.id)
             || source.input.commit != *expected
@@ -104,6 +107,21 @@ impl Orchestrator {
         {
             return Ok(false);
         }
+        self.retire_superseded_source(task, &attempt.id, tracked, expected, actual, None)?;
+        Ok(true)
+    }
+
+    /// Close an obsolete source task and let discovery assess the new head after settling, within
+    /// the source's existing run budget. Callers must first rule out unknown remote write outcomes.
+    pub(crate) fn retire_superseded_source(
+        &mut self,
+        task: &Task,
+        attempt_id: &str,
+        mut tracked: TrackedPullRequest,
+        expected: &CommitSha,
+        actual: &CommitSha,
+        cause: Option<&str>,
+    ) -> Result<()> {
         let discovery = self.config.projects[&task.project]
             .pull_requests
             .as_ref()
@@ -120,7 +138,7 @@ impl Orchestrator {
         } else {
             tracked.paused = false;
             tracked.status =
-                "Source head changed before publication; waiting for a fresh evaluation".into();
+                "Source head changed before delivery; waiting for a fresh evaluation".into();
             tracked.follow_up = Some(PullRequestFollowUp {
                 at: (tracked.head_observed_at
                     + Duration::seconds(i64::from(discovery.settle_seconds)))
@@ -128,13 +146,20 @@ impl Orchestrator {
                 reason: PullRequestFollowUpReason::Settling,
             });
         }
+        let mut payload = serde_json::json!({"expected_head":expected,"observed_head":actual,"runs":tracked.runs,"paused":tracked.paused});
+        if let Some(cause) = cause {
+            payload["cause"] = cause.into();
+        }
         self.db.record_event(
-            Some(&task.id), Some(&attempt.id), "orchestrator", "assessment.superseded",
-            serde_json::json!({"expected_head":expected,"observed_head":actual,"runs":tracked.runs,"paused":tracked.paused}),
+            Some(&task.id),
+            Some(attempt_id),
+            "orchestrator",
+            "assessment.superseded",
+            payload,
         )?;
         self.db
             .set_task_state(&task.id, TaskState::Closed, "orchestrator")?;
         self.db.save_pull_request_source(&tracked)?;
-        Ok(true)
+        Ok(())
     }
 }
