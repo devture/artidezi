@@ -46,7 +46,7 @@ COPY --from=docker.io/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 python3 wget \
  && rm -rf /var/lib/apt/lists/* \
- && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.0
+ && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.1
 USER artidezi
 
 # Keep the default build as the minimal production image.
