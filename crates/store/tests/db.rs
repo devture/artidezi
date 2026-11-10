@@ -301,6 +301,90 @@ fn discovery_queue_and_source_claim_are_atomic() {
 }
 
 #[test]
+fn superseding_closes_the_task_and_reschedules_its_source_atomically() {
+    let mut db = Db::open_in_memory().unwrap();
+    let mut t = task();
+    t.kind = TaskKind::PullRequest;
+    let source = TrackedPullRequest {
+        id: new_id("pr"),
+        project: t.project.clone(),
+        repository_id: "role".into(),
+        forge: "fake".into(),
+        remote: "org/role".into(),
+        number: 1,
+        url: "http://fake.invalid/1".into(),
+        title: "Update library".into(),
+        closed: false,
+        handler_id: "renovate".into(),
+        observed_head: "a".repeat(40),
+        head_observed_at: Utc::now(),
+        last_task_id: Some(t.id.clone()),
+        runs: 1,
+        paused: true,
+        status: "held".into(),
+        follow_up: None,
+    };
+    let held = attempt(&t.id, 1);
+    db.insert_discovery_task(&t, &held, &source).unwrap();
+    let mut rescheduled = source.clone();
+    rescheduled.paused = false;
+    rescheduled.observed_head = "b".repeat(40);
+    rescheduled.follow_up = Some(PullRequestFollowUp {
+        at: Utc::now(),
+        reason: PullRequestFollowUpReason::Settling,
+    });
+    // Another record for the same pull request violates its uniqueness when saved last.
+    let mut conflicting = rescheduled.clone();
+    conflicting.id = new_id("pr");
+    assert!(
+        db.supersede_source_task(
+            &t.id,
+            &held.id,
+            "orchestrator",
+            serde_json::json!({}),
+            &conflicting
+        )
+        .is_err()
+    );
+    assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::Working);
+    assert_eq!(db.get_pull_request_source(&source.id).unwrap(), source);
+    assert!(
+        db.list_events(&t.id)
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != "assessment.superseded")
+    );
+
+    db.supersede_source_task(
+        &t.id,
+        &held.id,
+        "orchestrator",
+        serde_json::json!({}),
+        &rescheduled,
+    )
+    .unwrap();
+    assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::Closed);
+    assert_eq!(db.get_pull_request_source(&source.id).unwrap(), rescheduled);
+    assert!(
+        db.list_events(&t.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "assessment.superseded")
+    );
+    assert!(
+        db.supersede_source_task(
+            &t.id,
+            &held.id,
+            "orchestrator",
+            serde_json::json!({}),
+            &rescheduled
+        )
+        .is_err(),
+        "a terminal task cannot be superseded again"
+    );
+}
+
+#[test]
 fn ci_wait_and_poll_deadline_survive_restart_and_stop_on_state_change() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.sqlite");

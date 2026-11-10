@@ -159,6 +159,14 @@ impl ForgeAdapter for LocalGit {
     ) -> artidezi_forge::Result<()> {
         self.github.update_merge_request(r, n, title, body)
     }
+    fn close_merge_request(
+        &self,
+        r: &str,
+        expected: &artidezi_forge::ExpectedProposal<'_>,
+        comment: &str,
+    ) -> artidezi_forge::Result<()> {
+        self.github.close_merge_request(r, expected, comment)
+    }
     fn merge(
         &self,
         r: &str,

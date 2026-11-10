@@ -78,7 +78,9 @@ A validated unpublished approval/proposal whose source head is superseded can be
 automatically, with an `assessment.superseded` event retaining the old and observed heads. Discovery
 assesses the new revision under its ordinary gates and the remaining source budget. Any publication
 plan or receipt, identity change, human decision or failure prevents this recovery. A retry request
-that stopped before any publication plan does not prevent a fresh evaluation. Older stale-head
+that stopped before any publication plan does not prevent a fresh evaluation. Published
+adaptations whose source moved while it stayed open are closed on the forge first, when they are
+provably the task's own and unchanged, and the task then retires the same way. Older stale-head
 holds are reconsidered automatically, while later explicit operator pauses remain in force. A result for the previous head is never applied to the new revision.
 
 ## Recovery constraints

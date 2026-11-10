@@ -78,6 +78,7 @@ impl Orchestrator {
             .map(|event| event.id)
             .max()
             .unwrap_or(0);
+        let mut source_moved = false;
         if let Some(source) = crate::discovery::source_of(task)? {
             let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
             if tracked.last_task_id.as_deref() != Some(&task.id)
@@ -85,6 +86,7 @@ impl Orchestrator {
             {
                 return Ok(());
             }
+            source_moved = tracked.observed_head != source.input.commit.as_str();
         }
         if attempt.state == AttemptState::Invalid
             && attempt.result.is_none()
@@ -141,6 +143,11 @@ impl Orchestrator {
             // The existing publication path checks authority/freshness first and retires
             // an obsolete result before any write. Never bypass its reconciliation checks.
             self.retry_publication(&task.id, "recovery")?;
+        } else if source_moved
+            && attempt.state.is_terminal()
+            && !self.db.list_merge_requests(&task.id)?.is_empty()
+        {
+            self.retire_superseded_adaptations(task)?;
         }
         Ok(())
     }

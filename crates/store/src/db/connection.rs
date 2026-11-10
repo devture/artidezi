@@ -295,6 +295,52 @@ impl ConnectionDb {
         Self::save_source_in(&self.conn, source)
     }
 
+    /// Records `assessment.superseded`, closes the task and saves its source's new schedule in one
+    /// transaction, so a crash cannot leave a paused source behind a terminal task.
+    pub fn supersede_source_task(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        actor: &str,
+        payload: serde_json::Value,
+        source: &TrackedPullRequest,
+    ) -> Result<()> {
+        let task = self.get_task(task_id)?;
+        if !task.state.can_transition_to(TaskState::Closed) {
+            return Err(StoreError::InvalidTransition {
+                entity: "task",
+                id: task_id.into(),
+                from: task.state.as_str().into(),
+                to: TaskState::Closed.as_str().into(),
+            });
+        }
+        let tx = self.conn.transaction()?;
+        Self::insert_event(
+            &tx,
+            Some(task_id),
+            Some(attempt_id),
+            actor,
+            "assessment.superseded",
+            payload,
+        )?;
+        tx.execute(
+            "UPDATE tasks SET state = ?2, updated_at = ?3 WHERE id = ?1",
+            params![task_id, TaskState::Closed.as_str(), ts(Utc::now())],
+        )?;
+        tx.execute("DELETE FROM source_ci_waits WHERE task_id = ?1", [task_id])?;
+        Self::insert_event(
+            &tx,
+            Some(task_id),
+            None,
+            actor,
+            "task.state_changed",
+            serde_json::json!({"from": task.state, "to": TaskState::Closed}),
+        )?;
+        Self::save_source_in(&tx, source)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Queue and claim the source revision atomically. A crash cannot leave an untracked queued job.
     pub fn insert_discovery_task(
         &mut self,

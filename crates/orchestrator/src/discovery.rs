@@ -531,13 +531,14 @@ impl Orchestrator {
                 return Ok(None);
             }
             if task.state == TaskState::AwaitingReview {
-                source.status = "Published adaptations await review".into();
-                if source_of(&task)?.is_some_and(|s| s.input.commit != pull.head_commit) {
-                    source.paused = true;
-                    source.status = "Source changed while adaptations await review".into();
-                    self.db
-                        .set_task_state(id, TaskState::NeedsHuman, "discovery")?;
-                }
+                source.status =
+                    if source_of(&task)?.is_some_and(|s| s.input.commit != pull.head_commit) {
+                        // The delivery reconciler closes obsolete adaptations or holds the task.
+                        "Source changed; waiting for delivery reconciliation"
+                    } else {
+                        "Published adaptations await review"
+                    }
+                    .into();
                 return Ok(None);
             }
             if task.state == TaskState::NeedsHuman {
@@ -991,6 +992,7 @@ impl Orchestrator {
                 ));
             }
             let task = self.db.get_task(task_id)?;
+            self.close_superseded_adaptations(&task)?;
             self.require_resolved_source_proposals(&task)?;
             if !task.state.is_terminal() {
                 self.db.set_task_state(task_id, TaskState::Closed, actor)?;

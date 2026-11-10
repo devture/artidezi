@@ -992,6 +992,12 @@ impl Orchestrator {
             self.db.set_task_state(&task.id, TaskState::Done, "forge")?;
             return Ok(TaskState::Done);
         }
+        if current.state == RemoteState::Open
+            && current.head_commit != source.input.commit
+            && self.retire_superseded_adaptations(task)?
+        {
+            return Ok(TaskState::Closed);
+        }
         if current.head_commit != source.input.commit
             || current.state != RemoteState::Open
             || proposals

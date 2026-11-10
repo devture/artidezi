@@ -191,6 +191,18 @@ impl Db {
         self.connection().save_pull_request_source(source)
     }
 
+    pub fn supersede_source_task(
+        &mut self,
+        task_id: &str,
+        attempt_id: &str,
+        actor: &str,
+        payload: serde_json::Value,
+        source: &TrackedPullRequest,
+    ) -> Result<()> {
+        self.connection()
+            .supersede_source_task(task_id, attempt_id, actor, payload, source)
+    }
+
     pub fn insert_discovery_task(
         &mut self,
         task: &Task,

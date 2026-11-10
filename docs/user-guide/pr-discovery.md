@@ -147,6 +147,9 @@ and publication has not been planned or attempted, the controller closes the obs
 schedules a fresh evaluation of the new head. The normal settle window, CI wait, project capacity
 and existing run budget still apply; superseding work does not refund or renew that budget.
 This also applies to an accepted result waiting for CI before any publication activity.
+When the source moves after an adaptation was published, the controller closes its own proposal
+with a comment naming the new head and evaluates that head the same way. It never closes a
+proposal that someone else changed, merged or closed, and keeps the hold after an explicit pause.
 Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
 
 Failed checks at the moment of automatic approval or merge hold the task as needing attention and
@@ -249,7 +252,8 @@ Authenticated API equivalents:
 - `POST /admin/v1/tasks/{id}/retry-publication` retries interrupted delivery without a new evaluation.
 
 Open adaptation proposals must be resolved before starting
-a new evaluation, including via Resume. Retry publication first when only delivery was interrupted.
+a new evaluation, including via Resume. Resume closes the controller's own proposals for a source
+head that has since moved. Retry publication first when only delivery was interrupted.
 
 Discovery uses the normal worker contract; see [its version notes](../architecture/worker-contract.md). Configurations without discovery keep manual-only behavior.
 

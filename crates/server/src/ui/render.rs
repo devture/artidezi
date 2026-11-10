@@ -1094,7 +1094,16 @@ pub(super) fn detail(
         && tracking.follow_up.is_some()
         && !tracking.paused
     {
-        body.push_str(r#"<section class="task-attention"><h2>Fresh evaluation scheduled automatically</h2><p>The source changed before publication. ArtiDezi retired this stale assessment and will assess the new revision after it settles. No action is needed.</p></section>"#);
+        let change = if detail
+            .events
+            .iter()
+            .any(|event| event.kind == "merge_request.superseded")
+        {
+            "The source changed after its adaptation was published. ArtiDezi closed the obsolete proposal, retired this assessment"
+        } else {
+            "The source changed before publication. ArtiDezi retired this stale assessment"
+        };
+        write!(body, r#"<section class="task-attention"><h2>Fresh evaluation scheduled automatically</h2><p>{change} and will assess the new revision after it settles. No action is needed.</p></section>"#).unwrap();
     }
     if let Some((feedback, error)) = revision_error {
         write!(
@@ -1247,6 +1256,7 @@ pub(super) fn detail(
                     .unwrap_or("updated")
             ),
             "merge_request.published" => "Proposal published to the forge".into(),
+            "merge_request.superseded" => "Obsolete proposal closed on the forge".into(),
             "attempt.leased" => "Worker started the attempt".into(),
             "task.created" => "Task created".into(),
             "attempt.created" => "Attempt queued".into(),

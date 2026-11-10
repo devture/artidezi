@@ -552,3 +552,251 @@ fn a_damaged_held_attempt_does_not_stop_unrelated_automatic_discovery() {
     assert_eq!(task_state(&w, &bad.id), TaskState::NeedsHuman);
     no_publication(&f);
 }
+
+fn published_adaptation(w: &mut World) -> String {
+    let id = scan(w).remove(0);
+    assert_eq!(w.work(&proposal(w)), AttemptState::Valid);
+    assert_eq!(task_state(w, &id), TaskState::AwaitingReview);
+    assert_eq!(w.orchestrator.db.list_merge_requests(&id).unwrap().len(), 1);
+    id
+}
+
+/// Recreates the hold an earlier release left when the source moved under a published adaptation.
+fn hold_as_an_earlier_release_did(w: &mut World, id: &str) {
+    let mut tracked = w
+        .orchestrator
+        .db
+        .list_pull_request_sources(None)
+        .unwrap()
+        .remove(0);
+    tracked.paused = true;
+    tracked.status = "Source changed while adaptations await review".into();
+    w.orchestrator
+        .db
+        .save_pull_request_source(&tracked)
+        .unwrap();
+    w.orchestrator
+        .db
+        .set_task_state(id, TaskState::NeedsHuman, "discovery")
+        .unwrap();
+}
+
+fn source_untouched(f: &Fixture) {
+    let state = f.state.lock().unwrap();
+    assert!(state.open && !state.merged);
+    assert_eq!(
+        state.reviews.len(),
+        1,
+        "only the original assessment review"
+    );
+    assert!(state.requests.iter().all(|r| r.method == "GET"
+        || !r.path.starts_with("/repos/org/app/pulls/33")
+        || r.path == "/repos/org/app/pulls/33/reviews"));
+}
+
+#[test]
+fn published_adaptation_for_a_moved_source_is_closed_and_reassessed_within_budget() {
+    for held in [false, true] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        w.orchestrator
+            .config
+            .projects
+            .get_mut("roles")
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .settle_seconds = 10;
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        let new_head = move_source_head(&w, &f);
+        if held {
+            hold_as_an_earlier_release_did(&mut w, &id);
+            assert!(scan(&mut w).is_empty());
+        }
+        reopen(&mut w, &f);
+        let report = w.orchestrator.tick().unwrap();
+        assert!(report.errors.is_empty(), "held={held}: {:?}", report.errors);
+        assert!(report.discovered.is_empty(), "the new head settles first");
+        assert_eq!(task_state(&w, &id), TaskState::Closed, "held={held}");
+
+        let state = f.state.lock().unwrap();
+        let proposal = &state.proposals[&published.number];
+        assert_eq!(proposal["state"], "closed");
+        assert_eq!(proposal["merged"], false);
+        assert_eq!(state.comments.len(), 1);
+        assert_eq!(state.comments[0]["number"], published.number);
+        assert!(
+            state.comments[0]["body"]
+                .as_str()
+                .unwrap()
+                .contains(&new_head.0)
+        );
+        drop(state);
+        source_untouched(&f);
+        let closed = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(closed.state, MergeRequestState::Closed);
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        assert!(events.iter().any(|e| e.kind == "merge_request.superseded"
+            && e.payload["number"] == published.number
+            && e.payload["source_head"] == new_head.0));
+        assert!(
+            events.iter().any(|e| e.kind == "assessment.superseded"
+                && e.payload["cause"] == "published_adaptation")
+        );
+        let tracked = w
+            .orchestrator
+            .db
+            .list_pull_request_sources(None)
+            .unwrap()
+            .remove(0);
+        assert!(!tracked.paused);
+        assert_eq!(
+            tracked.runs, 1,
+            "superseding never refunds or renews the budget"
+        );
+        let deadline = tracked.follow_up.unwrap().at;
+
+        let report = w.orchestrator.tick_at(deadline).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.discovered.len(), 1);
+        let next = w.orchestrator.db.get_task(&report.discovered[0]).unwrap();
+        assert_eq!(
+            artidezi_orchestrator::discovery::source_of(&next)
+                .unwrap()
+                .unwrap()
+                .input
+                .commit,
+            new_head
+        );
+        assert_eq!(
+            w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].runs,
+            2
+        );
+        assert_eq!(f.state.lock().unwrap().comments.len(), 1);
+    }
+}
+
+#[test]
+fn current_changed_or_paused_adaptations_are_never_closed_automatically() {
+    for case in ["current", "pushed", "foreign", "paused"] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        match case {
+            "pushed" => {
+                f.state
+                    .lock()
+                    .unwrap()
+                    .branches
+                    .insert(published.source_branch.clone(), "f".repeat(40));
+            }
+            "foreign" => {
+                f.state
+                    .lock()
+                    .unwrap()
+                    .proposals
+                    .get_mut(&published.number)
+                    .unwrap()["user"]["login"] = json!("someone-else");
+            }
+            "paused" => {
+                let tracked = w.orchestrator.db.list_pull_request_sources(None).unwrap();
+                w.orchestrator
+                    .pause_pull_request(&tracked[0].id, "operator")
+                    .unwrap();
+            }
+            _ => {}
+        }
+        if case == "current" {
+            hold_as_an_earlier_release_did(&mut w, &id);
+        } else {
+            move_source_head(&w, &f);
+        }
+        for _ in 0..2 {
+            scan(&mut w);
+            w.orchestrator.tick().unwrap();
+        }
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{case}");
+        let state = f.state.lock().unwrap();
+        assert_eq!(
+            state.proposals[&published.number]["state"], "open",
+            "{case}"
+        );
+        assert!(state.comments.is_empty(), "{case}");
+        drop(state);
+        source_untouched(&f);
+        assert!(
+            w.orchestrator
+                .db
+                .list_events(&id)
+                .unwrap()
+                .iter()
+                .all(|e| !e.kind.starts_with("merge_request.close")
+                    && e.kind != "assessment.superseded"),
+            "{case}"
+        );
+        assert!(w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].paused);
+        if case == "current" {
+            let tracked = w.orchestrator.db.list_pull_request_sources(None).unwrap();
+            let error = w
+                .orchestrator
+                .resume_pull_request(&tracked[0].id, "human")
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("existing adaptation proposals"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resume_closes_an_adaptation_for_an_obsolete_source_head_instead_of_refusing() {
+    let (mut w, f) = publishing_world();
+    let id = published_adaptation(&mut w);
+    let published = w
+        .orchestrator
+        .db
+        .list_merge_requests(&id)
+        .unwrap()
+        .remove(0);
+    let tracked = w
+        .orchestrator
+        .db
+        .list_pull_request_sources(None)
+        .unwrap()
+        .remove(0);
+    w.orchestrator
+        .pause_pull_request(&tracked.id, "operator")
+        .unwrap();
+    move_source_head(&w, &f);
+    scan(&mut w);
+    let resumed = w
+        .orchestrator
+        .resume_pull_request(&tracked.id, "human")
+        .unwrap();
+    assert!(!resumed.paused);
+    assert_eq!(resumed.runs, 0, "an explicit resume renews the budget");
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    let state = f.state.lock().unwrap();
+    assert_eq!(state.proposals[&published.number]["state"], "closed");
+    assert_eq!(state.comments.len(), 1);
+    drop(state);
+    source_untouched(&f);
+    assert_eq!(scan(&mut w).len(), 1);
+}

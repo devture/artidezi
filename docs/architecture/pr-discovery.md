@@ -75,6 +75,7 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | New eligible source head | Queue within project capacity and the persisted source budget |
 | Failed/lost/needs-human/interrupted work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |
+| Published adaptations superseded by a new head of the still-open source | Comment on and close those proposals, then retire the task the same way |
 | Exhausted run budget or explicit pause | Hold until explicit human action |
 
 Capacity counts working source-PR tasks per project; it is not a global instance quota or the worker
@@ -165,8 +166,18 @@ failed/needs-human results and explicit operator pauses retain their holds. CI-w
 reconciliation uses the same guard; discovery leaves that decision to the delivery reconciler.
 A delivery hold for failed checks also retires on a new head, even after its approval was published,
 because it is recheckable only when no approval or merge outcome is unconfirmed; see [GitHub internals](github-integration.md#safe-source-actions).
-Awaiting proposals suppress new evaluations; source movement holds them. Resume/feedback checks
-planned branches for open PRs before creating another task. Human merges are observed without
+Awaiting proposals suppress new evaluations. When the source head moves, the delivery reconciler,
+and held-task recovery for older holds, closes the task's own proposals with a comment naming the new head
+(`merge_request.close_planned`, then `merge_request.superseded`). The controller passes the expected
+branch, target and head, and the forge adapter rechecks them before the comment and again before
+closing. If a push still lands just before the close, it reopens the proposal and reports an error,
+so the task is held. Otherwise it retires the task with
+`"cause": "published_adaptation"`; the `assessment.superseded` event, task closure and source
+schedule are saved in one transaction. Every recorded proposal must still be open (or closed under that
+plan), authored by the bot from the task's branch at the recorded head, and every publication plan
+must have a receipt; otherwise, or after an explicit pause, a closed/merged source or a human-closed
+or merged proposal, the task is held as before. Resume closes such obsolete proposals too, then
+checks planned branches for open PRs before creating another task; feedback only checks. Human merges are observed without
 source-merge or tag effects. See [GitHub internals](github-integration.md#scoped-publication).
 
 Source approval/merge uses the additional policy and recovery gates described in GitHub internals.
