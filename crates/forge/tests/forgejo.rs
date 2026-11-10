@@ -173,6 +173,75 @@ fn forgejo_contract() {
     assert_eq!(fetched.title, "Update to 1.1.0 (revised)");
     assert_eq!(fetched.body, "body v2");
 
+    cache
+        .push(
+            &forge.clone_url(&remote),
+            "refs/heads/main:refs/heads/artidezi/superseded",
+            creds.as_ref(),
+        )
+        .unwrap();
+    let superseded = forge
+        .create_merge_request(
+            &remote,
+            &NewMergeRequest {
+                title: "Superseded adaptation".into(),
+                body: "body".into(),
+                source_branch: "artidezi/superseded".into(),
+                target_branch: "main".into(),
+                draft: false,
+            },
+        )
+        .unwrap();
+    let expected = ExpectedProposal {
+        number: superseded.number,
+        source_branch: "artidezi/superseded",
+        target_branch: "main",
+        head: &superseded.head_commit,
+    };
+    let older = artidezi_contract::common::CommitSha(base.to_string());
+    for wrong in [
+        ExpectedProposal {
+            head: &older,
+            ..expected
+        },
+        ExpectedProposal {
+            source_branch: "artidezi/test",
+            ..expected
+        },
+        ExpectedProposal {
+            target_branch: "artidezi/test",
+            ..expected
+        },
+    ] {
+        assert!(
+            forge
+                .close_merge_request(&remote, &wrong, "Superseded.")
+                .is_err()
+        );
+    }
+    assert_eq!(
+        forge
+            .get_merge_request(&remote, superseded.number)
+            .unwrap()
+            .state,
+        MergeRequestState::Open
+    );
+    forge
+        .close_merge_request(&remote, &expected, "Superseded by a newer source.")
+        .unwrap();
+    assert_eq!(
+        forge
+            .get_merge_request(&remote, superseded.number)
+            .unwrap()
+            .state,
+        MergeRequestState::Closed
+    );
+    assert!(
+        forge
+            .close_merge_request(&remote, &expected, "Again.")
+            .is_err()
+    );
+
     let open = forge
         .list_open_merge_requests(&remote, Some(&user))
         .unwrap();

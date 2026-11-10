@@ -22,9 +22,9 @@ use super::{
     validate_source,
 };
 use crate::{
-    CheckResult, CheckResultKind, ChecksState, CiJobLog, ForgeAdapter, ForgeError, MergeMethod,
-    MergeRequestInfo, MergeRequestListing, MergeRequestState, MergeRequestSummary, NewMergeRequest,
-    Result,
+    CheckResult, CheckResultKind, ChecksState, CiJobLog, ExpectedProposal, ForgeAdapter,
+    ForgeError, MergeMethod, MergeRequestInfo, MergeRequestListing, MergeRequestState,
+    MergeRequestSummary, NewMergeRequest, Result,
 };
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
@@ -785,6 +785,71 @@ impl ForgeAdapter for GithubForge {
             &json!({"title":title,"body":body}),
             200,
         )?;
+        Ok(())
+    }
+    fn close_merge_request(
+        &self,
+        remote: &str,
+        expected: &ExpectedProposal<'_>,
+        comment: &str,
+    ) -> Result<()> {
+        self.require_publication(remote)?;
+        let number = expected.number;
+        // GitHub has no conditional close, so the proposal is rechecked right before each write.
+        let require_expected = || {
+            let current = self.get_merge_request(remote, number)?;
+            if expected.matches(&current, &self.identity.bot_login) {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "GitHub proposal is foreign, closed or changed; refusing to close it",
+                ))
+            }
+        };
+        require_expected()?;
+        let _: serde_json::Value = self.mutate(
+            remote,
+            "POST",
+            &format!("/repos/{remote}/issues/{number}/comments"),
+            &json!({ "body": comment }),
+            201,
+        )?;
+        require_expected()?;
+        let response: PullRequest = self.mutate(
+            remote,
+            "PATCH",
+            &format!("/repos/{remote}/pulls/{number}"),
+            &json!({"state":"closed"}),
+            200,
+        )?;
+        if response.number == number
+            && !response.merged
+            && response.head.sha != expected.head.as_str()
+        {
+            // A push landed after the last check, so the close hit a newer head that is not ours to close.
+            let reopened = self
+                .mutate::<PullRequest>(
+                    remote,
+                    "PATCH",
+                    &format!("/repos/{remote}/pulls/{number}"),
+                    &json!({"state":"open"}),
+                    200,
+                )
+                .is_ok_and(|pull| pull.state == "open")
+                && self
+                    .get_merge_request(remote, number)
+                    .is_ok_and(|pull| pull.state == MergeRequestState::Open);
+            return Err(invalid(if reopened {
+                "GitHub proposal moved while it was being closed; reopened it for human review"
+            } else {
+                "GitHub proposal moved while it was being closed and could not be reopened; reopen it by hand"
+            }));
+        }
+        if response.number != number || response.state != "closed" || response.merged {
+            return Err(invalid(
+                "GitHub did not confirm closing the expected proposal",
+            ));
+        }
         Ok(())
     }
     fn list_reviews(&self, remote: &str, number: u64) -> Result<Vec<crate::MergeRequestReview>> {

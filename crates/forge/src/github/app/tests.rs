@@ -547,6 +547,146 @@ fn publication_is_explicit_and_read_tokens_stay_narrow() {
 }
 
 #[test]
+fn closing_comments_on_and_closes_only_an_open_owned_proposal() {
+    let fixture = fixture();
+    fixture.state.lock().unwrap().publication = true;
+    let read_only = fixture.forge();
+    let forge = fixture
+        .forge()
+        .with_publication_repositories(["org/app".into()].into())
+        .unwrap();
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .branches
+        .insert("artidezi/task".into(), "c".repeat(40));
+    let proposal = forge
+        .create_merge_request(
+            "org/app",
+            &NewMergeRequest {
+                title: "Adapt".into(),
+                body: "Adaptation".into(),
+                source_branch: "artidezi/task".into(),
+                target_branch: "main".into(),
+                draft: false,
+            },
+        )
+        .unwrap();
+    let head = CommitSha("c".repeat(40));
+    let moved = CommitSha("d".repeat(40));
+    let expected = crate::ExpectedProposal {
+        number: proposal.number,
+        source_branch: "artidezi/task",
+        target_branch: "main",
+        head: &head,
+    };
+    assert!(
+        read_only
+            .close_merge_request("org/app", &expected, "Superseded.")
+            .is_err()
+    );
+    let source_head = CommitSha("a".repeat(40));
+    let source = crate::ExpectedProposal {
+        number: 33,
+        source_branch: "renovate/library",
+        target_branch: "main",
+        head: &source_head,
+    };
+    assert!(
+        forge
+            .close_merge_request("org/app", &source, "Superseded.")
+            .is_err(),
+        "never closes a foreign source"
+    );
+    for (case, wrong) in [
+        (
+            "moved head",
+            crate::ExpectedProposal {
+                head: &moved,
+                ..expected
+            },
+        ),
+        (
+            "other branch",
+            crate::ExpectedProposal {
+                source_branch: "artidezi/other",
+                ..expected
+            },
+        ),
+        (
+            "other target",
+            crate::ExpectedProposal {
+                target_branch: "develop",
+                ..expected
+            },
+        ),
+    ] {
+        assert!(
+            forge
+                .close_merge_request("org/app", &wrong, "Superseded.")
+                .is_err(),
+            "{case}"
+        );
+    }
+    // A push after the caller's check is refused before any write.
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .branches
+        .insert("artidezi/task".into(), moved.0.clone());
+    assert!(
+        forge
+            .close_merge_request("org/app", &expected, "Superseded.")
+            .is_err()
+    );
+    assert!(fixture.state.lock().unwrap().comments.is_empty());
+    assert_eq!(
+        forge
+            .get_merge_request("org/app", proposal.number)
+            .unwrap()
+            .state,
+        MergeRequestState::Open
+    );
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .branches
+        .insert("artidezi/task".into(), head.0.clone());
+    forge
+        .close_merge_request("org/app", &expected, "Superseded.")
+        .unwrap();
+    assert_eq!(
+        forge
+            .get_merge_request("org/app", proposal.number)
+            .unwrap()
+            .state,
+        MergeRequestState::Closed
+    );
+    assert!(
+        forge
+            .close_merge_request("org/app", &expected, "Superseded.")
+            .is_err()
+    );
+    assert!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .all(|r| r.method == "GET" || !r.path.starts_with("/repos/org/app/pulls/33")),
+        "the source is never written"
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!(state.comments.len(), 1);
+    assert_eq!(state.comments[0]["number"], proposal.number);
+    assert_eq!(state.comments[0]["body"], "Superseded.");
+}
+
+#[test]
 fn workflow_push_uses_a_separate_single_repository_token() {
     let fixture = fixture();
     fixture.state.lock().unwrap().publication = true;
@@ -588,4 +728,64 @@ fn dry_run_rejects_overbroad_issued_token_even_when_installation_allows_writes()
     fixture.state.lock().unwrap().publication = true;
     fixture.state.lock().unwrap().overrides.insert("/app/installations/42/access_tokens".into(), Reply::new(201, json!({"token":"fixture-installation-token-overbroad", "expires_at":(Utc::now()+Duration::hours(1)).to_rfc3339(), "permissions":crate::github::fixture::write_permissions(),"repositories":[{"full_name":"org/app"}]})));
     assert!(fixture.forge().verify_installation().is_err());
+}
+
+#[test]
+fn a_push_racing_the_close_reopens_the_proposal_at_the_new_head() {
+    for fail_reopen in [false, true] {
+        let fixture = fixture();
+        fixture.state.lock().unwrap().publication = true;
+        let forge = fixture
+            .forge()
+            .with_publication_repositories(["org/app".into()].into())
+            .unwrap();
+        let head = CommitSha("c".repeat(40));
+        let pushed = "d".repeat(40);
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .branches
+            .insert("artidezi/task".into(), head.0.clone());
+        let proposal = forge
+            .create_merge_request(
+                "org/app",
+                &NewMergeRequest {
+                    title: "Adapt".into(),
+                    body: "Adaptation".into(),
+                    source_branch: "artidezi/task".into(),
+                    target_branch: "main".into(),
+                    draft: false,
+                },
+            )
+            .unwrap();
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.push_before_close = Some(pushed.clone());
+            state.fail_reopen = fail_reopen;
+        }
+        let error = forge
+            .close_merge_request(
+                "org/app",
+                &crate::ExpectedProposal {
+                    number: proposal.number,
+                    source_branch: "artidezi/task",
+                    target_branch: "main",
+                    head: &head,
+                },
+                "Superseded.",
+            )
+            .unwrap_err()
+            .to_string();
+        let current = forge.get_merge_request("org/app", proposal.number).unwrap();
+        assert_eq!(current.head_commit.0, pushed);
+        if fail_reopen {
+            assert!(error.contains("could not be reopened"), "{error}");
+            assert_eq!(current.state, MergeRequestState::Closed);
+        } else {
+            assert!(error.contains("reopened it"), "{error}");
+            assert_eq!(current.state, MergeRequestState::Open);
+        }
+        assert_eq!(fixture.state.lock().unwrap().comments.len(), 1);
+    }
 }

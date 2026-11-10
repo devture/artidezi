@@ -66,6 +66,10 @@ pub struct State {
     pub branches: BTreeMap<String, String>,
     pub proposals: BTreeMap<u64, Value>,
     pub reviews: Vec<Value>,
+    pub comments: Vec<Value>,
+    /// A branch head pushed just before the next close request is processed.
+    pub push_before_close: Option<String>,
+    pub fail_reopen: bool,
     pub lose_create_response: bool,
     pub lose_review_response: bool,
 }
@@ -108,6 +112,9 @@ impl Fixture {
             branches: BTreeMap::new(),
             proposals: BTreeMap::new(),
             reviews: vec![],
+            comments: vec![],
+            push_before_close: None,
+            fail_reopen: false,
             lose_create_response: false,
             lose_review_response: false,
         }));
@@ -334,10 +341,39 @@ fn reply(r: &Request, state: &mut State) -> Reply {
         }
         ("PATCH", path) if path.starts_with("/repos/org/app/pulls/") => {
             let number = path.rsplit('/').next().unwrap().parse::<u64>().unwrap();
+            let branch = state.proposals[&number]["head"]["ref"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            if r.body["state"] == "closed"
+                && let Some(pushed) = state.push_before_close.take()
+            {
+                state.branches.insert(branch.clone(), pushed);
+            }
+            if r.body["state"] == "open" && state.fail_reopen {
+                return Reply::new(422, json!({"message":"cannot reopen"}));
+            }
+            let head = state.branches.get(&branch).cloned();
             let proposal = state.proposals.get_mut(&number).unwrap();
-            proposal["title"] = r.body["title"].clone();
-            proposal["body"] = r.body["body"].clone();
+            if let Some(head) = head {
+                proposal["head"]["sha"] = json!(head);
+            }
+            if let Some(next) = r.body["state"].as_str() {
+                proposal["state"] = json!(next);
+            } else {
+                proposal["title"] = r.body["title"].clone();
+                proposal["body"] = r.body["body"].clone();
+            }
             proposal.clone()
+        }
+        ("POST", path)
+            if path.starts_with("/repos/org/app/issues/") && path.ends_with("/comments") =>
+        {
+            assert!(state.publication);
+            let number = path.split('/').nth(5).unwrap().parse::<u64>().unwrap();
+            let value = json!({"id":state.comments.len()+1,"number":number,"user":{"login":"artidezi-fixture[bot]","type":"Bot"},"body":r.body["body"]});
+            state.comments.push(value.clone());
+            return Reply::new(201, value);
         }
         ("GET", path) if path.starts_with("/repos/org/app/pulls?state=all&head=") => {
             json!(

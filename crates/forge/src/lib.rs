@@ -193,6 +193,27 @@ pub enum ReviewState {
     Other,
 }
 
+/// The exact open proposal a caller intends to close.
+#[derive(Clone, Copy, Debug)]
+pub struct ExpectedProposal<'a> {
+    pub number: u64,
+    pub source_branch: &'a str,
+    pub target_branch: &'a str,
+    pub head: &'a CommitSha,
+}
+impl ExpectedProposal<'_> {
+    /// Whether `info` is still this bot's unchanged, open proposal.
+    pub fn matches(&self, info: &MergeRequestInfo, bot_login: &str) -> bool {
+        info.number == self.number
+            && info.author_login == bot_login
+            && self.source_branch.starts_with("artidezi/")
+            && info.source_branch == self.source_branch
+            && info.target_branch == self.target_branch
+            && info.head_commit == *self.head
+            && info.state == MergeRequestState::Open
+    }
+}
+
 pub trait ForgeAdapter: Send + Sync {
     /// Repository paths that define what this forge's CI runs. Publishing a change under any of
     /// them needs human authorization. Required, so that a new adapter has to decide.
@@ -293,6 +314,16 @@ pub trait ForgeAdapter: Send + Sync {
         title: &str,
         body: &str,
     ) -> Result<()>;
+    /// Comments on and closes exactly the expected open proposal the bot opened from an
+    /// `artidezi/` branch, refusing before any write if it differs.
+    fn close_merge_request(
+        &self,
+        _remote: &str,
+        _expected: &ExpectedProposal<'_>,
+        _comment: &str,
+    ) -> Result<()> {
+        Err(ForgeError::Other("closing proposals is unsupported".into()))
+    }
     fn get_merge_request(&self, remote: &str, number: u64) -> Result<MergeRequestInfo>;
     /// Complete open listing for discovery. Providers may avoid fetching details and checks here;
     /// the caller must fetch a full merge request before preparing new work.

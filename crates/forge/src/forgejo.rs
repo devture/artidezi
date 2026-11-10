@@ -406,6 +406,64 @@ impl ForgeAdapter for ForgejoForge {
         Ok(())
     }
 
+    fn close_merge_request(
+        &self,
+        remote: &str,
+        expected: &ExpectedProposal<'_>,
+        comment: &str,
+    ) -> Result<()> {
+        let (owner, repo) = Self::split(remote)?;
+        let number = expected.number;
+        // Forgejo has no conditional close, so the proposal is rechecked right before each write.
+        let require_expected = || {
+            let current = self.get_merge_request(remote, number)?;
+            if expected.matches(&current, &self.bot_login) {
+                Ok(())
+            } else {
+                Err(ForgeError::Other(
+                    "proposal is foreign, closed or changed; refusing to close it".into(),
+                ))
+            }
+        };
+        require_expected()?;
+        self.send_json(
+            "POST",
+            &format!("/repos/{owner}/{repo}/issues/{number}/comments"),
+            &json!({ "body": comment }),
+        )?;
+        require_expected()?;
+        let pull: PullResponse = serde_json::from_str(&self.send_json(
+            "PATCH",
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            &json!({"state": "closed"}),
+        )?)
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+        if pull.number == number && !pull.merged && pull.head.sha != expected.head.as_str() {
+            // A push landed after the last check, so the close hit a newer head that is not ours to close.
+            let reopened = self
+                .send_json(
+                    "PATCH",
+                    &format!("/repos/{owner}/{repo}/pulls/{number}"),
+                    &json!({"state": "open"}),
+                )
+                .is_ok()
+                && self
+                    .get_merge_request(remote, number)
+                    .is_ok_and(|pull| pull.state == MergeRequestState::Open);
+            return Err(ForgeError::Other(if reopened {
+                "proposal moved while it was being closed; reopened it for human review".into()
+            } else {
+                "proposal moved while it was being closed and could not be reopened; reopen it by hand".into()
+            }));
+        }
+        if pull.number != number || pull.state != "closed" || pull.merged {
+            return Err(ForgeError::Other(
+                "forge did not confirm closing the expected proposal".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn get_merge_request(&self, remote: &str, number: u64) -> Result<MergeRequestInfo> {
         let (owner, repo) = Self::split(remote)?;
         let pull: PullResponse = self.get_json(&format!("/repos/{owner}/{repo}/pulls/{number}"))?;
@@ -524,5 +582,126 @@ impl ForgeAdapter for ForgejoForge {
     fn delete_branch(&self, remote: &str, branch: &str) -> Result<()> {
         let (owner, repo) = Self::split(remote)?;
         self.delete(&format!("/repos/{owner}/{repo}/branches/{branch}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    struct Stub {
+        head: String,
+        state: &'static str,
+        push_before_close: Option<String>,
+        fail_reopen: bool,
+        comments: usize,
+    }
+
+    fn pull(stub: &Stub) -> Value {
+        json!({"number":5,"html_url":"http://forge.invalid/o/r/pulls/5","title":"Adapt","body":"","user":{"login":"artidezi"},
+            "head":{"ref":"artidezi/task","sha":stub.head},"base":{"ref":"main","sha":"b".repeat(40)},"state":stub.state,"merged":false})
+    }
+
+    /// Loopback Forgejo-shaped API for the proposal-close race; one request per connection.
+    fn serve(stub: Arc<Mutex<Stub>>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut parts = line.split_whitespace();
+                let (method, path) = (
+                    parts.next().unwrap().to_owned(),
+                    parts.next().unwrap().to_owned(),
+                );
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let mut stub = stub.lock().unwrap();
+                let (status, reply) = match (method.as_str(), path.as_str()) {
+                    ("GET", "/api/v1/repos/o/r/pulls/5") => (200, pull(&stub)),
+                    ("GET", p) if p.ends_with("/status") => {
+                        (200, json!({"state":"","statuses":[]}))
+                    }
+                    ("POST", "/api/v1/repos/o/r/issues/5/comments") => {
+                        stub.comments += 1;
+                        (201, json!({}))
+                    }
+                    ("PATCH", "/api/v1/repos/o/r/pulls/5") if body["state"] == "closed" => {
+                        if let Some(pushed) = stub.push_before_close.take() {
+                            stub.head = pushed;
+                        }
+                        stub.state = "closed";
+                        (201, pull(&stub))
+                    }
+                    ("PATCH", "/api/v1/repos/o/r/pulls/5") if stub.fail_reopen => {
+                        (422, json!({"message":"cannot reopen"}))
+                    }
+                    ("PATCH", "/api/v1/repos/o/r/pulls/5") => {
+                        stub.state = "open";
+                        (201, pull(&stub))
+                    }
+                    _ => panic!("unexpected stub request: {method} {path}"),
+                };
+                let reply = reply.to_string();
+                write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn a_push_racing_the_close_reopens_the_proposal_at_the_new_head() {
+        for fail_reopen in [false, true] {
+            let head = CommitSha("c".repeat(40));
+            let pushed = "d".repeat(40);
+            let stub = Arc::new(Mutex::new(Stub {
+                head: head.0.clone(),
+                state: "open",
+                push_before_close: Some(pushed.clone()),
+                fail_reopen,
+                comments: 0,
+            }));
+            let forge = ForgejoForge::new(&serve(stub.clone()), "token", "artidezi");
+            let expected = ExpectedProposal {
+                number: 5,
+                source_branch: "artidezi/task",
+                target_branch: "main",
+                head: &head,
+            };
+            let error = forge
+                .close_merge_request("o/r", &expected, "Superseded.")
+                .unwrap_err()
+                .to_string();
+            let stub = stub.lock().unwrap();
+            assert_eq!(stub.head, pushed);
+            assert_eq!(stub.comments, 1);
+            if fail_reopen {
+                assert!(error.contains("could not be reopened"), "{error}");
+                assert_eq!(stub.state, "closed");
+            } else {
+                assert!(error.contains("reopened it"), "{error}");
+                assert_eq!(stub.state, "open");
+            }
+        }
     }
 }
