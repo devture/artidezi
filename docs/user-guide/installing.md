@@ -134,7 +134,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    | `worker_pool` | The `worker_pools` key this worker serves |
    | `worker_id` | This worker's name under `workers` in that pool |
    | `tags` | What this worker offers, such as `docker-support`. See [Worker tags](projects.md#worker-tags) |
-   | `workspaces_root` | Where attempts run. Unique per worker |
+   | `workspaces_root` | Where attempts run, including their checkouts, builds and temporary files (`TMPDIR`). Unique per worker; size its disk for your largest builds |
    | `credentials_root` | Model credentials, by `credential_ref`. Unique per worker |
    | `poll_seconds` | How often to ask for work. Default 15 |
    | `max_log_bytes` | Limit for each captured log. Default 16 MiB |

@@ -375,11 +375,13 @@ pub fn run_attempt_cancellable(
     let repos_dir = workspace.join("repos");
     let out_dir = workspace.join("out");
     let home_dir = workspace.join("home");
-    for dir in [&task_dir, &repos_dir, &out_dir, &home_dir] {
+    // Scratch space on the workspaces disk instead of the host's /tmp, which may be a small tmpfs.
+    let tmp_dir = workspace.join("tmp");
+    for dir in [&task_dir, &repos_dir, &out_dir, &home_dir, &tmp_dir] {
         fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
-    // Logs can echo secrets, and home holds credential copies.
-    for dir in [&out_dir, &home_dir] {
+    // Logs can echo secrets, home holds credential copies, and tools write anything to tmp.
+    for dir in [&out_dir, &home_dir, &tmp_dir] {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(io_err(dir))?;
     }
     let task_document = task_dir.join("task.md");
@@ -478,6 +480,7 @@ pub fn run_attempt_cancellable(
         result_path: &result_path,
         primary_repo_dir: &primary_repo_dir,
         home: &home_dir,
+        tmp: &tmp_dir,
         credential_dir: credential_dir.as_deref(),
     };
     let common_env = artidezi_harness::common_env(&ctx);

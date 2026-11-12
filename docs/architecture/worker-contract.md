@@ -46,7 +46,18 @@ be compatible, version the affected contract and its reader/dispatcher support e
 The [daemon](../../crates/worker/src/daemon.rs) downloads the stored job bytes and authorized artifacts,
 checks their identities, and runs one attempt at a time. Heartbeats cover downloads, execution,
 uploads and reporting. A fresh
-attempt directory contains task documents, repository checkouts, temporary home/state and outputs.
+attempt directory, `<workspaces_root>/<attempt_id>/`, contains `task/` documents, `repos/`
+checkouts, a fresh `home/`, a `tmp/` scratch directory and `out/` logs and results. `home/`, `tmp/`
+and `out/` are private to the worker user (mode `0700`).
+
+Setup recipes, the harness and verification recipes run with a cleared environment: `PATH` from the
+supervisor, plus `HOME` and the `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_DATA_HOME` directories
+under it, `TMPDIR` set to `tmp/`, `ARTIDEZI_WORKSPACE`, `ARTIDEZI_TASK_DOCUMENT`,
+`ARTIDEZI_RESULT_PATH`, `ARTIDEZI_ATTEMPT_ID`, a fixed Git identity, `GIT_TERMINAL_PROMPT=0` and
+`LC_ALL=C.UTF-8`. Adapters add their own variables, such as `CODEX_HOME`. Temporary files from
+tools that honor `TMPDIR` therefore land on the workspaces disk rather than in the host's `/tmp`,
+which may be a small `tmpfs`, and disappear with the workspace. `TMP` and `TEMP` are not set; tools
+that ignore `TMPDIR`, such as the JVM's default `java.io.tmpdir`, still use `/tmp`.
 The worker credential root is separate; the selected harness can copy required model login material
 into the attempt home. Codex may rotate a ChatGPT refresh token while it runs. After the process
 exits, the worker validates a changed `auth.json`, requires the same authentication mode and account,

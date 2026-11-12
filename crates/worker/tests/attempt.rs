@@ -605,3 +605,37 @@ fn read_only_modification_is_a_violation() {
             .is_empty()
     );
 }
+
+#[test]
+fn every_stage_shares_a_private_attempt_scratch_directory() {
+    let f = fixture();
+    let (mut job, _) = make_job(&f, "att_tmp", 60);
+    let sh = |script: &str| vec!["sh".into(), "-c".into(), script.into()];
+    let repo = &mut job.repositories[0];
+    repo.setup_recipe[0].command =
+        sh("test \"$TMPDIR\" = \"$ARTIDEZI_WORKSPACE/tmp\" && touch \"$TMPDIR/setup\"");
+    repo.verification_recipe[0].command = sh("test -f \"$TMPDIR/agent\"");
+    let bytes = serde_json::to_vec_pretty(&job).unwrap();
+    let body = format!(
+        "test -f \"$TMPDIR/setup\"\n\
+         case \"$(mktemp)\" in \"$TMPDIR\"/*) ;; *) exit 9 ;; esac\n\
+         touch \"$TMPDIR/agent\"\n{}",
+        proposal_script()
+    );
+    let harness = FakeHarness {
+        script: script(&f, "agent.sh", &body),
+    };
+    let output = run_attempt(&config(&f), &harness, &inputs(&f, &job, &bytes)).unwrap();
+    let role = &output.record.repositories[0];
+    assert_eq!(role.setup[0].exit_code, Some(0), "{role:#?}");
+    assert_eq!(output.record.harness.exit_code, Some(0));
+    assert_eq!(role.verification[0].exit_code, Some(0), "{role:#?}");
+    let tmp = output.workspace.join("tmp");
+    assert_eq!(
+        fs::metadata(&tmp).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(tmp.join("agent").is_file());
+    output.cleanup().unwrap();
+    assert!(!output.workspace.exists());
+}

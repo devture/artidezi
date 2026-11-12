@@ -52,6 +52,9 @@ pub struct InvocationContext<'a> {
     pub primary_repo_dir: &'a Path,
     /// Fresh per-attempt HOME.
     pub home: &'a Path,
+    /// Fresh per-attempt scratch directory, `$TMPDIR`. A sibling of `home`, never its parent:
+    /// Codex refuses to create helper binaries in a `CODEX_HOME` under the temporary directory.
+    pub tmp: &'a Path,
     /// Directory holding the credential material named by the job's `credential_ref`, if the
     /// supervisor has it. Adapters copy what they need into the attempt's fresh state.
     pub credential_dir: Option<&'a Path>,
@@ -119,6 +122,7 @@ pub fn common_env(ctx: &InvocationContext<'_>) -> Vec<(String, String)> {
             "XDG_DATA_HOME".into(),
             ctx.home.join(".local/share").display().to_string(),
         ),
+        ("TMPDIR".into(), ctx.tmp.display().to_string()),
         (
             "ARTIDEZI_WORKSPACE".into(),
             ctx.workspace.display().to_string(),
