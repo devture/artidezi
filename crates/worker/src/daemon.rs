@@ -243,14 +243,7 @@ impl Daemon {
             self.quarantine(&attempt_id, error);
         } else {
             let _ = std::fs::remove_dir_all(&inputs_dir);
-            // Retained workspaces help debugging, but must not keep credential copies.
-            let home = self
-                .config
-                .worker
-                .workspaces_root
-                .join(&attempt_id)
-                .join("home");
-            let _ = std::fs::remove_dir_all(home);
+            scrub_retained_workspace(&self.config.worker.workspaces_root.join(&attempt_id));
         }
         match result {
             Err(WorkerError::Cancelled) => {
@@ -552,6 +545,14 @@ impl Daemon {
     }
 }
 
+/// A workspace left behind after processing helps debugging, but must not keep credential copies
+/// in `home` or arbitrary tool scratch, possibly large, in `tmp`. Checkouts and logs stay.
+fn scrub_retained_workspace(workspace: &std::path::Path) {
+    for dir in ["home", "tmp"] {
+        let _ = std::fs::remove_dir_all(workspace.join(dir));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -594,6 +595,22 @@ mod tests {
             fake_script: Some("/bin/true".into()),
         })
         .unwrap()
+    }
+
+    #[test]
+    fn retained_workspace_keeps_evidence_but_not_home_or_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("att_1");
+        for sub in ["home/.codex", "tmp/build", "repos/role", "out"] {
+            std::fs::create_dir_all(workspace.join(sub)).unwrap();
+        }
+        scrub_retained_workspace(&workspace);
+        assert!(!workspace.join("home").exists());
+        assert!(!workspace.join("tmp").exists());
+        assert!(workspace.join("repos/role").is_dir());
+        assert!(workspace.join("out").is_dir());
+        // A workspace that was never created is not an error.
+        scrub_retained_workspace(&dir.path().join("missing"));
     }
 
     #[test]
