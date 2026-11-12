@@ -156,6 +156,14 @@ heads and target commits used for the comparison; the assessment still belongs t
 If fetching or comparison cannot prove equivalence, the controller closes its own proposal with a
 comment naming the new head and evaluates that head the same way. It never closes a
 proposal that someone else changed, merged or closed, and keeps the hold after an explicit pause.
+
+After closing an obsolete adaptation, it also attempts to delete that task's recorded branch if
+repository write permission still applies and no open proposal or pending publication uses it.
+Deletion requires the branch to remain at the exact published commit; an absent branch is already
+clean, and a moved branch is left alone. Cleanup outcomes appear in task activity. A cleanup error
+does not prevent retiring the old task or evaluating the new source head. Equivalent rebases keep
+their branches. This does not clean up historical branches from merged or human-closed proposals.
+
 Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
 Unpublished results still follow the fresh-evaluation rules above, even for equivalent rebases.
 Source reviews, approvals and automatic merges always require the exact assessed commit. Revising an

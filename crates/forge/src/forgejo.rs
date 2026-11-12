@@ -142,21 +142,6 @@ impl ForgejoForge {
         Ok(body)
     }
 
-    fn delete(&self, path: &str) -> Result<()> {
-        let mut response = self
-            .agent
-            .delete(self.api(path))
-            .header("Authorization", &self.auth())
-            .call()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
-        let status = response.status().as_u16();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
-        self.check(status, &body, path)
-    }
-
     fn split(remote: &str) -> Result<(&str, &str)> {
         remote
             .split_once('/')
@@ -577,11 +562,6 @@ impl ForgeAdapter for ForgejoForge {
             return Err(ForgeError::Other(format!("tag {name} already exists")));
         }
         self.check(status, &body, &path)
-    }
-
-    fn delete_branch(&self, remote: &str, branch: &str) -> Result<()> {
-        let (owner, repo) = Self::split(remote)?;
-        self.delete(&format!("/repos/{owner}/{repo}/branches/{branch}"))
     }
 }
 

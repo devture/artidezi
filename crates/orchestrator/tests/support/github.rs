@@ -179,9 +179,6 @@ impl ForgeAdapter for LocalGit {
     fn create_tag(&self, _: &str, _: &str, _: &CommitSha) -> artidezi_forge::Result<()> {
         panic!("unexpected tag")
     }
-    fn delete_branch(&self, _: &str, _: &str) -> artidezi_forge::Result<()> {
-        panic!("unexpected delete")
-    }
 }
 
 fn reopen(w: &mut World, fixture: &Fixture) {

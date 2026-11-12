@@ -379,19 +379,19 @@ impl Orchestrator {
                 self.forge(&repo.forge)?
                     .close_merge_request(&repo.remote, &expected, &comment)?;
             }
-            if mr.state == MergeRequestState::Closed {
-                continue;
+            if mr.state != MergeRequestState::Closed {
+                mr.state = MergeRequestState::Closed;
+                mr.updated_at = Utc::now();
+                self.db.upsert_merge_request(&mr)?;
+                self.db.record_event(
+                    Some(&task.id),
+                    Some(&attempt.id),
+                    "orchestrator",
+                    "merge_request.superseded",
+                    serde_json::json!({"repository":mr.repository_id,"number":mr.number,"url":mr.url,"head":mr.head_commit,"source_head":current.head_commit}),
+                )?;
             }
-            mr.state = MergeRequestState::Closed;
-            mr.updated_at = Utc::now();
-            self.db.upsert_merge_request(&mr)?;
-            self.db.record_event(
-                Some(&task.id),
-                Some(&attempt.id),
-                "orchestrator",
-                "merge_request.superseded",
-                serde_json::json!({"repository":mr.repository_id,"number":mr.number,"url":mr.url,"head":mr.head_commit,"source_head":current.head_commit}),
-            )?;
+            self.cleanup_superseded_branch(task, &attempt.id, &policy, &mr);
         }
         Ok(Some((
             attempt.id,

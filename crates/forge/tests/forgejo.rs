@@ -301,7 +301,24 @@ fn forgejo_contract() {
 
     forge.create_tag(&remote, "v1.1.0-0", &merged).unwrap();
     assert!(forge.create_tag(&remote, "v1.1.0-0", &merged).is_err());
-    forge.delete_branch(&remote, "artidezi/test").unwrap();
+    let push_credentials = forge.git_push_credentials(&remote).unwrap();
+    cache
+        .push_with_lease(
+            &forge.clone_url(&remote),
+            ":refs/heads/artidezi/test",
+            push_credentials.as_ref(),
+            feature,
+        )
+        .unwrap();
+    // A lost deletion response can be retried with the original lease.
+    cache
+        .push_with_lease(
+            &forge.clone_url(&remote),
+            ":refs/heads/artidezi/test",
+            push_credentials.as_ref(),
+            feature,
+        )
+        .unwrap();
     assert!(matches!(
         forge.branch_head(&remote, "artidezi/test"),
         Err(ForgeError::NotFound { .. })

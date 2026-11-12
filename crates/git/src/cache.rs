@@ -91,16 +91,16 @@ impl BareCache {
         Ok(())
     }
 
-    /// Pushes one refspec. Never forces: a non-fast-forward is an error the caller handles.
+    /// Pushes one refspec. Rewrites and deletions require an explicit lease.
     pub fn push(
         &self,
         url: &str,
         refspec: &str,
         credentials: Option<&HttpsCredentials>,
     ) -> Result<()> {
-        if refspec.starts_with('+') {
+        if refspec.starts_with('+') || refspec.starts_with(':') {
             return Err(GitError::Invalid(
-                "forced push requires an explicit lease".into(),
+                "forced push or deletion requires an explicit lease".into(),
             ));
         }
         self.push_inner(url, refspec, credentials, None)
@@ -109,6 +109,7 @@ impl BareCache {
     /// Pushes only if the remote advertises exactly `expected_head` during push negotiation.
     /// Use `Oid::ZERO_SHA1` to require creation of a previously absent branch. The receive-pack
     /// update also carries this old OID, so a later concurrent update is rejected by the forge.
+    /// A deletion of an already absent ref succeeds, allowing retries with the original lease.
     pub fn push_with_lease(
         &self,
         url: &str,
@@ -137,7 +138,8 @@ impl BareCache {
                             "lease requires exactly one ref update",
                         ));
                     };
-                    if update.src() != expected {
+                    let absent_deletion = refspec.starts_with(':') && update.src().is_zero();
+                    if update.src() != expected && !absent_deletion {
                         return Err(git2::Error::from_str(&format!(
                             "push lease failed: expected {expected}, found {}",
                             update.src()

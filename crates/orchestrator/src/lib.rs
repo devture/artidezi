@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod publish;
 mod recovery;
 pub mod secrets;
+mod source_branch_cleanup;
 mod source_ci;
 mod source_publish;
 mod source_supersession;

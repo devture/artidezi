@@ -993,9 +993,6 @@ impl ForgeAdapter for GithubForge {
     fn create_tag(&self, _: &str, _: &str, _: &CommitSha) -> Result<()> {
         Err(read_only())
     }
-    fn delete_branch(&self, _: &str, _: &str) -> Result<()> {
-        Err(read_only())
-    }
 }
 
 #[derive(Deserialize)]

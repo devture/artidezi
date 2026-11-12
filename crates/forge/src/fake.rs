@@ -431,14 +431,6 @@ impl ForgeAdapter for FakeForge {
             .insert((remote.to_owned(), name.to_owned()), commit.clone());
         Ok(())
     }
-
-    fn delete_branch(&self, remote: &str, branch: &str) -> Result<()> {
-        let repo = self.open(remote)?;
-        if let Ok(mut reference) = repo.find_reference(&format!("refs/heads/{branch}")) {
-            reference.delete()?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

@@ -697,12 +697,9 @@ fn equivalent_rebases_preserve_published_adaptations_and_completed_delivery() {
             observed[0].payload,
             json!({"task":id,"frozen_head":frozen_source.input.commit,"observed_head":observed_head,"frozen_target":frozen.repositories.iter().find(|r| r.repository_id == "role").unwrap().base_commit,"fresh_target":fresh_target})
         );
-        assert!(
-            events
-                .iter()
-                .all(|e| e.kind != "assessment.superseded"
-                    && e.kind != "merge_request.close_planned")
-        );
+        assert!(events.iter().all(|e| e.kind != "assessment.superseded"
+            && e.kind != "merge_request.close_planned"
+            && !e.kind.starts_with("merge_request.branch_delet")));
         assert!(
             events
                 .iter()
@@ -1049,7 +1046,25 @@ fn published_adaptation_for_a_moved_source_is_closed_and_reassessed_within_budge
             .unwrap()
             .remove(0);
         assert_eq!(closed.state, MergeRequestState::Closed);
+        assert!(
+            w.forge
+                .ensure_repository("org/app")
+                .unwrap()
+                .find_reference(&format!("refs/heads/{}", published.source_branch))
+                .is_err()
+        );
         let events = w.orchestrator.db.list_events(&id).unwrap();
+        let planned = events
+            .iter()
+            .find(|e| e.kind == "merge_request.branch_delete_planned")
+            .unwrap();
+        let deleted = events
+            .iter()
+            .find(|e| e.kind == "merge_request.branch_deleted")
+            .unwrap();
+        assert!(planned.id < deleted.id);
+        assert_eq!(planned.payload, deleted.payload);
+        assert_eq!(deleted.payload["head"], published.head_commit);
         assert!(events.iter().any(|e| e.kind == "merge_request.superseded"
             && e.payload["number"] == published.number
             && e.payload["source_head"] == new_head.0));
@@ -1091,8 +1106,232 @@ fn published_adaptation_for_a_moved_source_is_closed_and_reassessed_within_budge
 }
 
 #[test]
+fn superseded_branch_cleanup_refuses_a_moved_branch_but_accepts_an_absent_one() {
+    for absent in [false, true] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        let new_head = move_source_head(&w, &f);
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        let branch = format!("refs/heads/{}", published.source_branch);
+        if absent {
+            repo.find_reference(&branch).unwrap().delete().unwrap();
+        } else {
+            // Git moves independently of the API's last observation. The close still sees the
+            // recorded head, but receive-pack must reject the cleanup's original lease.
+            repo.reference(
+                &branch,
+                Oid::from_str(new_head.as_str()).unwrap(),
+                true,
+                "human push",
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::Closed
+        );
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        let kind = if absent {
+            "merge_request.branch_deleted"
+        } else {
+            "merge_request.branch_delete_failed"
+        };
+        let cleanup = events.iter().find(|event| event.kind == kind).unwrap();
+        assert_eq!(cleanup.payload["head"], published.head_commit);
+        if absent {
+            assert!(repo.find_reference(&branch).is_err());
+        } else {
+            assert_eq!(repo.refname_to_id(&branch).unwrap().to_string(), new_head.0);
+            assert!(
+                cleanup.payload["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("push lease failed")
+            );
+        }
+        reopen(&mut w, &f);
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::Closed
+        );
+        assert_eq!(
+            w.orchestrator
+                .db
+                .list_events(&id)
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == kind)
+                .count(),
+            1
+        );
+        source_untouched(&f);
+    }
+}
+
+#[test]
+fn branch_cleanup_recovers_close_and_delete_crash_boundaries_without_repeating_terminal_outcomes() {
+    for boundary in [
+        "closed",
+        "planned",
+        "deleted",
+        "receipted",
+        "failed",
+        "skipped",
+    ] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        move_source_head(&w, &f);
+        let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+        w.orchestrator
+            .db
+            .record_event(
+                Some(&id),
+                Some(&attempt.id),
+                "orchestrator",
+                "merge_request.close_planned",
+                json!({"repository":published.repository_id,"number":published.number}),
+            )
+            .unwrap();
+        // Simulate loss of the close response, before updating the local receipt.
+        f.state
+            .lock()
+            .unwrap()
+            .proposals
+            .get_mut(&published.number)
+            .unwrap()["state"] = json!("closed");
+        let payload = json!({"repository":published.repository_id,"forge":published.forge,"remote":"org/app",
+            "number":published.number,"branch":published.source_branch,"head":published.head_commit});
+        if boundary != "closed" {
+            w.orchestrator
+                .db
+                .record_event(
+                    Some(&id),
+                    Some(&attempt.id),
+                    "orchestrator",
+                    "merge_request.branch_delete_planned",
+                    payload.clone(),
+                )
+                .unwrap();
+        }
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        let branch = format!("refs/heads/{}", published.source_branch);
+        if boundary == "deleted" {
+            repo.find_reference(&branch).unwrap().delete().unwrap();
+        }
+        let terminal = match boundary {
+            "receipted" => Some("merge_request.branch_deleted"),
+            "failed" => Some("merge_request.branch_delete_failed"),
+            "skipped" => Some("merge_request.branch_delete_skipped"),
+            _ => None,
+        };
+        if let Some(kind) = terminal {
+            w.orchestrator
+                .db
+                .record_event(Some(&id), Some(&attempt.id), "orchestrator", kind, payload)
+                .unwrap();
+            // Even a recreated branch at the SAME head is protected by a terminal receipt.
+            repo.find_reference(&branch).unwrap().delete().unwrap();
+            repo.reference(
+                &branch,
+                Oid::from_str(&published.head_commit).unwrap(),
+                false,
+                "recreated",
+            )
+            .unwrap();
+        }
+        reopen(&mut w, &f);
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::Closed,
+            "{boundary}"
+        );
+        assert_eq!(
+            repo.find_reference(&branch).is_ok(),
+            terminal.is_some(),
+            "{boundary}"
+        );
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.kind == "merge_request.branch_delete_planned")
+                .count(),
+            1,
+            "{boundary}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.kind == terminal.unwrap_or("merge_request.branch_deleted"))
+                .count(),
+            1,
+            "{boundary}"
+        );
+    }
+}
+
+#[test]
+fn open_proposals_and_unreceipted_publication_plans_protect_a_superseded_branch() {
+    for case in ["open_proposal", "pending_plan"] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        let new_head = move_source_head(&w, &f);
+        if case == "pending_plan" {
+            // A plan for another head of the same branch may stand for a push whose receipt was lost.
+            w.orchestrator.db.record_event(Some(&id), None, "orchestrator", "publication.planned",
+                json!({"repository":published.repository_id,"branch":published.source_branch,"head":new_head})).unwrap();
+        } else {
+            let mut state = f.state.lock().unwrap();
+            let mut other = state.proposals[&published.number].clone();
+            other["number"] = json!(published.number + 1);
+            state.proposals.insert(published.number + 1, other);
+        }
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::Closed
+        );
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        assert_eq!(
+            repo.refname_to_id(&format!("refs/heads/{}", published.source_branch))
+                .unwrap()
+                .to_string(),
+            published.head_commit
+        );
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "merge_request.branch_delete_skipped")
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.kind == "merge_request.branch_delete_planned")
+        );
+    }
+}
+
+#[test]
 fn current_changed_or_paused_adaptations_are_never_closed_automatically() {
-    for case in ["current", "pushed", "foreign", "paused"] {
+    for case in ["current", "pushed", "foreign", "paused", "read_only"] {
         let (mut w, f) = publishing_world();
         let id = published_adaptation(&mut w);
         let published = w
@@ -1102,6 +1341,17 @@ fn current_changed_or_paused_adaptations_are_never_closed_automatically() {
             .unwrap()
             .remove(0);
         match case {
+            "read_only" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .repositories
+                    .get_mut("role")
+                    .unwrap()
+                    .agent_access = artidezi_contract::common::RepositoryAccess::ReadOnly;
+            }
             "pushed" => {
                 f.state
                     .lock()

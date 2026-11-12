@@ -363,5 +363,4 @@ pub trait ForgeAdapter: Send + Sync {
         Ok(None)
     }
     fn create_tag(&self, remote: &str, name: &str, commit: &CommitSha) -> Result<()>;
-    fn delete_branch(&self, remote: &str, branch: &str) -> Result<()>;
 }

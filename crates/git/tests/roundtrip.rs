@@ -134,6 +134,51 @@ fn push_lease_refuses_a_stale_head_and_an_unexpected_existing_branch() {
 }
 
 #[test]
+fn leased_delete_requires_the_recorded_head_and_accepts_an_absent_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Repository::init(dir.path().join("source")).unwrap();
+    let first = commit_file(&source, "a", "first", "First");
+    let second = commit_file(&source, "a", "second", "Second");
+    let remote = Repository::init_bare(dir.path().join("remote.git")).unwrap();
+    let cache = BareCache::open_or_init(&dir.path().join("cache")).unwrap();
+    cache
+        .fetch(
+            source.path().to_str().unwrap(),
+            &["+refs/heads/*:refs/heads/*"],
+            None,
+        )
+        .unwrap();
+    let url = remote.path().to_str().unwrap();
+    let branch = "refs/heads/artidezi/task";
+    cache
+        .set_ref("refs/heads/candidate", second, "candidate")
+        .unwrap();
+    cache
+        .push_with_lease(
+            url,
+            &format!("refs/heads/candidate:{branch}"),
+            None,
+            Oid::ZERO_SHA1,
+        )
+        .unwrap();
+    let deletion = format!(":{branch}");
+    assert!(cache.push(url, &deletion, None).is_err());
+    let error = cache
+        .push_with_lease(url, &deletion, None, first)
+        .unwrap_err();
+    assert!(error.to_string().contains("push lease failed"), "{error}");
+    assert_eq!(remote.refname_to_id(branch).unwrap(), second);
+    cache.push_with_lease(url, &deletion, None, second).unwrap();
+    assert!(remote.find_reference(branch).is_err());
+    cache.push_with_lease(url, &deletion, None, second).unwrap();
+    assert!(remote.find_reference(branch).is_err());
+    // Retrying never adopts an OID observed from a recreated branch.
+    remote.reference(branch, first, false, "recreated").unwrap();
+    assert!(cache.push_with_lease(url, &deletion, None, second).is_err());
+    assert_eq!(remote.refname_to_id(branch).unwrap(), first);
+}
+
+#[test]
 fn full_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

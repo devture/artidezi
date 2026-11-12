@@ -269,7 +269,6 @@ fn signed_auth_scoped_tokens_reads_and_conditional_cache() {
             .is_err()
     );
     assert!(forge.create_tag("org/app", "v1", &sha).is_err());
-    assert!(forge.delete_branch("org/app", "main").is_err());
     assert_eq!(
         fixture.state.lock().unwrap().requests.len(),
         count,

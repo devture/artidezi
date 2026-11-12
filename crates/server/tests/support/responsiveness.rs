@@ -138,10 +138,6 @@ impl ForgeAdapter for GatedForge {
     fn create_tag(&self, remote: &str, name: &str, commit: &CommitSha) -> Result<()> {
         self.inner.create_tag(remote, name, commit)
     }
-
-    fn delete_branch(&self, remote: &str, branch: &str) -> Result<()> {
-        self.inner.delete_branch(remote, branch)
-    }
 }
 
 fn lease_body(worker: &str) -> serde_json::Value {
