@@ -547,9 +547,16 @@ impl Daemon {
 
 /// A workspace left behind after processing helps debugging, but must not keep credential copies
 /// in `home` or arbitrary tool scratch, possibly large, in `tmp`. Checkouts and logs stay.
+/// Best effort: a failure, such as a directory a tool made unwritable, is logged for the operator.
 fn scrub_retained_workspace(workspace: &std::path::Path) {
     for dir in ["home", "tmp"] {
-        let _ = std::fs::remove_dir_all(workspace.join(dir));
+        let path = workspace.join(dir);
+        match std::fs::remove_dir_all(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(path = %path.display(), "could not scrub retained workspace: {error}");
+            }
+            _ => {}
+        }
     }
 }
 

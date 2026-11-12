@@ -65,7 +65,8 @@ checks that the durable source did not change concurrently, and replaces it atom
 runs after cancellation or timeout. Persistence failures are recorded in the worker journal and
 harness stderr without invalidating an otherwise complete model result. Successful acknowledged work
 removes that attempt-local workspace. Any other workspace is retained for debugging without its
-`home/` (credential copies) and `tmp/` (scratch), unless the worker is quarantined.
+`home/` (credential copies) and `tmp/` (scratch), unless the worker is quarantined. This removal is
+best effort; failures are logged in the worker journal.
 
 The daemon checks the lease before execution, while working (every one-third lease duration,
 capped at 30 seconds), and before uploading. Heartbeat requests have a 10-second timeout separate
