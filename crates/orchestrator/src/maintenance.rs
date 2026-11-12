@@ -64,6 +64,22 @@ impl Orchestrator {
         if self.db.discovery_paused()? {
             return Ok(report);
         }
+        // Indexed queue, independent of task state. Do this before reconciliation so a new inline
+        // failure cannot be retried again in the same pass (including ticks with an injected time).
+        for mr in self.db.due_branch_cleanups(now, 16)? {
+            let task = self.db.get_task(&mr.task_id)?;
+            match serde_json::from_str(&task.policy_snapshot) {
+                Ok(policy) => self.cleanup_proposal_branch(&task, None, &policy, &mr, now),
+                Err(error) => {
+                    self.db.record_event(Some(&task.id), None, "orchestrator",
+                        "merge_request.branch_delete_failed", serde_json::json!({
+                            "repository": mr.repository_id, "number": mr.number,
+                            "branch": mr.source_branch, "head": mr.head_commit, "reason": error.to_string()
+                        }))?;
+                    self.db.finish_branch_cleanup(&mr)?;
+                }
+            }
+        }
         report.errors.extend(self.recover_held_execution()?);
         if let Some(policy) = &self.config.instance.artifact_retention
             && now
@@ -202,6 +218,9 @@ impl Orchestrator {
         };
         mr.updated_at = now;
         self.db.upsert_merge_request(&mr)?;
+        if mr.state == MergeRequestState::Merged {
+            self.cleanup_proposal_branch(task, None, &policy, &mr, now);
+        }
         self.db.record_event(Some(&task.id), None, "orchestrator", "publication.retired_state_observed", serde_json::json!({"repository": mr.repository_id, "number": mr.number, "state": mr.state}))?;
         Ok(())
     }

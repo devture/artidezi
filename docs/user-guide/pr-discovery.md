@@ -162,7 +162,10 @@ repository write permission still applies and no open proposal or pending public
 Deletion requires the branch to remain at the exact published commit; an absent branch is already
 clean, and a moved branch is left alone. Cleanup outcomes appear in task activity. A cleanup error
 does not prevent retiring the old task or evaluating the new source head. Equivalent rebases keep
-their branches. This does not clean up historical branches from merged or human-closed proposals.
+their open branches. When an adaptation is merged, ArtiDezi also cleans up its recorded branch under
+the same guards, even when other repositories still await review. Temporary cleanup failures retry
+after delivery completes; see [proposal branch cleanup](tasks.md#proposal-branch-cleanup).
+Historical branches and human-closed proposals are not swept.
 
 Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
 Unpublished results still follow the fresh-evaluation rules above, even for equivalent rebases.

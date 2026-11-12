@@ -248,6 +248,18 @@ fn forgejo_vertical_slice() {
         forge.branch_head(&remote, "main").unwrap().as_str(),
         mr.head_commit
     );
+    assert!(matches!(
+        forge.branch_head(&remote, &mr.source_branch),
+        Err(ForgeError::NotFound { .. })
+    ));
+    assert!(
+        orchestrator
+            .db
+            .list_events(&task.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "merge_request.branch_deleted")
+    );
 
     // Automerge: waits for a green status, then merges and tags.
     let selection = TaskSelection {
@@ -281,6 +293,18 @@ fn forgejo_vertical_slice() {
     assert_eq!(
         forge.branch_head(&remote, "main").unwrap().as_str(),
         mr2.head_commit
+    );
+    assert!(matches!(
+        forge.branch_head(&remote, &mr2.source_branch),
+        Err(ForgeError::NotFound { .. })
+    ));
+    assert!(
+        orchestrator
+            .db
+            .list_events(&task2.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "merge_request.branch_deleted")
     );
     let tagged = orchestrator
         .db

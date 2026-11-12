@@ -952,7 +952,7 @@ JSON
             .state,
         artidezi_forge::MergeRequestState::Open
     );
-    for p in proposals {
+    for (index, p) in proposals.iter().enumerate() {
         let remote = if p.repository_id == "role" {
             "org/role"
         } else {
@@ -962,10 +962,33 @@ JSON
             .merge(
                 remote,
                 p.number,
-                &artidezi_contract::common::CommitSha(p.head_commit),
+                &artidezi_contract::common::CommitSha(p.head_commit.clone()),
                 MergeMethod::Merge,
             )
             .unwrap();
+        assert_eq!(
+            w.orchestrator.reconcile_task(&task).unwrap(),
+            if index == 0 {
+                TaskState::AwaitingReview
+            } else {
+                TaskState::Done
+            }
+        );
+        for (other_index, other) in proposals.iter().enumerate() {
+            let remote = if other.repository_id == "role" {
+                "org/role"
+            } else {
+                "org/playbook"
+            };
+            assert_eq!(
+                w.forge
+                    .ensure_repository(remote)
+                    .unwrap()
+                    .find_reference(&format!("refs/heads/{}", other.source_branch))
+                    .is_err(),
+                other_index <= index
+            );
+        }
     }
     assert_eq!(
         w.orchestrator.reconcile_task(&task).unwrap(),

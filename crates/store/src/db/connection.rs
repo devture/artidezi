@@ -35,6 +35,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012_worker_recovery.sql"),
     include_str!("../migrations/0013_transient_recovery.sql"),
     include_str!("../migrations/0014_worker_offers.sql"),
+    include_str!("../migrations/0015_proposal_branch_cleanup.sql"),
 ];
 
 /// Brings the schema up to date in one transaction. `user_version` counts the applied migrations.
@@ -1146,7 +1147,8 @@ impl ConnectionDb {
     // ----- merge requests ----------------------------------------------------------------------
 
     pub fn upsert_merge_request(&mut self, mr: &PublishedMergeRequest) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO merge_requests (task_id, repository_id, forge, number, url, source_branch,
                                          head_commit, state, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -1165,6 +1167,74 @@ impl ConnectionDb {
                 mr.state.as_str(),
                 ts(mr.updated_at),
             ],
+        )?;
+        if mr.state == MergeRequestState::Merged {
+            tx.execute(
+                "INSERT OR IGNORE INTO proposal_branch_cleanups
+                 (task_id, repository_id, number, receipt, next_attempt_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    mr.task_id,
+                    mr.repository_id,
+                    mr.number as i64,
+                    serde_json::to_string(mr)?,
+                    ts(mr.updated_at)
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn due_branch_cleanups(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<PublishedMergeRequest>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT receipt FROM proposal_branch_cleanups
+             WHERE next_attempt_at IS NOT NULL AND next_attempt_at <= ?1
+             ORDER BY next_attempt_at, task_id, repository_id, number LIMIT ?2",
+        )?;
+        stmt.query_map(params![ts(now), limit], |row| row.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect()
+    }
+
+    /// Reserve the next try before any I/O. The original receipt and lease never change.
+    pub fn begin_branch_cleanup(
+        &mut self,
+        mr: &PublishedMergeRequest,
+        now: DateTime<Utc>,
+    ) -> Result<Option<(PublishedMergeRequest, u32)>> {
+        let tx = self.conn.transaction()?;
+        let pending: Option<(String, u32)> = tx
+            .query_row(
+                "UPDATE proposal_branch_cleanups SET attempts = attempts + 1, next_attempt_at = ?4
+             WHERE task_id = ?1 AND repository_id = ?2 AND number = ?3
+               AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?5
+             RETURNING receipt, attempts",
+                params![
+                    mr.task_id,
+                    mr.repository_id,
+                    mr.number as i64,
+                    ts(now + Duration::seconds(60)),
+                    ts(now)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        tx.commit()?;
+        pending
+            .map(|(receipt, attempts)| Ok((serde_json::from_str(&receipt)?, attempts)))
+            .transpose()
+    }
+
+    pub fn finish_branch_cleanup(&self, mr: &PublishedMergeRequest) -> Result<()> {
+        self.conn.execute(
+            "UPDATE proposal_branch_cleanups SET next_attempt_at = NULL
+             WHERE task_id = ?1 AND repository_id = ?2 AND number = ?3",
+            params![mr.task_id, mr.repository_id, mr.number as i64],
         )?;
         Ok(())
     }

@@ -26,6 +26,8 @@ use git2::{Oid, Repository};
 mod discovery;
 #[path = "support/github.rs"]
 mod github;
+#[path = "support/proposal_branch_cleanup.rs"]
+mod proposal_branch_cleanup;
 
 #[test]
 fn lost_execution_reuses_frozen_inputs_and_recovers_without_forge_access() {
@@ -573,6 +575,13 @@ fn retention_keeps_open_proposals_and_unpublished_worker_evidence() {
     assert_eq!(
         w.orchestrator.db.list_merge_requests(&task.id).unwrap()[0].state,
         MergeRequestState::Merged
+    );
+    assert!(
+        w.forge
+            .ensure_repository("org/role")
+            .unwrap()
+            .find_reference(&format!("refs/heads/{}", mr.source_branch))
+            .is_err()
     );
     assert!(w.orchestrator.artifacts.contains(&record_ref));
     assert!(w.orchestrator.artifacts.contains(&attempt.result.unwrap()));
@@ -1194,6 +1203,18 @@ fn automerge_waits_for_green_checks_and_tags() {
         mr.head_commit
     );
     let repo = Repository::open_bare(forge.repo_path("org/role")).unwrap();
+    assert!(
+        repo.find_reference(&format!("refs/heads/{}", mr.source_branch))
+            .is_err()
+    );
+    assert!(
+        w.orchestrator
+            .db
+            .list_events(&task.id)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "merge_request.branch_deleted")
+    );
     let tags: Vec<String> = repo
         .references_glob("refs/tags/*")
         .unwrap()

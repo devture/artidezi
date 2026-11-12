@@ -400,6 +400,26 @@ impl Db {
         self.connection().upsert_merge_request(mr)
     }
 
+    pub fn due_branch_cleanups(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<PublishedMergeRequest>> {
+        self.connection().due_branch_cleanups(now, limit)
+    }
+
+    pub fn begin_branch_cleanup(
+        &self,
+        mr: &PublishedMergeRequest,
+        now: DateTime<Utc>,
+    ) -> Result<Option<(PublishedMergeRequest, u32)>> {
+        self.connection().begin_branch_cleanup(mr, now)
+    }
+
+    pub fn finish_branch_cleanup(&self, mr: &PublishedMergeRequest) -> Result<()> {
+        self.connection().finish_branch_cleanup(mr)
+    }
+
     pub fn get_merge_request(
         &self,
         task_id: &str,

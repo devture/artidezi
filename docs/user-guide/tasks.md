@@ -84,6 +84,21 @@ For multi-repository work, inspect all proposals and their combined tests. A pas
 does not promise that every deployment can tolerate merging the PRs in either order. A task becomes
 done after its required publication lifecycle completes; partial publication failure needs attention.
 
+## Proposal branch cleanup
+
+After observing a merge of its own proposal, ArtiDezi attempts to delete that task's recorded
+`artidezi/<task_id>` branch. This applies to human merges and automatic delivery. In tasks spanning
+several repositories, each merged proposal's branch can be removed while the others await review.
+
+Deletion requires current repository write/publication permission and the exact published commit.
+A branch someone moved is kept; a branch already removed by the forge counts as cleaned up.
+Open proposals or unresolved publication plans also protect the branch. Cleanup outcomes appear
+in task activity and never prevent the task becoming done. Temporary cleanup failures get up to
+three attempts, at least one minute apart, including after the task is done and across restarts.
+A final skipped or failed outcome leaves the branch for manual inspection; it is never retried
+against a branch recreated later. Instance discovery pause suspends pending cleanup too.
+This does not sweep historical branches or branches from human-closed proposals.
+
 ## Revise or close
 
 For a pool with [automatic lost-execution recovery](operations.md#lost-execution-recovery-and-multiple-workers)

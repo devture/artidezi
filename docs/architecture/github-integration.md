@@ -69,8 +69,8 @@ grant approval and merge capabilities, derived only from opted-in source handler
 are allowed for configured projects, while publication, tags and branch deletion remain controlled by
 explicit project effects. The Git push boundary asks for scoped
 publication credentials; worker documents contain none of them.
-Supersession branch cleanup uses those same single-repository publication credentials and Git's
-exact-head lease on both GitHub and Forgejo. The GitHub publication token already requires
+Superseded and merged proposal branch cleanup uses those same single-repository publication
+credentials and Git's exact-head lease on both GitHub and Forgejo. The GitHub publication token already requires
 Contents write; cleanup adds no App permission and does not use an unconditional REST ref deletion.
 
 An explicitly authorized source proposal that changes `.github/workflows` uses a third token cache.
@@ -103,7 +103,9 @@ recreated Git objects: retain caches alongside durable state until publication r
 objects fail safely. Fresh evaluation/resume checks all planned branches for open proposals,
 including lost receipts. It cannot create replacement tasks while those proposals remain open.
 
-After delivery, reconciliation observes human merges of the recorded proposal heads. A moved source
+After delivery, reconciliation observes human merges of the recorded proposal heads and attempts
+leased cleanup of their branches. Cleanup is independent of delivery success and can retry after
+the task becomes done; see [proposal cleanup](lifecycle.md#proposal-branch-cleanup). A moved source
 can also close owned obsolete proposals and attempt leased cleanup of their recorded branches;
 [supersession](pr-discovery.md) describes the ownership, recovery and nonblocking failure rules.
 Changed proposals require attention. Source approval/merge is a separate path; there is no automatic source

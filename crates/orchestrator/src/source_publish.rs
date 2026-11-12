@@ -983,6 +983,9 @@ impl Orchestrator {
             };
             mr.updated_at = Utc::now();
             self.db.upsert_merge_request(mr)?;
+            if mr.state == MergeRequestState::Merged {
+                self.cleanup_proposal_branch(task, Some(&attempt.id), policy, mr, Utc::now());
+            }
         }
         if !proposals.is_empty()
             && proposals

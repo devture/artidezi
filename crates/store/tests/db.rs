@@ -16,6 +16,64 @@ fn artifact(c: char) -> ArtifactRef {
 }
 
 #[test]
+fn merged_branch_cleanup_queue_is_bounded_persistent_and_never_refreshes_a_lease() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.sqlite");
+    let mut db = Db::open(&path).unwrap();
+    let t = task();
+    db.insert_task(&t).unwrap();
+    let now = Utc::now();
+    for number in 1..=20 {
+        db.upsert_merge_request(&PublishedMergeRequest {
+            task_id: t.id.clone(),
+            repository_id: format!("repo-{number:02}"),
+            forge: "local".into(),
+            number,
+            url: format!("https://forge.invalid/proposals/{number}"),
+            source_branch: format!("artidezi/{}", t.id),
+            head_commit: "a".repeat(40),
+            state: MergeRequestState::Merged,
+            updated_at: now,
+        })
+        .unwrap();
+    }
+    assert!(
+        db.due_branch_cleanups(now - Duration::seconds(1), 16)
+            .unwrap()
+            .is_empty()
+    );
+    let due = db.due_branch_cleanups(now, 16).unwrap();
+    assert_eq!(due.len(), 16);
+    let original = due[0].clone();
+    assert_eq!(
+        db.begin_branch_cleanup(&original, now).unwrap(),
+        Some((original.clone(), 1))
+    );
+    assert!(db.begin_branch_cleanup(&original, now).unwrap().is_none());
+    let mut changed = original.clone();
+    changed.head_commit = "b".repeat(40);
+    db.upsert_merge_request(&changed).unwrap();
+    drop(db);
+    let mut db = Db::open(&path).unwrap();
+    assert_eq!(
+        db.begin_branch_cleanup(&changed, now + Duration::seconds(60))
+            .unwrap(),
+        Some((original.clone(), 2))
+    );
+    db.finish_branch_cleanup(&original).unwrap();
+    db.upsert_merge_request(&changed).unwrap();
+    let later = now + Duration::days(1);
+    assert!(db.begin_branch_cleanup(&changed, later).unwrap().is_none());
+    assert_eq!(db.due_branch_cleanups(later, 100).unwrap().len(), 19);
+    assert!(
+        !db.due_branch_cleanups(later, 100)
+            .unwrap()
+            .iter()
+            .any(|mr| mr.repository_id == original.repository_id)
+    );
+}
+
+#[test]
 fn worker_drain_cooldown_and_bounded_recovery_survive_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.sqlite");

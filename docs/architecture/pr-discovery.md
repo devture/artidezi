@@ -203,21 +203,23 @@ equivalent ones, then checks planned branches for open PRs before creating anoth
 checks. Retained open proposals therefore block both replacement routes. Human merges are observed without
 source-merge or tag effects. See [GitHub internals](github-integration.md#scoped-publication).
 
-After each supersession close, the controller attempts branch cleanup inline before retiring the
-task. It confirms the bot-owned proposal is closed at the receipt's head, checks current repository
-write authority, and refuses cleanup if an open proposal or unresolved publication plan uses the
+After each supersession close or observed adaptation merge, the controller attempts branch cleanup
+inline. It confirms the bot-owned proposal is closed or merged, respectively, at the receipt's head,
+checks current repository write authority, and refuses cleanup if an open proposal or unresolved publication plan uses the
 branch. Only the receipt's exact `artidezi/<task_id>` branch in its frozen forge/repository is eligible.
 `merge_request.branch_delete_planned` records that identity and head before a Git deletion through
 the bare cache, using publication credentials and an exact-head lease. An absent branch succeeds;
 a moved branch is refused without adopting its new head. `merge_request.branch_deleted`,
 `merge_request.branch_delete_skipped` or `merge_request.branch_delete_failed` records the outcome.
-Cleanup failures are logged and never block task retirement or the next assessment.
+Cleanup failures are logged and never block task retirement, completed delivery or the next assessment.
 
-Inline cleanup reuses the close plan and ownership checks, without a separate cleanup scheduler.
+Supersession cleanup reuses the close plan and ownership checks.
 A crash before its terminal outcome can retry only the original receipt/lease, including when the
 delete succeeded but its response was lost. A recorded terminal outcome is never retried, protecting
-branches recreated afterward. This is scoped supersession cleanup, not a sweep of historical,
-human-closed or merged proposal branches. Equivalent rebases retain their open proposals and branches.
+branches recreated afterward. Merged proposals use the same guards and a bounded durable cleanup
+queue, including partial merges in multi-repository tasks; see [proposal cleanup](lifecycle.md#proposal-branch-cleanup).
+There is no sweep of historical or human-closed proposal branches. Equivalent rebases retain their
+open proposals and branches until merged or superseded.
 
 Source approval/merge uses the additional policy and recovery gates described in GitHub internals.
 Issue intake and comment commands remain future work.

@@ -391,7 +391,7 @@ impl Orchestrator {
                     serde_json::json!({"repository":mr.repository_id,"number":mr.number,"url":mr.url,"head":mr.head_commit,"source_head":current.head_commit}),
                 )?;
             }
-            self.cleanup_superseded_branch(task, &attempt.id, &policy, &mr);
+            self.cleanup_proposal_branch(task, Some(&attempt.id), &policy, &mr, Utc::now());
         }
         Ok(Some((
             attempt.id,

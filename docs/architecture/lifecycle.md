@@ -63,6 +63,39 @@ are nevertheless not atomic. A failure after one PR is created preserves that pr
 task to human attention. Do not assume retrying an arbitrary failed HTTP call is safe. Reconciliation
 and ownership checks matter before any retry of a forge side effect.
 
+## Proposal branch cleanup
+
+Every recorded proposal observed as merged queues cleanup in the same SQLite transaction as its
+merged receipt. This covers human merges, manual-task automerge and the retired-proposal refresh
+used by artifact retention. Cleanup runs inline when possible, for each repository separately;
+unmerged proposals retain their branches. Cleanup cannot prevent `done` or change tag/delivery
+success. Source approval/merge acts on an incoming PR rather than an owned published proposal and
+does not request branch deletion.
+
+The shared [cleanup helper](../../crates/orchestrator/src/proposal_branch_cleanup.rs) also serves
+supersession closes. It rechecks frozen repository identity, current publication/write authority,
+bot ownership, source branch, target, recorded head and the expected terminal proposal state.
+Open proposals and the owning task's unreceipted publication plans protect the branch. A durable
+`merge_request.branch_delete_planned` precedes deletion through publication Git credentials and an
+exact-head lease. An absent branch succeeds, including forge automatic branch deletion on merge.
+A moved branch is refused without adopting its observed head.
+
+Merged cleanup has at most three attempts, one minute apart. The queue stores an immutable receipt;
+each attempt reserves its next deadline and consumes its budget before forge/Git I/O, so restarts
+cannot reset the lease, budget or cadence. Maintenance selects at most 16 due rows through an index,
+even for terminal tasks, without scanning task event histories. As with other forge maintenance,
+instance discovery pause suspends processing. Temporary read/push failures record
+`merge_request.branch_delete_retry_scheduled`; authority/ownership refusals, stale leases and
+exhausted attempts finish with a skipped or failed outcome. A crash after the third reserved try
+can leave one final bookkeeping pass, which records exhaustion without another forge/Git attempt.
+
+An unfinished deletion plan retries only its original lease, including when deletion succeeded but
+its response was lost. Terminal deleted/skipped/failed events precede queue completion; a crash
+between them completes bookkeeping without touching a recreated branch. Completed queue rows
+prevent repeated merge observations from enqueuing cleanup again. Supersession closes retain their
+existing inline crash recovery and do not gain failure retries. No migration backfills historical
+merges, and human-closed proposals and incoming source branches are not swept.
+
 ## Source-PR workflow
 
 Discovered tasks freeze an additional source head. Dry-run handlers record the assessment without

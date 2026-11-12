@@ -789,6 +789,13 @@ impl Orchestrator {
                         mr.updated_at = Utc::now();
                         self.db.upsert_merge_request(&mr)?;
                     }
+                    self.cleanup_proposal_branch(
+                        &task,
+                        Some(&attempt.id),
+                        &policy,
+                        &mr,
+                        Utc::now(),
+                    );
                     // Runs on every pass until recorded, so a failed tag is retried.
                     if let (Some(result), Some(collection)) =
                         (&result, collection_for(&mr.repository_id))
@@ -842,6 +849,13 @@ impl Orchestrator {
                         "merge_request.automerged",
                         serde_json::json!({"repository": mr.repository_id, "number": mr.number, "commit": merged}),
                     )?;
+                    self.cleanup_proposal_branch(
+                        &task,
+                        Some(&attempt.id),
+                        &policy,
+                        &mr,
+                        Utc::now(),
+                    );
                     if let (Some(result), Some(collection)) =
                         (&result, collection_for(&mr.repository_id))
                     {

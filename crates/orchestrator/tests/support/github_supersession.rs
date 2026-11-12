@@ -765,6 +765,68 @@ fn equivalent_rebases_preserve_published_adaptations_and_completed_delivery() {
 }
 
 #[test]
+fn human_merged_adaptation_cleans_up_its_branch_without_changing_delivery_success() {
+    for case in ["unchanged", "absent", "moved"] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        {
+            let mut state = f.state.lock().unwrap();
+            let proposal = state.proposals.get_mut(&published.number).unwrap();
+            proposal["state"] = json!("closed");
+            proposal["merged"] = json!(true);
+        }
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        let branch = format!("refs/heads/{}", published.source_branch);
+        let moved = repo
+            .find_commit(Oid::from_str(&published.head_commit).unwrap())
+            .unwrap()
+            .parent_id(0)
+            .unwrap();
+        if case == "absent" {
+            repo.find_reference(&branch).unwrap().delete().unwrap();
+        }
+        if case == "moved" {
+            repo.reference(&branch, moved, true, "human push after merge")
+                .unwrap();
+        }
+        assert_eq!(w.orchestrator.reconcile_task(&id).unwrap(), TaskState::Done);
+        if case == "moved" {
+            assert_eq!(repo.refname_to_id(&branch).unwrap(), moved);
+        } else {
+            assert!(repo.find_reference(&branch).is_err());
+        }
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        let planned = events
+            .iter()
+            .find(|e| e.kind == "merge_request.branch_delete_planned")
+            .unwrap();
+        let outcome = events
+            .iter()
+            .find(|e| {
+                e.kind
+                    == if case == "moved" {
+                        "merge_request.branch_delete_failed"
+                    } else {
+                        "merge_request.branch_deleted"
+                    }
+            })
+            .unwrap();
+        assert!(planned.id < outcome.id);
+        assert_eq!(outcome.payload["head"], published.head_commit);
+        assert_eq!(outcome.payload["state"], "merged");
+        reopen(&mut w, &f);
+        assert_eq!(w.orchestrator.reconcile_task(&id).unwrap(), TaskState::Done);
+        source_untouched(&f);
+    }
+}
+
+#[test]
 fn a_merged_adaptation_can_be_observed_together_with_its_equivalent_rebase() {
     for held in [false, true] {
         let (mut w, f) = publishing_world();

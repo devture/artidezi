@@ -23,15 +23,17 @@ Proposals are pushed as `artidezi/<task>` branches in the target repository, so 
 them before anyone reviews them. Securing that CI is the operator's job: see
 [Prepare the repository's CI](../user-guide/projects.md#prepare-the-repositorys-ci).
 
-Supersession cleanup can delete only the task's recorded `artidezi/<task_id>` branch after its
-bot-owned proposal is confirmed closed at the recorded head. Frozen forge/repository identity and
-current publication/write policy still apply; open proposals and unresolved publication plans protect
+Proposal cleanup can delete only the task's recorded `artidezi/<task_id>` branch after its
+bot-owned proposal is confirmed merged, or closed by supersession, at the recorded head. Frozen
+forge/repository identity and current publication/write policy still apply; open proposals and unresolved publication plans protect
 the branch. The controller uses publication Git credentials with an exact-head lease, never an
 unconditional forge deletion or a lease refreshed from a newly observed head. Already absent refs
 are successful cleanup. Durable plans permit crash recovery with the original lease; terminal
-deleted/skipped/failed outcomes prevent later retries against recreated branches. Cleanup errors
-do not widen the lease or block retiring obsolete work. Forge state and local events are not one
-transaction: proposal creation or reopening can still race the final read, while the Git lease
+deleted/skipped/failed outcomes prevent later retries against recreated branches. Merged receipts
+atomically enqueue bounded cleanup independently of task state; retries keep that immutable receipt,
+including its head, and recheck current authority. See [retry limits](lifecycle.md#proposal-branch-cleanup).
+Cleanup errors do not widen the lease or block successful delivery or retiring obsolete work.
+Forge state and local events are not one transaction: proposal creation or reopening can still race the final read, while the Git lease
 protects concurrent branch-head updates.
 
 `read_only`, allowed paths and expected commits are output checks; they do not implement operating
