@@ -81,58 +81,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+        # skopeo copies either architecture's archive without running it.
+        arch: [amd64, arm64]
+    runs-on: ubuntu-26.04
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image-${{ matrix.arch }}
           path: ${{ runner.temp }}/image
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # skopeo reads the credentials this writes to ~/.docker/config.json.
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Pushes the archive with skopeo, not through the runner's Docker image store, so the published
+      # manifest is the same plain single-platform manifest with either store (classic or containerd).
       - name: Publish or reuse the exact tested platform image
         env:
           ARCH: ${{ matrix.arch }}
           BASE: ${{ needs.prepare.outputs.base }}
-          IMAGE: ghcr.io/devture/artidezi
-          ARCHIVE: ${{ runner.temp }}/image/image-${{ matrix.arch }}.tar
-          DIGEST_FILE: ${{ runner.temp }}/${{ matrix.arch }}.digest
-        run: |
-          docker image load --input "$ARCHIVE"
-          actual=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' artidezi:candidate)
-          test "$actual" = "linux/$ARCH"
-          arch_image="$IMAGE:$BASE-$ARCH"
-          image_id=$(docker image inspect --format '{{.Id}}' artidezi:candidate)
-          if docker buildx imagetools inspect --raw "$arch_image" > "$RUNNER_TEMP/existing.json" 2> "$RUNNER_TEMP/inspect-error"; then
-            # Never overwrite a version/SHA tag with different image content on reruns.
-            existing_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["config"]["digest"])' < "$RUNNER_TEMP/existing.json")
-            test "$existing_id" = "$image_id"
-            digest=$(docker buildx imagetools inspect "$arch_image" --format '{{.Manifest.Digest}}')
-            printf '%s@%s\n' "$IMAGE" "$digest" > "$DIGEST_FILE"
-          else
-            cat "$RUNNER_TEMP/inspect-error"
-            # Network/authentication errors must fail closed rather than overwrite tags.
-            python3 -c 'import pathlib,re,sys; sys.exit(not re.search(r"manifest unknown|not found", pathlib.Path(sys.argv[1]).read_text()))' "$RUNNER_TEMP/inspect-error"
-            docker image tag artidezi:candidate "$arch_image"
-            docker image push "$arch_image"
-            docker image inspect "$arch_image" > "$RUNNER_TEMP/pushed-image.json"
-            python3 - <<'PYTHON'
-          import json, os, pathlib, re
-          metadata = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'pushed-image.json').read_text())[0]
-          pattern = re.escape(os.environ['IMAGE']) + r'@sha256:[0-9a-f]{64}'
-          references = {ref for ref in metadata['RepoDigests'] if re.fullmatch(pattern, ref)}
-          assert len(references) == 1, 'Expected one digest for the published repository'
-          pathlib.Path(os.environ['DIGEST_FILE']).write_text(references.pop() + '\n')
-          PYTHON
-          fi
+        run: >-
+          python3 release/publish-platform.py --arch "$ARCH"
+          --archive "$RUNNER_TEMP/image/image-$ARCH.tar"
+          --repository ghcr.io/devture/artidezi --tag "$BASE-$ARCH"
+          --digest-file "$RUNNER_TEMP/$ARCH.digest"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
