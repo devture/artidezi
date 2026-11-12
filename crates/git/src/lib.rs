@@ -12,6 +12,7 @@
 
 pub mod bundle;
 pub mod cache;
+pub mod equivalence;
 pub mod publish;
 pub mod series;
 pub mod workspace;
