@@ -547,6 +547,17 @@ mod tests {
         source.observed_head = "b".repeat(40);
         source.status = "Waiting for settle window".into();
         assert_eq!(evaluation_status(&source, Some(&task), true).0, "Waiting");
+
+        // Reconciliation/discovery store this status for a delivered adaptation whose source
+        // rebase was proven equivalent, while retaining the task's original frozen head.
+        source.status = "This head has already been evaluated".into();
+        assert_eq!(evaluation_status(&source, Some(&task), true).0, "Evaluated");
+        task.state = TaskState::AwaitingReview;
+        source.status = "Published adaptations await review".into();
+        assert_eq!(
+            evaluation_status(&source, Some(&task), true).0,
+            "Ready for review"
+        );
     }
 
     #[test]

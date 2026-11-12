@@ -1,22 +1,141 @@
 // SPDX-FileCopyrightText: 2026 Slavi Pantaleev
 // SPDX-License-Identifier: Apache-2.0
 
-//! Retire a result for an obsolete source head, closing this task's own published adaptations
-//! first. Never replay that result or reset its source budget; discovery must freeze and assess
-//! the new revision before any publication.
+//! Preserve published adaptations across proven source rebases; otherwise retire obsolete work.
+//! Equivalence never authorizes publication or replays a result against a different source head.
 
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_contract::{
     common::{CommitSha, Outcome},
     result::AgentResult,
 };
-use artidezi_forge::{ExpectedProposal, MergeRequestState as RemoteState};
+use artidezi_forge::{ExpectedProposal, MergeRequestInfo, MergeRequestState as RemoteState};
 use artidezi_store::model::*;
 use chrono::{Duration, Utc};
 
 use crate::{Orchestrator, OrchestratorError, Result};
 
 impl Orchestrator {
+    /// Durable equivalence applies only to delivered adaptations, never source reviews or dry runs.
+    pub(crate) fn equivalent_adaptation_head(&self, task: &Task, head: &CommitSha) -> Result<bool> {
+        let Some(source) = crate::discovery::source_of(task)? else {
+            return Ok(false);
+        };
+        Ok(!self.db.list_merge_requests(&task.id)?.is_empty()
+            && self.db.list_events(&task.id)?.iter().any(|event| {
+                event.kind == "source.equivalent_head_observed"
+                    && event.payload["task"] == task.id
+                    && event.payload["frozen_head"] == source.input.commit.as_str()
+                    && event.payload["observed_head"] == head.as_str()
+            }))
+    }
+
+    /// Read-only Git proof, followed by local evidence. Callers still verify proposal ownership
+    /// and state. Any unavailable or ambiguous Git evidence falls back to normal supersession.
+    pub(crate) fn preserve_equivalent_adaptation(
+        &mut self,
+        task: &Task,
+        policy: &ResolvedProjectPolicy,
+        current: &MergeRequestInfo,
+    ) -> Result<bool> {
+        let Some(source) = policy.source_pull_request.as_ref() else {
+            return Ok(false);
+        };
+        if current.head_commit == source.input.commit
+            || current.state != RemoteState::Open
+            || current.source_branch != source.source_branch
+            || current.target_branch != source.target_branch
+            || current.author_login != source.author
+            || current.draft
+            || source
+                .title
+                .as_ref()
+                .is_some_and(|title| *title != current.title)
+        {
+            return Ok(false);
+        }
+        let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+        let proposals = self.db.list_merge_requests(&task.id)?;
+        let events = self.db.list_events(&task.id)?;
+        if tracked.last_task_id.as_deref() != Some(&task.id)
+            || proposals.is_empty()
+            || proposals
+                .iter()
+                .any(|mr| mr.state == MergeRequestState::Closed)
+            || events.iter().any(|event| {
+                event.kind == "merge_request.close_planned"
+                    || (event.kind == "publication.planned"
+                        && !proposals.iter().any(|mr| {
+                            event.payload["repository"] == mr.repository_id
+                                && event.payload["branch"] == mr.source_branch
+                        }))
+            })
+        {
+            return Ok(false);
+        }
+        if self.equivalent_adaptation_head(task, &current.head_commit)? {
+            return Ok(true);
+        }
+        let Some(attempt) = self.db.latest_attempt(&task.id)? else {
+            return Ok(false);
+        };
+        let job = self.load_job(&attempt)?;
+        let Some(frozen) = job
+            .repositories
+            .iter()
+            .find(|r| r.id.as_str() == source.repository_id)
+        else {
+            return Ok(false);
+        };
+        let repo = &policy.repositories[&source.repository_id];
+        let proof = (|| -> Result<Option<CommitSha>> {
+            let forge = self.forge(&repo.forge)?;
+            let fresh_target = forge.branch_head(&repo.remote, &repo.branch)?;
+            let remote_ref = forge.merge_request_ref(&repo.remote, source.number)?;
+            let cache = self.cache(&repo.forge, &repo.remote)?;
+            let target_ref = format!("refs/heads/{}", repo.branch);
+            let source_ref = format!("refs/artidezi/discovery/{}", source.tracking_id);
+            cache.fetch(
+                &forge.clone_url(&repo.remote),
+                &[
+                    &format!("+{target_ref}:{target_ref}"),
+                    &format!("+{remote_ref}:{source_ref}"),
+                ],
+                forge.git_credentials(&repo.remote)?.as_ref(),
+            )?;
+            let target = git2::Oid::from_str(fresh_target.as_str())?;
+            let head = git2::Oid::from_str(current.head_commit.as_str())?;
+            if cache.resolve(&target_ref)? != target || cache.resolve(&source_ref)? != head {
+                return Ok(None);
+            }
+            Ok(artidezi_git::equivalence::same_change(
+                cache.repo(),
+                (
+                    git2::Oid::from_str(frozen.base_commit.as_str())?,
+                    git2::Oid::from_str(source.input.commit.as_str())?,
+                ),
+                (target, head),
+            )?
+            .then_some(fresh_target))
+        })();
+        let fresh_target = match proof {
+            Ok(Some(target)) => target,
+            Ok(None) => return Ok(false),
+            Err(error) => {
+                tracing::debug!(task = %task.id, %error, "source equivalence not proven");
+                return Ok(false);
+            }
+        };
+        self.db.record_event(
+            Some(&task.id),
+            Some(&attempt.id),
+            "orchestrator",
+            "source.equivalent_head_observed",
+            serde_json::json!({"task":task.id,"frozen_head":source.input.commit,"observed_head":current.head_commit,"frozen_target":frozen.base_commit,"fresh_target":fresh_target}),
+        )?;
+        Ok(true)
+    }
+
     pub(crate) fn reschedule_superseded_source(
         &mut self,
         task: &Task,
@@ -70,6 +189,8 @@ impl Orchestrator {
         if !accepted && !incomplete {
             return Ok(false);
         }
+        // Even an equivalent rebase does not authorize publishing an unpublished verdict for a
+        // different commit. Keep the normal fresh-assessment and bounded transient-retry gates.
         let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
             .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
         self.require_source_authority(task, &policy)?;
@@ -206,6 +327,7 @@ impl Orchestrator {
             })
         };
         let mut closing = Vec::new();
+        let mut merged = false;
         for mr in proposals {
             let Some(repo) = policy.repositories.get(&mr.repository_id) else {
                 return Ok(None);
@@ -222,8 +344,15 @@ impl Orchestrator {
             match info.state {
                 RemoteState::Open if ours => closing.push((mr, true)),
                 RemoteState::Closed if ours && close_planned(&mr) => closing.push((mr, false)),
+                RemoteState::Merged if ours => merged = true,
                 _ => return Ok(None),
             }
+        }
+        if self.preserve_equivalent_adaptation(task, &policy, &current)? {
+            return Ok(None);
+        }
+        if merged {
+            return Ok(None);
         }
         let comment = format!(
             "Superseded by {} at `{}`; this adaptation was prepared for `{}`.",

@@ -147,10 +147,19 @@ and publication has not been planned or attempted, the controller closes the obs
 schedules a fresh evaluation of the new head. The normal settle window, CI wait, project capacity
 and existing run budget still apply; superseding work does not refund or renew that budget.
 This also applies to an accepted result waiting for CI before any publication activity.
-When the source moves after an adaptation was published, the controller closes its own proposal
-with a comment naming the new head and evaluates that head the same way. It never closes a
+When the source moves after an adaptation was published, ArtiDezi first checks whether it is only a
+rebase carrying the exact same change onto its target. A proven equivalent change keeps the existing
+proposals ready for review, with no comment, branch update, new evaluation or budget charge. Repeated
+scans and restarts retain that decision. When those proposals merge, the task completes normally and
+the rebased head does not trigger another evaluation. The activity log records the frozen and observed
+heads and target commits used for the comparison; the assessment still belongs to its original input.
+If fetching or comparison cannot prove equivalence, the controller closes its own proposal with a
+comment naming the new head and evaluates that head the same way. It never closes a
 proposal that someone else changed, merged or closed, and keeps the hold after an explicit pause.
 Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
+Unpublished results still follow the fresh-evaluation rules above, even for equivalent rebases.
+Source reviews, approvals and automatic merges always require the exact assessed commit. Revising an
+existing proposal also refuses a moved source, even when the open proposal was preserved.
 
 Failed checks at the moment of automatic approval or merge hold the task as needing attention and
 show the source as paused with “Current forge checks failed”. CI failures are often temporary (a
@@ -252,8 +261,10 @@ Authenticated API equivalents:
 - `POST /admin/v1/tasks/{id}/retry-publication` retries interrupted delivery without a new evaluation.
 
 Open adaptation proposals must be resolved before starting
-a new evaluation, including via Resume. Resume closes the controller's own proposals for a source
-head that has since moved. Retry publication first when only delivery was interrupted.
+a new evaluation, including via Resume or task feedback. Resume closes the controller's own proposals
+for a source head that has since moved, unless equivalence preserves them. Retained proposals must
+be merged or closed before a replacement evaluation can start. Retry publication first when only
+delivery was interrupted.
 
 Discovery uses the normal worker contract; see [its version notes](../architecture/worker-contract.md). Configurations without discovery keep manual-only behavior.
 

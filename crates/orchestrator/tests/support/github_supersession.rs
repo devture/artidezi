@@ -4,13 +4,45 @@
 use super::*;
 use chrono::{Duration, Utc};
 
+/// Advance an unrelated target file, then replay the source's exact change on that target.
+pub(super) fn rebase_source(w: &World, f: &Fixture) -> (CommitSha, CommitSha) {
+    let repo = w.forge.ensure_repository("org/app").unwrap();
+    let old_head = Oid::from_str(&f.state.lock().unwrap().head).unwrap();
+    let old_tree = repo.find_commit(old_head).unwrap().tree().unwrap();
+    let content = old_tree
+        .get_path(std::path::Path::new("defaults.yml"))
+        .unwrap();
+    let blob = repo.find_blob(content.id()).unwrap();
+    let base = repo.refname_to_id("refs/heads/main").unwrap();
+    let target = seed(
+        &repo,
+        Some(base),
+        "target-note.txt",
+        &format!("Target after {base}\n"),
+        "Advance target",
+    );
+    let head = seed(
+        &repo,
+        Some(target),
+        "defaults.yml",
+        std::str::from_utf8(blob.content()).unwrap(),
+        "Rebase source",
+    );
+    repo.reference("refs/heads/main", target, true, "restore target")
+        .unwrap();
+    repo.reference("refs/pull/33/head", head, true, "rebased source")
+        .unwrap();
+    f.state.lock().unwrap().head = head.to_string();
+    (CommitSha(target.to_string()), CommitSha(head.to_string()))
+}
+
 #[test]
 fn source_rebased_before_publication_gets_a_fresh_assessment_after_settling() {
     for adaptation in [false, true] {
         let (mut w, f) = safe_world(true);
         let id = scan(&mut w).remove(0);
         let old_task = w.orchestrator.db.get_task(&id).unwrap();
-        let new_head = move_source_head(&w, &f);
+        let (_, new_head) = rebase_source(&w, &f);
         w.orchestrator
             .config
             .projects
@@ -163,7 +195,7 @@ fn unpublished_ci_wait_reconciles_a_new_head_before_queuing_fresh_work() {
         AttemptState::Valid
     );
     assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
-    let head = move_source_head(&w, &f);
+    let (_, head) = rebase_source(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
     // Discovery can notice the new head before the scheduled delivery check is due.
     assert!(scan(&mut w).is_empty());
@@ -592,6 +624,377 @@ fn source_untouched(f: &Fixture) {
     assert!(state.requests.iter().all(|r| r.method == "GET"
         || !r.path.starts_with("/repos/org/app/pulls/33")
         || r.path == "/repos/org/app/pulls/33/reviews"));
+}
+
+#[test]
+fn equivalent_rebases_preserve_published_adaptations_and_completed_delivery() {
+    for held in [false, true] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let frozen = w.orchestrator.db.get_task(&id).unwrap();
+        let frozen_source = artidezi_orchestrator::discovery::source_of(&frozen)
+            .unwrap()
+            .unwrap();
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        let branch = format!("refs/heads/{}", published.source_branch);
+        let branch_head = repo.refname_to_id(&branch).unwrap();
+        // Preservation still works at the run limit and never renews or refunds it.
+        w.orchestrator
+            .config
+            .projects
+            .get_mut("roles")
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .max_runs_per_pull_request = 1;
+        let (fresh_target, observed_head) = rebase_source(&w, &f);
+        if held {
+            hold_as_an_earlier_release_did(&mut w, &id);
+        }
+        for _ in 0..3 {
+            assert!(scan(&mut w).is_empty());
+            let report = w.orchestrator.tick().unwrap();
+            assert!(report.errors.is_empty(), "held={held}: {:?}", report.errors);
+            assert!(report.discovered.is_empty());
+            assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
+            reopen(&mut w, &f);
+        }
+        let tracked = w
+            .orchestrator
+            .db
+            .list_pull_request_sources(None)
+            .unwrap()
+            .remove(0);
+        assert!(!tracked.paused);
+        assert_eq!(tracked.runs, 1);
+        assert_eq!(tracked.status, "Published adaptations await review");
+        assert!(tracked.follow_up.is_none());
+        assert_eq!(w.orchestrator.db.list_tasks(None).unwrap().len(), 1);
+        assert_eq!(w.orchestrator.db.list_attempts(&id).unwrap().len(), 1);
+        assert_eq!(
+            w.orchestrator.db.get_task(&id).unwrap().policy_snapshot,
+            frozen.policy_snapshot
+        );
+        assert_eq!(repo.refname_to_id(&branch).unwrap(), branch_head);
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        let observed: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == "source.equivalent_head_observed")
+            .collect();
+        assert_eq!(
+            observed.len(),
+            1,
+            "one durable observation across scans and restarts"
+        );
+        assert_eq!(
+            observed[0].payload,
+            json!({"task":id,"frozen_head":frozen_source.input.commit,"observed_head":observed_head,"frozen_target":frozen.repositories.iter().find(|r| r.repository_id == "role").unwrap().base_commit,"fresh_target":fresh_target})
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| e.kind != "assessment.superseded"
+                    && e.kind != "merge_request.close_planned")
+        );
+        assert!(
+            events
+                .iter()
+                .filter(|e| e.kind == "assessment.published")
+                .all(|e| e.payload["head"] != observed_head.0)
+        );
+        source_untouched(&f);
+        assert_eq!(
+            f.state.lock().unwrap().proposals[&published.number]["state"],
+            "open"
+        );
+        assert!(f.state.lock().unwrap().comments.is_empty());
+
+        // Neither Resume nor feedback may make room by closing an equivalent proposal.
+        assert!(
+            w.orchestrator
+                .resume_pull_request(&tracked.id, "human")
+                .unwrap_err()
+                .to_string()
+                .contains("existing adaptation proposals")
+        );
+        assert!(
+            w.orchestrator
+                .request_revision(&id, "Reassess", "human")
+                .unwrap_err()
+                .to_string()
+                .contains("existing adaptation proposals")
+        );
+        assert!(
+            w.orchestrator
+                .revise_proposal(&id, "Revise", "human")
+                .unwrap_err()
+                .to_string()
+                .contains("source PR changed")
+        );
+        assert!(f.state.lock().unwrap().comments.is_empty());
+
+        let mut state = f.state.lock().unwrap();
+        let proposal = state.proposals.get_mut(&published.number).unwrap();
+        proposal["state"] = json!("closed");
+        proposal["merged"] = json!(true);
+        drop(state);
+        assert_eq!(w.orchestrator.reconcile_task(&id).unwrap(), TaskState::Done);
+        assert_eq!(
+            w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].status,
+            "This head has already been evaluated"
+        );
+        for _ in 0..2 {
+            reopen(&mut w, &f);
+            assert!(scan(&mut w).is_empty());
+            let report = w.orchestrator.tick().unwrap();
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            assert!(report.discovered.is_empty());
+        }
+        assert_eq!(task_state(&w, &id), TaskState::Done);
+        assert_eq!(w.orchestrator.db.list_tasks(None).unwrap().len(), 1);
+        assert_eq!(
+            w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].runs,
+            1
+        );
+        source_untouched(&f);
+    }
+}
+
+#[test]
+fn a_merged_adaptation_can_be_observed_together_with_its_equivalent_rebase() {
+    for held in [false, true] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        rebase_source(&w, &f);
+        if held {
+            hold_as_an_earlier_release_did(&mut w, &id);
+        }
+        {
+            let mut state = f.state.lock().unwrap();
+            let proposal = state.proposals.get_mut(&published.number).unwrap();
+            proposal["state"] = json!("closed");
+            proposal["merged"] = json!(true);
+        }
+        assert!(scan(&mut w).is_empty());
+        let report = w.orchestrator.tick().unwrap();
+        assert!(report.errors.is_empty(), "held={held}: {:?}", report.errors);
+        assert!(report.discovered.is_empty());
+        assert_eq!(task_state(&w, &id), TaskState::Done);
+        reopen(&mut w, &f);
+        assert!(scan(&mut w).is_empty());
+        let tracked = w
+            .orchestrator
+            .db
+            .list_pull_request_sources(None)
+            .unwrap()
+            .remove(0);
+        assert!(!tracked.paused);
+        assert_eq!(tracked.runs, 1);
+        assert_eq!(tracked.status, "This head has already been evaluated");
+        assert!(f.state.lock().unwrap().comments.is_empty());
+        source_untouched(&f);
+    }
+}
+
+#[test]
+fn a_changed_head_after_a_preserved_rebase_still_supersedes() {
+    let (mut w, f) = publishing_world();
+    let id = published_adaptation(&mut w);
+    for observations in 1..=3 {
+        rebase_source(&w, &f);
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::AwaitingReview
+        );
+        assert!(scan(&mut w).is_empty());
+        assert_eq!(
+            w.orchestrator
+                .db
+                .list_events(&id)
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == "source.equivalent_head_observed")
+                .count(),
+            observations
+        );
+        assert_eq!(
+            w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].runs,
+            1
+        );
+        reopen(&mut w, &f);
+    }
+    move_source_head(&w, &f);
+    assert_eq!(
+        w.orchestrator.reconcile_task(&id).unwrap(),
+        TaskState::Closed
+    );
+    assert_eq!(f.state.lock().unwrap().comments.len(), 1);
+    assert_eq!(scan(&mut w).len(), 1);
+    assert_eq!(
+        w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].runs,
+        2
+    );
+}
+
+#[test]
+fn unavailable_or_ambiguous_equivalence_evidence_keeps_supersession() {
+    for case in [
+        "fetch",
+        "raced_ref",
+        "empty_change",
+        "unrelated_history",
+        "ambiguous_merge_bases",
+        "missing_object",
+    ] {
+        let (mut w, f) = publishing_world();
+        let id = published_adaptation(&mut w);
+        let task = w.orchestrator.db.get_task(&id).unwrap();
+        let frozen = artidezi_orchestrator::discovery::source_of(&task)
+            .unwrap()
+            .unwrap();
+        let (target, _) = rebase_source(&w, &f);
+        let repo = w.forge.ensure_repository("org/app").unwrap();
+        match case {
+            "fetch" => repo
+                .find_reference("refs/pull/33/head")
+                .unwrap()
+                .delete()
+                .unwrap(),
+            "raced_ref" => {
+                repo.reference(
+                    "refs/pull/33/head",
+                    Oid::from_str(target.as_str()).unwrap(),
+                    true,
+                    "race",
+                )
+                .unwrap();
+            }
+            "empty_change" => {
+                repo.reference(
+                    "refs/pull/33/head",
+                    Oid::from_str(target.as_str()).unwrap(),
+                    true,
+                    "empty",
+                )
+                .unwrap();
+                f.state.lock().unwrap().head = target.0;
+            }
+            "unrelated_history" => {
+                let tree = repo
+                    .find_commit(Oid::from_str(frozen.input.commit.as_str()).unwrap())
+                    .unwrap()
+                    .tree()
+                    .unwrap();
+                let sig = git2::Signature::now("Fixture", "fixture@invalid").unwrap();
+                let head = repo
+                    .commit(None, &sig, &sig, "Unrelated root", &tree, &[])
+                    .unwrap();
+                repo.reference("refs/pull/33/head", head, true, "unrelated")
+                    .unwrap();
+                f.state.lock().unwrap().head = head.to_string();
+            }
+            "ambiguous_merge_bases" => {
+                let first = repo
+                    .find_commit(Oid::from_str(frozen.input.commit.as_str()).unwrap())
+                    .unwrap();
+                let second = repo
+                    .find_commit(Oid::from_str(target.as_str()).unwrap())
+                    .unwrap();
+                let tree = repo
+                    .find_reference("refs/pull/33/head")
+                    .unwrap()
+                    .peel_to_tree()
+                    .unwrap();
+                let sig = git2::Signature::now("Fixture", "fixture@invalid").unwrap();
+                let target = repo
+                    .commit(None, &sig, &sig, "First merge", &tree, &[&first, &second])
+                    .unwrap();
+                let head = repo
+                    .commit(None, &sig, &sig, "Second merge", &tree, &[&second, &first])
+                    .unwrap();
+                assert_eq!(repo.merge_bases(target, head).unwrap().len(), 2);
+                repo.reference("refs/heads/main", target, true, "ambiguous target")
+                    .unwrap();
+                repo.reference("refs/pull/33/head", head, true, "ambiguous source")
+                    .unwrap();
+                f.state.lock().unwrap().head = head.to_string();
+            }
+            "missing_object" => {
+                // A rebuilt cache has the current remote history but not the old, now unreachable
+                // source head. Missing frozen objects must not be confused with equivalence.
+                let cache = w.orchestrator.cache("github", "org/app").unwrap();
+                std::fs::remove_dir_all(cache.path()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            w.orchestrator.reconcile_task(&id).unwrap(),
+            TaskState::Closed,
+            "{case}"
+        );
+        let events = w.orchestrator.db.list_events(&id).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|e| e.kind != "source.equivalent_head_observed"),
+            "{case}"
+        );
+        assert!(
+            events.iter().any(|e| e.kind == "assessment.superseded"
+                && e.payload["expected_head"] == frozen.input.commit.0),
+            "{case}"
+        );
+        assert_eq!(f.state.lock().unwrap().comments.len(), 1, "{case}");
+        source_untouched(&f);
+    }
+}
+
+#[test]
+fn completed_reviews_and_dry_runs_do_not_reuse_equivalent_heads() {
+    for publishing in [false, true] {
+        let (mut w, f) = if publishing {
+            publishing_world()
+        } else {
+            world()
+        };
+        let id = scan(&mut w).remove(0);
+        assert_eq!(w.work(&unchanged(&w)), AttemptState::Valid);
+        assert_eq!(task_state(&w, &id), TaskState::Done);
+        rebase_source(&w, &f);
+        assert_eq!(scan(&mut w).len(), 1);
+        assert!(
+            w.orchestrator
+                .db
+                .list_merge_requests(&id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            w.orchestrator
+                .db
+                .list_events(&id)
+                .unwrap()
+                .iter()
+                .all(|e| e.kind != "source.equivalent_head_observed")
+        );
+        assert_eq!(
+            w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].runs,
+            2
+        );
+    }
 }
 
 #[test]

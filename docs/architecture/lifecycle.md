@@ -79,9 +79,21 @@ automatically, with an `assessment.superseded` event retaining the old and obser
 assesses the new revision under its ordinary gates and the remaining source budget. Any publication
 plan or receipt, identity change, human decision or failure prevents this recovery. A retry request
 that stopped before any publication plan does not prevent a fresh evaluation. Published
-adaptations whose source moved while it stayed open are closed on the forge first, when they are
-provably the task's own and unchanged, and the task then retires the same way. Older stale-head
-holds are reconsidered automatically, while later explicit operator pauses remain in force. A result for the previous head is never applied to the new revision.
+adaptations whose source moved while it stayed open are retained when Git proves that the source
+still carries exactly the frozen change, measured from each head's merge base with its own target.
+The task stays awaiting review, without comments, branch updates, a new assessment or another budget
+charge. A durable `source.equivalent_head_observed` event binds the task, both source heads and both
+target commits; it is not an assessment or publication receipt for the new head. Merging the retained
+adaptations completes delivery normally, and discovery remembers that delivery for the observed head.
+
+Without that proof, published adaptations are closed on the forge first, when they are provably the
+task's own and unchanged, and the task retires as before. Fetch errors, missing objects and ambiguous
+or empty changes do not establish equivalence. Older stale-head holds are reconsidered automatically,
+while later explicit operator pauses remain in force. Unpublished results, including CI waits and
+failed-check recovery, still supersede even across an equivalent rebase: no adaptation has yet been
+delivered to preserve. Source reviews, approvals, merges and recovery attribution always require the
+exact frozen head. Revising an existing adaptation also refuses a moved source; retaining a proposal
+does not authorize publishing new work against that head.
 
 ## Recovery constraints
 

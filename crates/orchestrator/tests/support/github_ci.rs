@@ -430,7 +430,7 @@ fn failed_checks_hold_until_the_same_head_turns_green() {
 
 #[test]
 fn failed_checks_hold_reassesses_a_new_head_within_the_budget() {
-    for max_runs in [2, 1] {
+    for (max_runs, equivalent) in [(2, false), (1, false), (2, true), (1, true)] {
         let (mut w, f) = safe_world(true);
         w.orchestrator
             .config
@@ -445,7 +445,11 @@ fn failed_checks_hold_reassesses_a_new_head_within_the_budget() {
         f.state.lock().unwrap().fail_on_approval = true;
         w.work(&safe_result(&w, Some("low"), true));
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-        let new_head = move_source_head(&w, &f);
+        let new_head = if equivalent {
+            super::supersession::rebase_source(&w, &f).1
+        } else {
+            move_source_head(&w, &f)
+        };
         f.state.lock().unwrap().fail_on_approval = false;
         f.state.lock().unwrap().conclusion = "success".into();
         // The settled new head is retired and queued for a fresh assessment in one pass.

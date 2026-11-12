@@ -31,7 +31,7 @@ pub struct DiscoveryReport {
     pub errors: Vec<String>,
 }
 
-const EVALUATED_HEAD_STATUS: &str = "This head has already been evaluated";
+pub(crate) const EVALUATED_HEAD_STATUS: &str = "This head has already been evaluated";
 pub(crate) const FOLLOW_UP_INTERVAL_SECONDS: i64 = 120;
 
 struct DiscoveryTarget<'a> {
@@ -47,6 +47,17 @@ pub fn source_of(task: &Task) -> Result<Option<PullRequestSource>> {
 }
 
 impl Orchestrator {
+    fn source_head_evaluated(
+        &self,
+        task: &Task,
+        head: &artidezi_contract::common::CommitSha,
+    ) -> Result<bool> {
+        Ok(
+            source_of(task)?.is_some_and(|source| source.input.commit == *head)
+                || self.equivalent_adaptation_head(task, head)?,
+        )
+    }
+
     /// Force bypasses only the polling interval, never matching, settling, deduplication or holds.
     pub fn scan_pull_requests(
         &mut self,
@@ -170,7 +181,7 @@ impl Orchestrator {
             {
                 let task = self.db.get_task(id)?;
                 if task.state == TaskState::Done
-                    && source_of(&task)?.is_some_and(|s| s.input.commit == summary.head_commit)
+                    && self.source_head_evaluated(&task, &summary.head_commit)?
                 {
                     if source.status != EVALUATED_HEAD_STATUS {
                         let mut updated = source.clone();
@@ -531,14 +542,13 @@ impl Orchestrator {
                 return Ok(None);
             }
             if task.state == TaskState::AwaitingReview {
-                source.status =
-                    if source_of(&task)?.is_some_and(|s| s.input.commit != pull.head_commit) {
-                        // The delivery reconciler closes obsolete adaptations or holds the task.
-                        "Source changed; waiting for delivery reconciliation"
-                    } else {
-                        "Published adaptations await review"
-                    }
-                    .into();
+                source.status = if !self.source_head_evaluated(&task, &pull.head_commit)? {
+                    // The delivery reconciler closes obsolete adaptations or holds the task.
+                    "Source changed; waiting for delivery reconciliation"
+                } else {
+                    "Published adaptations await review"
+                }
+                .into();
                 return Ok(None);
             }
             if task.state == TaskState::NeedsHuman {
@@ -555,7 +565,7 @@ impl Orchestrator {
                 return Ok(None);
             }
             if task.state == TaskState::Done
-                && source_of(&task)?.is_some_and(|s| s.input.commit == pull.head_commit)
+                && self.source_head_evaluated(&task, &pull.head_commit)?
             {
                 source.status = EVALUATED_HEAD_STATUS.into();
                 return Ok(None);

@@ -55,7 +55,8 @@ Repository, author and head
 identity are not inferred from untrusted text. A configured title regex is only an additional
 narrowing predicate after explicit repository and author scope.
 The Incoming changes UI links each tracked source to its latest task. A completed task marks the
-source as evaluated when the task's frozen source identity and head match the latest observed head;
+source as evaluated when the task's frozen source identity and head match the latest observed head,
+or a durable equivalence observation binds that head to its delivered adaptation;
 the task can finish between scans without leaving the row labeled as waiting. Source closure and
 the Open/Paused/Closed tabs continue to describe the request itself.
 
@@ -75,6 +76,7 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | New eligible source head | Queue within project capacity and the persisted source budget |
 | Failed/lost/needs-human/interrupted work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |
+| Published adaptations and a proven equivalent source rebase | Keep proposals awaiting review; no forge writes, new task or budget charge |
 | Published adaptations superseded by a new head of the still-open source | Comment on and close those proposals, then retire the task the same way |
 | Exhausted run budget or explicit pause | Hold until explicit human action |
 
@@ -164,10 +166,30 @@ observed a newer head, without retrying its obsolete inputs or overriding explic
 to settle; its run count is retained, and exhaustion pauses it. Other authority/identity changes,
 failed/needs-human results and explicit operator pauses retain their holds. CI-wait
 reconciliation uses the same guard; discovery leaves that decision to the delivery reconciler.
+Unpublished results keep these rules even for equivalent rebases. Equivalence preserves an existing
+adaptation delivery; it does not authorize publishing a verdict for a commit the worker did not assess.
 A delivery hold for failed checks also retires on a new head, even after its approval was published,
 because it is recheckable only when no approval or merge outcome is unconfirmed; see [GitHub internals](github-integration.md#safe-source-actions).
-Awaiting proposals suppress new evaluations. When the source head moves, the delivery reconciler,
-and held-task recovery for older holds, closes the task's own proposals with a comment naming the new head
+Awaiting proposals suppress new evaluations. When the source head moves, the delivery reconciler and
+held-task recovery first try to preserve the existing adaptations. The controller fetches the configured
+target branch and forge PR-head ref into that repository's bare cache and checks both against the
+fresh forge observations. `same_change` compares the frozen job's target/source pair with the fresh
+target/observed-source pair, each against its own single merge base. Exact changed paths, object IDs
+and modes must match; absent history, fetch/ref races, errors, empty changes or ambiguous merge bases
+fall back to ordinary supersession.
+
+A successful proof records `source.equivalent_head_observed` with task, frozen/observed heads and
+frozen/fresh target commits. One observation per task and observed head survives scans and restarts.
+This event sits outside `assessment.*` and `publication.*`: it never changes frozen job/policy inputs
+or manufactures `assessment.published` for the new head. Proposals stay open at their recorded branch
+heads with no comment, close, push, new task or run-budget change. Older stale-head holds can return
+to awaiting review. Human merges complete the task normally; discovery reuses the recorded equivalent
+head only for published adaptations, including its completed-head listing shortcut. Dry runs and
+source-only reviews/approvals still require a fresh assessment after any head change. All source-PR
+writes and recovery attribution remain fenced by the exact frozen head. Proposal revisions retain
+that same strict check.
+
+When equivalence is not proven, reconciliation closes the task's own proposals with a comment naming the new head
 (`merge_request.close_planned`, then `merge_request.superseded`). The controller passes the expected
 branch, target and head, and the forge adapter rechecks them before the comment and again before
 closing. If a push still lands just before the close, it reopens the proposal and reports an error,
@@ -176,8 +198,9 @@ so the task is held. Otherwise it retires the task with
 schedule are saved in one transaction. Every recorded proposal must still be open (or closed under that
 plan), authored by the bot from the task's branch at the recorded head, and every publication plan
 must have a receipt; otherwise, or after an explicit pause, a closed/merged source or a human-closed
-or merged proposal, the task is held as before. Resume closes such obsolete proposals too, then
-checks planned branches for open PRs before creating another task; feedback only checks. Human merges are observed without
+or merged proposal, the task is held as before. Resume closes such obsolete proposals too, but retains
+equivalent ones, then checks planned branches for open PRs before creating another task; feedback only
+checks. Retained open proposals therefore block both replacement routes. Human merges are observed without
 source-merge or tag effects. See [GitHub internals](github-integration.md#scoped-publication).
 
 Source approval/merge uses the additional policy and recovery gates described in GitHub internals.

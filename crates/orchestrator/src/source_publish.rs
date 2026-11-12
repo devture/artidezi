@@ -989,7 +989,25 @@ impl Orchestrator {
                 .iter()
                 .all(|mr| mr.state == MergeRequestState::Merged)
         {
+            let preserved = self.preserve_equivalent_adaptation(task, policy, &current)?;
+            if task.state == TaskState::NeedsHuman {
+                self.db
+                    .set_task_state(&task.id, TaskState::Working, "orchestrator")?;
+            }
             self.db.set_task_state(&task.id, TaskState::Done, "forge")?;
+            if preserved {
+                // Keep the stored UI status current even before discovery's next scan. This is
+                // delivery of the existing adaptation, not publication against the new source.
+                let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+                if task.state == TaskState::NeedsHuman {
+                    tracked.paused = false;
+                    tracked.follow_up = None;
+                }
+                if tracked.observed_head == current.head_commit.as_str() {
+                    tracked.status = crate::discovery::EVALUATED_HEAD_STATUS.into();
+                    self.db.save_pull_request_source(&tracked)?;
+                }
+            }
             return Ok(TaskState::Done);
         }
         if current.state == RemoteState::Open
@@ -998,7 +1016,8 @@ impl Orchestrator {
         {
             return Ok(TaskState::Closed);
         }
-        if current.head_commit != source.input.commit
+        let preserved = self.preserve_equivalent_adaptation(task, policy, &current)?;
+        if (current.head_commit != source.input.commit && !preserved)
             || current.state != RemoteState::Open
             || proposals
                 .iter()
@@ -1006,6 +1025,20 @@ impl Orchestrator {
         {
             self.needs_human(task, &attempt, "Source or proposal closed or changed; resolve published proposals before evaluating again")?;
             return Ok(TaskState::NeedsHuman);
+        }
+        if preserved && task.state == TaskState::NeedsHuman {
+            // Held-task recovery has already excluded explicit pauses. Restore old stale-head
+            // holds only after rechecking authority and every published proposal above. Use the
+            // existing recovery transition through Working, without queuing another attempt.
+            self.db
+                .set_task_state(&task.id, TaskState::Working, "orchestrator")?;
+            self.db
+                .set_task_state(&task.id, TaskState::AwaitingReview, "orchestrator")?;
+            let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+            tracked.paused = false;
+            tracked.follow_up = None;
+            tracked.status = "Published adaptations await review".into();
+            self.db.save_pull_request_source(&tracked)?;
         }
         Ok(TaskState::AwaitingReview)
     }

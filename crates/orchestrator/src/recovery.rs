@@ -146,8 +146,18 @@ impl Orchestrator {
         } else if source_moved
             && attempt.state.is_terminal()
             && !self.db.list_merge_requests(&task.id)?.is_empty()
+            && !self.retire_superseded_adaptations(task)?
         {
-            self.retire_superseded_adaptations(task)?;
+            // The close path may have proved a harmless rebase. Reconciliation verifies the
+            // proposals again and restores review instead of revisiting this hold forever.
+            let policy = serde_json::from_str(&task.policy_snapshot)
+                .map_err(|e| crate::OrchestratorError::Invalid(e.to_string()))?;
+            if let Some(source) = crate::discovery::source_of(task)? {
+                let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+                if self.equivalent_adaptation_head(task, &tracked.observed_head.as_str().into())? {
+                    self.reconcile_source_task(task, &policy)?;
+                }
+            }
         }
         Ok(())
     }

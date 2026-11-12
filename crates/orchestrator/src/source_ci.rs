@@ -246,6 +246,8 @@ impl Orchestrator {
             return Ok(());
         }
         if current.head_commit != source.input.commit {
+            // Equivalence preserves published adaptations only; it cannot reuse a source
+            // approval or authorize a merge of this different commit.
             // A maintainer objection made during the hold is a human decision; a new head alone
             // must not reactivate automatic evaluation past it.
             if self.source_changes_requested(&policy)? {
