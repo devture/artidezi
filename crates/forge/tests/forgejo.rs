@@ -39,6 +39,44 @@ fn commit_file(repo: &Repository, path: &str, content: &str, message: &str) -> O
         .unwrap()
 }
 
+/// A raw API call as another Forgejo user, for effects ArtiDezi itself never performs.
+fn api_as(url: &str, token: &str, method: &str, path: &str, body: serde_json::Value) -> String {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let uri = format!("{url}/api/v1{path}");
+    let auth = format!("token {token}");
+    let mut response = match method {
+        "POST" => agent
+            .post(&uri)
+            .header("Authorization", &auth)
+            .send_json(body),
+        "PUT" => agent
+            .put(&uri)
+            .header("Authorization", &auth)
+            .send_json(body),
+        _ => unreachable!(),
+    }
+    .unwrap();
+    let status = response.status().as_u16();
+    let text = response.body_mut().read_to_string().unwrap();
+    assert!(
+        (200..300).contains(&status),
+        "{method} {path}: {status} {text}"
+    );
+    text
+}
+
+fn other_user(prefix: &str) -> (String, String) {
+    (
+        env(&format!("ARTIDEZI_FORGEJO_{prefix}_USER"))
+            .expect("run through scripts/forgejo-test.sh"),
+        env(&format!("ARTIDEZI_FORGEJO_{prefix}_TOKEN"))
+            .expect("run through scripts/forgejo-test.sh"),
+    )
+}
+
 #[test]
 fn forgejo_contract() {
     let (Some(url), Some(token), Some(user)) = (
@@ -140,7 +178,37 @@ fn forgejo_contract() {
     assert_eq!(review.author_login, user);
     assert_eq!(
         forge.list_reviews(&remote, mr.number).unwrap(),
-        vec![review]
+        vec![review.clone()]
+    );
+    // Another reviewer's decisions are visible to the merge gate, including a later dismissal.
+    let (maintainer, maintainer_token) = other_user("MAINTAINER");
+    forge.add_collaborator(&remote, &maintainer).unwrap();
+    let objection: serde_json::Value = serde_json::from_str(&api_as(
+        &url,
+        &maintainer_token,
+        "POST",
+        &format!("/repos/{remote}/pulls/{}/reviews", mr.number),
+        serde_json::json!({"event": "REQUEST_CHANGES", "commit_id": mr.head_commit, "body": "Needs a fix."}),
+    ))
+    .unwrap();
+    let reviews = forge.list_reviews(&remote, mr.number).unwrap();
+    assert_eq!(reviews.len(), 2, "{reviews:?}");
+    assert_eq!(reviews[0], review);
+    assert_eq!(reviews[1].author_login, maintainer);
+    assert_eq!(reviews[1].state, ReviewState::ChangesRequested);
+    api_as(
+        &url,
+        &token,
+        "POST",
+        &format!(
+            "/repos/{remote}/pulls/{}/reviews/{}/dismissals",
+            mr.number, objection["id"]
+        ),
+        serde_json::json!({"message": "Addressed."}),
+    );
+    assert_eq!(
+        forge.list_reviews(&remote, mr.number).unwrap()[1].state,
+        ReviewState::Dismissed
     );
     assert_eq!(
         forge

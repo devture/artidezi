@@ -202,6 +202,24 @@ impl ForgejoForge {
         Ok(format!("{}/{name}", self.bot_login))
     }
 
+    /// Grants another user write access to a repository. Test tooling only.
+    pub fn add_collaborator(&self, remote: &str, login: &str) -> Result<()> {
+        let (owner, repo) = Self::split(remote)?;
+        let path = format!("/repos/{owner}/{repo}/collaborators/{login}");
+        let mut response = self
+            .agent
+            .put(self.api(&path))
+            .header("Authorization", &self.auth())
+            .send_json(json!({"permission": "write"}))
+            .map_err(|e| ForgeError::Other(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| ForgeError::Other(e.to_string()))?;
+        self.check(status, &body, &path)
+    }
+
     /// Posts a commit status. Test tooling only; real checks come from CI.
     pub fn set_commit_status(
         &self,
@@ -223,21 +241,45 @@ impl ForgejoForge {
 #[derive(Deserialize)]
 struct ReviewResponse {
     id: u64,
-    user: UserRef,
+    /// Absent on review requests addressed to a team.
+    #[serde(default)]
+    user: Option<UserRef>,
+    #[serde(default)]
     commit_id: String,
     #[serde(default)]
     body: String,
     state: String,
+    #[serde(default)]
+    dismissed: bool,
 }
 impl ReviewResponse {
-    fn into_review(self) -> MergeRequestReview {
-        MergeRequestReview {
-            state: Default::default(),
+    /// Pending drafts and review requests are not submitted reviews, so they carry no decision.
+    fn is_submitted(&self) -> bool {
+        !matches!(self.state.as_str(), "PENDING" | "REQUEST_REVIEW")
+    }
+    fn into_review(self) -> Result<MergeRequestReview> {
+        let head_commit = CommitSha(self.commit_id);
+        let Some(user) = self
+            .user
+            .filter(|_| self.id != 0 && head_commit.is_well_formed())
+        else {
+            return Err(ForgeError::Other("invalid Forgejo review receipt".into()));
+        };
+        // Unknown states stay `Other`, which the merge gate treats as a reason to stop.
+        let state = match (self.state.as_str(), self.dismissed) {
+            (_, true) => ReviewState::Dismissed,
+            ("COMMENT", false) => ReviewState::Commented,
+            ("APPROVED", false) => ReviewState::Approved,
+            ("REQUEST_CHANGES", false) => ReviewState::ChangesRequested,
+            _ => ReviewState::Other,
+        };
+        Ok(MergeRequestReview {
+            state,
             id: self.id,
-            author_login: self.user.login,
-            head_commit: CommitSha(self.commit_id),
+            author_login: user.login,
+            head_commit,
             body: self.body,
-        }
+        })
     }
 }
 
@@ -289,8 +331,8 @@ impl ForgeAdapter for ForgejoForge {
                 if !seen.insert(value.id) {
                     return Err(ForgeError::Other("inconsistent review listing".into()));
                 }
-                if value.state == "COMMENT" {
-                    result.push(value.into_review());
+                if value.is_submitted() {
+                    result.push(value.into_review()?);
                 }
             }
             if count < 100 {
@@ -319,14 +361,15 @@ impl ForgeAdapter for ForgejoForge {
             &json!({"event":"COMMENT","commit_id":head,"body":body}),
         )?)
         .map_err(|e| ForgeError::Other(e.to_string()))?;
-        if response.user.login != self.bot_login
-            || response.commit_id != head.as_str()
-            || response.body != body
-            || response.state != "COMMENT"
+        let review = response.into_review()?;
+        if review.author_login != self.bot_login
+            || review.head_commit != *head
+            || review.body != body
+            || review.state != ReviewState::Commented
         {
             return Err(ForgeError::Other("unexpected review receipt".into()));
         }
-        Ok(response.into_review())
+        Ok(review)
     }
 
     fn writes_allowed(&self) -> bool {

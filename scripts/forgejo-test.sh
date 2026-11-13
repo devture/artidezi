@@ -46,9 +46,25 @@ docker exec -u git "$NAME" forgejo admin user create \
 TOKEN="$(docker exec -u git "$NAME" forgejo admin user generate-access-token \
 	--username "$USER_NAME" --token-name "artidezi-test-$$" --scopes all --raw)"
 
+# Ordinary users for source PRs ArtiDezi did not open: a Renovate-style bot (Forgejo logins cannot
+# contain brackets) and a human maintainer who can object with a change-request review.
+other_user() {
+	docker exec -u git "$NAME" forgejo admin user create \
+		--username "$1" --password "$PASSWORD" \
+		--email "${1}@artidezi.invalid" --must-change-password=false >/dev/null
+	docker exec -u git "$NAME" forgejo admin user generate-access-token \
+		--username "$1" --token-name "artidezi-test-$$" --scopes all --raw
+}
+RENOVATE_TOKEN="$(other_user renovate-bot)"
+MAINTAINER_TOKEN="$(other_user maintainer)"
+
 export ARTIDEZI_FORGEJO_URL="$URL"
 export ARTIDEZI_FORGEJO_TOKEN="$TOKEN"
 export ARTIDEZI_FORGEJO_USER="$USER_NAME"
+export ARTIDEZI_FORGEJO_RENOVATE_TOKEN="$RENOVATE_TOKEN"
+export ARTIDEZI_FORGEJO_RENOVATE_USER=renovate-bot
+export ARTIDEZI_FORGEJO_MAINTAINER_TOKEN="$MAINTAINER_TOKEN"
+export ARTIDEZI_FORGEJO_MAINTAINER_USER=maintainer
 
 cargo test -p artidezi-forge --test forgejo "$@" -- --nocapture
 cargo test -p artidezi-orchestrator --test forgejo_slice "$@" -- --nocapture
