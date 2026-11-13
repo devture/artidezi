@@ -264,7 +264,7 @@ The worker that lost its lease is held from new assignments for five minutes, al
 worker to take over. With one worker, recovery can wait for its cooldown and environment recovery.
 
 `transient_failure_retries` separately allows up to five fresh executions after recognized terminal
-Codex capacity, temporary rate-limit or connection errors with no result. It defaults to zero.
+Codex capacity, temporary rate-limit, connection or timeout errors with no result. It defaults to zero.
 Retries wait 1, 2, 5, 10 and 30 minutes and retain the original frozen inputs. The task shows its
 scheduled retry time; no comment or manual action is needed. If discovery already observed
 a newer source head, recovery schedules a fresh evaluation within the existing source budget. It

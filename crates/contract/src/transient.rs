@@ -32,7 +32,9 @@ pub fn codex_failure(stream: &[u8]) -> Option<&'static str> {
         "temporarily unavailable",
         "stream disconnected before completion",
         "connection reset",
-        "request timed out",
+        // Policy: a terminal timeout, such as "workspace routing discovery timed out" after Codex's
+        // reconnection attempts, is worth a bounded retry. Retries start fresh from frozen inputs.
+        "timed out",
     ]
     .iter()
     .any(|pattern| message.contains(pattern))
@@ -62,7 +64,15 @@ mod tests {
                 Some("model_transport"),
             ),
             (
+                r#"{"type":"turn.failed","error":{"message":"workspace routing discovery timed out"}}"#,
+                Some("model_transport"),
+            ),
+            (
                 r#"{"type":"item.completed","item":{"aggregated_output":"Selected model is at capacity"}}"#,
+                None,
+            ),
+            (
+                r#"{"type":"item.completed","item":{"aggregated_output":"test timed out"}}"#,
                 None,
             ),
             (
