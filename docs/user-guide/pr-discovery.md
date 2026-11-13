@@ -146,8 +146,9 @@ state. Passing and failing checks both permit an assessment; a failed check can 
 adaptation is needed. If no checks are reported, the PR can be assessed after its settle window.
 Setting `wait_for_checks_to_finish: false` permits assessment with running checks after settling.
 `require_successful_checks` remains a separate publication freshness gate for handlers that use it;
-automatic source approval or merge always requires current successful checks. An empty or
-all-skipped check set does not satisfy that source-action gate. One source has at most one active attempt;
+automatic source approval or merge requires current successful checks. An all-skipped check set
+never satisfies that source-action gate, and an empty one does so only for a handler that opts in
+with [`safe_verdict_checks: passing_or_none`](#repositories-without-ci). One source has at most one active attempt;
 project capacity bounds queued/running assessments. Budgets count queued evaluations, including
 superseded ones. Exhausted budgets, failed attempts and requests for human input pause that source
 until an explicit human action, unless the worker pool [opts into retries](operations.md#lost-execution-recovery-and-multiple-workers) of lost or transiently failed execution. Within one worker
@@ -352,6 +353,44 @@ commit statuses on the assessed head, no reviewer whose latest decision requests
 unchanged source and the same configuration. Pending checks wait for CI; failed checks hold the task
 as described above. The agent's risk rating, evidence and questions appear in the review; they are
 context, not an extra gate, and an agent that needs a decision returns `needs_human` instead.
+
+### Repositories without CI
+
+A repository whose forge reports no checks at all for a PR's head can never satisfy that gate, so
+by default its unchanged PRs wait for a person. An approve or merge handler can accept that case
+explicitly with `safe_verdict_checks`:
+
+| Value | Approve or merge when the head's checks are |
+| --- | --- |
+| `passing` (default) | reported and successful |
+| `passing_or_none` | reported and successful, or not reported at all |
+
+```yaml
+handlers:
+  - id: dependency-updates
+    authors: [renovate-bot]
+    action: assess
+    mode: publish
+    safe_verdict_action: merge
+    safe_verdict_checks: passing_or_none
+    require_successful_checks: false
+    instructions: >-
+      This repository has no CI. Read the upstream changelog and the diff, and run the
+      relevant tests yourself before deciding that the update needs no adaptation.
+```
+
+With `passing_or_none`, the agent's assessment is the only evidence behind the approval or merge:
+nothing independent has built or tested the change. Ask the agent in the handler's instructions for
+the checks you would otherwise expect from CI, and keep it to repositories where that is enough.
+Running checks still wait and failed checks still hold the task. A set of checks that all reported
+`skipped` or neutral still does not qualify: it means the repository has CI that chose not to run.
+Freshness, author, review and authority gates are unchanged, and changing the setting invalidates
+assessments made under the previous value.
+
+The approving review then says that no forge checks were reported for the commit, and the
+`assessment.approval_planned` and `source.merge_planned` events carry `"forge_checks": "none"`.
+The setting needs `require_successful_checks: false`, which would otherwise refuse to publish the
+assessment of a head without checks, and a `safe_verdict_action` of `approve` or `merge`.
 
 On Forgejo, the merge request names the assessed commit (`head_commit_id`), so Forgejo itself
 refuses the merge if the PR moved after the last check. The approval has no such guard. Configure

@@ -7,6 +7,7 @@
 use crate::{Orchestrator, OrchestratorError, Result, discovery::source_of};
 use artidezi_config::model::{
     AdaptationAction, DeliveryMode, PullRequestAction, PullRequestMode, SafeVerdictAction,
+    SafeVerdictChecks,
 };
 use artidezi_config::{ResolvedProjectPolicy, ResolvedRepository};
 use artidezi_contract::{
@@ -30,6 +31,14 @@ struct ProposalPlan {
     cache_ref: String,
     title: String,
     body: String,
+}
+
+/// Marks a planned source action that proceeded with no forge checks reported for its head.
+fn checks_receipt(mut payload: serde_json::Value, without_checks: bool) -> serde_json::Value {
+    if without_checks {
+        payload["forge_checks"] = "none".into();
+    }
+    payload
 }
 
 fn invalid(message: &str) -> OrchestratorError {
@@ -308,6 +317,7 @@ impl Orchestrator {
                     || h.mode != PullRequestMode::Publish
                     || h.action != PullRequestAction::Assess
                     || h.safe_verdict_action != source.safe_verdict_action
+                    || h.safe_verdict_checks != source.safe_verdict_checks
             })
         {
             return Err(invalid(
@@ -549,9 +559,7 @@ impl Orchestrator {
         let repo = &policy.repositories[&source.repository_id];
         let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
         let action = source.safe_verdict_action;
-        if automatic {
-            self.require_source_action_ready(task, &policy)?;
-        }
+        let without_checks = automatic && self.require_source_action_ready(task, &policy)?;
         let expected_state = if automatic {
             artidezi_forge::ReviewState::Approved
         } else {
@@ -574,6 +582,11 @@ impl Orchestrator {
             Outcome::Failed => unreachable!(),
         };
         let mut body = format!("{verdict}\n\n{}", summary(result));
+        if without_checks {
+            body.push_str(
+                "\n\n**No forge checks were reported for this commit.** This handler accepts that, so the approval rests on ArtiDezi's assessment alone.",
+            );
+        }
         body.push_str("\n\n");
         body.push_str(&evidence_section(result, repo));
         for mr in self.db.list_merge_requests(&task.id)? {
@@ -583,6 +596,17 @@ impl Orchestrator {
             "\n\nAssessed source `{}`.\n\n{marker}",
             source.input.commit
         ));
+        // A planned approval fixed its body, including whether checks were absent then. Checks that
+        // appeared since must not make the existing approval look foreign on resume or retry.
+        if automatic
+            && let Some(planned) = self.db.list_events(&task.id)?.into_iter().find(|e| {
+                e.kind == "assessment.approval_planned"
+                    && e.payload["head"] == serde_json::json!(source.input.commit)
+            })
+            && let Some(planned) = planned.payload["body"].as_str()
+        {
+            body = planned.to_owned();
+        }
         let forge = self.forge(&repo.forge)?;
         let matching: Vec<_> = forge
             .list_reviews(&repo.remote, source.number)?
@@ -605,13 +629,16 @@ impl Orchestrator {
                             "A prior approval was planned but its matching receipt is missing; inspect the source before a new evaluation",
                         ));
                     }
-                    self.require_source_action_ready(task, &policy)?;
+                    let without_checks = self.require_source_action_ready(task, &policy)?;
                     self.db.record_event(
                         Some(&task.id),
                         Some(&attempt.id),
                         "orchestrator",
                         "assessment.approval_planned",
-                        serde_json::json!({"head":source.input.commit,"body":body}),
+                        checks_receipt(
+                            serde_json::json!({"head":source.input.commit,"body":body}),
+                            without_checks,
+                        ),
                     )?;
                     self.forge(&repo.forge)?.create_approval_review(
                         &repo.remote,
@@ -647,14 +674,17 @@ impl Orchestrator {
             if self.recover_completed_source_action(task, attempt, &policy)? {
                 return Ok(());
             }
-            self.require_source_action_ready(task, &policy)?;
+            let without_checks = self.require_source_action_ready(task, &policy)?;
             if action == SafeVerdictAction::Merge {
                 self.db.record_event(
                     Some(&task.id),
                     Some(&attempt.id),
                     "orchestrator",
                     "source.merge_planned",
-                    serde_json::json!({"head":source.input.commit,"method":"merge"}),
+                    checks_receipt(
+                        serde_json::json!({"head":source.input.commit,"method":"merge"}),
+                        without_checks,
+                    ),
                 )?;
                 let commit = self.forge(&repo.forge)?.merge(
                     &repo.remote,
@@ -739,11 +769,13 @@ impl Orchestrator {
     }
 
     /// Agent judgment is only one gate. Fresh forge checks and review objections are independent.
+    /// Returns true when the action may proceed only because the handler accepts a head with no
+    /// forge checks at all, so the assessment is the sole evidence.
     pub(crate) fn require_source_action_ready(
         &self,
         task: &Task,
         policy: &ResolvedProjectPolicy,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.require_source_fresh(task, policy, false)?;
         if self.source_changes_requested(policy)? {
             return Err(invalid(
@@ -757,12 +789,19 @@ impl Orchestrator {
             .get_merge_request(&repo.remote, source.number)?
             .checks
         {
-            artidezi_forge::ChecksState::Success => Ok(()),
-            artidezi_forge::ChecksState::Absent | artidezi_forge::ChecksState::Inconclusive => {
-                Err(invalid(
-                    "No successful forge checks; human review is required for automatic source action",
-                ))
+            artidezi_forge::ChecksState::Success => Ok(false),
+            artidezi_forge::ChecksState::Absent
+                if source.safe_verdict_checks == SafeVerdictChecks::PassingOrNone =>
+            {
+                Ok(true)
             }
+            artidezi_forge::ChecksState::Absent => Err(invalid(
+                "No forge checks were reported; human review is required for automatic source action unless the handler sets safe_verdict_checks: passing_or_none",
+            )),
+            // Skipped checks mean CI exists and chose not to run; that is not a check-less project.
+            artidezi_forge::ChecksState::Inconclusive => Err(invalid(
+                "No successful forge checks; human review is required for automatic source action",
+            )),
             artidezi_forge::ChecksState::Pending => Err(OrchestratorError::WaitingForCi),
             artidezi_forge::ChecksState::Failure => Err(OrchestratorError::ChecksFailed),
         }

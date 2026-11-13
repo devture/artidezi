@@ -588,6 +588,145 @@ fn forgejo_source_approval_and_merge() {
     );
 }
 
+/// A repository without CI: Forgejo reports no checks at all for the Renovate head.
+#[test]
+fn forgejo_checkless_source_merges_only_with_the_opt_in() {
+    let (Some(url), Some(token), Some(user), Some(renovate_user), Some(renovate_token)) = (
+        env("ARTIDEZI_FORGEJO_URL"),
+        env("ARTIDEZI_FORGEJO_TOKEN"),
+        env("ARTIDEZI_FORGEJO_USER"),
+        env("ARTIDEZI_FORGEJO_RENOVATE_USER"),
+        env("ARTIDEZI_FORGEJO_RENOVATE_TOKEN"),
+    ) else {
+        eprintln!("skipping: ARTIDEZI_FORGEJO_* not set");
+        return;
+    };
+    let forge = ForgejoForge::new(&url, &token, &user);
+    let remote = forge
+        .create_repository(
+            &format!("artidezi-checkless-{}", std::process::id()),
+            "main",
+        )
+        .unwrap();
+    forge.add_collaborator(&remote, &renovate_user).unwrap();
+    let renovate = ForgejoForge::new(&url, &renovate_token, &renovate_user);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = BareCache::open_or_init(&dir.path().join("renovate-cache")).unwrap();
+    let pull = open_renovate_pull(&renovate, &remote, &cache, "renovate/no-ci", "Update lib");
+    assert_eq!(
+        forge
+            .get_merge_request(&remote, pull.number)
+            .unwrap()
+            .checks,
+        ChecksState::Absent
+    );
+
+    // Each phase is a separate controller with its own database, built from configuration the
+    // way the server builds it, so the adapter's own gate follows the handler too.
+    let controller = |phase: &str, opted_in: bool| {
+        let root = dir.path().join(phase);
+        fs::create_dir_all(&root).unwrap();
+        let mut yaml = source_config(&url, &user, &renovate_user, &remote);
+        if opted_in {
+            yaml = yaml.replace(
+                "          safe_verdict_action: merge\n",
+                "          safe_verdict_action: merge\n          safe_verdict_checks: passing_or_none\n",
+            );
+        }
+        let config = artidezi_config::parse(&yaml).unwrap();
+        assert!(
+            artidezi_config::validate(&config).is_empty(),
+            "{:?}",
+            artidezi_config::validate(&config)
+        );
+        let forges = artidezi_orchestrator::forges::build_forges(
+            &config,
+            &forgejo_secrets(&root, &token),
+            &root.join("fake"),
+        )
+        .unwrap();
+        let orchestrator = Orchestrator::open(config, &root.join("data"), forges).unwrap();
+        let script = root.join("unchanged.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nset -e\n{}\n",
+                result_writer(
+                    r#"{"schema_version":1,"outcome":"approve_untouched","summary":"No adaptations necessary.","repositories":[{"id":"role","changed":false}]}"#
+                )
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        (orchestrator, root, script)
+    };
+
+    // Without the opt-in, an unchanged verdict on a check-less head waits for a person.
+    let (mut orchestrator, root, script) = controller("plain", false);
+    let queued = orchestrator
+        .scan_pull_requests(Some("roles"), true)
+        .unwrap();
+    assert!(queued.errors.is_empty(), "{:?}", queued.errors);
+    let task = queued.queued[0].clone();
+    assert_eq!(work(&mut orchestrator, &root, &script), AttemptState::Valid);
+    assert_eq!(
+        orchestrator.db.get_task(&task).unwrap().state,
+        TaskState::NeedsHuman
+    );
+    let hold = orchestrator
+        .db
+        .list_events(&task)
+        .unwrap()
+        .into_iter()
+        .rfind(|e| e.kind == "task.needs_human")
+        .unwrap();
+    assert!(
+        hold.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("No forge checks were reported"),
+        "{}",
+        hold.payload
+    );
+    assert_eq!(
+        forge.get_merge_request(&remote, pull.number).unwrap().state,
+        ForgeMrState::Open
+    );
+    assert!(forge.list_reviews(&remote, pull.number).unwrap().is_empty());
+
+    // With it, the same head is approved and merged, and the receipt says checks were absent.
+    let (mut orchestrator, root, script) = controller("opted-in", true);
+    let queued = orchestrator
+        .scan_pull_requests(Some("roles"), true)
+        .unwrap();
+    assert!(queued.errors.is_empty(), "{:?}", queued.errors);
+    let task = queued.queued[0].clone();
+    assert_eq!(work(&mut orchestrator, &root, &script), AttemptState::Valid);
+    assert_eq!(
+        orchestrator.db.get_task(&task).unwrap().state,
+        TaskState::Done
+    );
+    let merged = forge.get_merge_request(&remote, pull.number).unwrap();
+    assert_eq!(merged.state, ForgeMrState::Merged);
+    assert_eq!(merged.head_commit, pull.head_commit);
+    let reviews = forge.list_reviews(&remote, pull.number).unwrap();
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    assert_eq!(reviews[0].state, ReviewState::Approved);
+    assert!(
+        reviews[0]
+            .body
+            .contains("No forge checks were reported for this commit"),
+        "{}",
+        reviews[0].body
+    );
+    let events = orchestrator.db.list_events(&task).unwrap();
+    for kind in ["assessment.approval_planned", "source.merge_planned"] {
+        let event = events.iter().find(|e| e.kind == kind).unwrap();
+        assert_eq!(event.payload["forge_checks"], "none", "{kind}");
+    }
+    assert!(events.iter().any(|e| e.kind == "source.merge_observed"));
+}
+
 #[test]
 fn forgejo_adaptation_merges_once_its_checks_pass() {
     let (Some(url), Some(token), Some(user), Some(renovate_user), Some(renovate_token)) = (

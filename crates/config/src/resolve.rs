@@ -67,6 +67,13 @@ pub struct PullRequestSource {
         skip_serializing_if = "crate::model::SafeVerdictAction::is_comment"
     )]
     pub safe_verdict_action: crate::model::SafeVerdictAction,
+    /// The handler's accepted check states for that action when the task was created. Absent on
+    /// older tasks, which require passing checks.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::SafeVerdictChecks::is_passing"
+    )]
+    pub safe_verdict_checks: crate::model::SafeVerdictChecks,
     /// The handler's adaptation action when the task was created. Absent on older tasks, whose
     /// adaptations are reviewed by a person.
     #[serde(

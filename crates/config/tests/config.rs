@@ -210,6 +210,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     let handler = PullRequestHandler {
         adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
+        safe_verdict_checks: Default::default(),
         mode: Default::default(),
         id: "renovate".into(),
         agent_profile: None,
@@ -428,6 +429,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     discovery.handlers.push(PullRequestHandler {
         adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
+        safe_verdict_checks: Default::default(),
         mode: Default::default(),
         id: "unreachable".into(),
         ..handler
@@ -650,6 +652,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             safe_verdict_action: Default::default(),
+            safe_verdict_checks: Default::default(),
             id: "updates".into(),
             agent_profile: None,
             authors: Some(vec!["updater".into()]),
@@ -731,6 +734,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
             mode: PullRequestMode::Publish,
             action: PullRequestAction::Assess,
             safe_verdict_action: SafeVerdictAction::Merge,
+            safe_verdict_checks: Default::default(),
             wait_for_checks_to_finish: true,
             require_successful_checks: false,
             ci_context: Default::default(),
@@ -767,6 +771,82 @@ fn source_actions_are_opt_in_and_reject_unscoped_and_dry_run_authority() {
     p.effects.merge_source_merge_request_on_safe_verdict = false;
     p.pull_requests.as_mut().unwrap().handlers[0].safe_verdict_action = SafeVerdictAction::Approve;
     assert!(artidezi_config::validate(&config).is_empty());
+}
+
+fn handler(
+    config: &mut artidezi_config::Config,
+) -> &mut artidezi_config::model::PullRequestHandler {
+    &mut config
+        .projects
+        .values_mut()
+        .next()
+        .unwrap()
+        .pull_requests
+        .as_mut()
+        .unwrap()
+        .handlers[0]
+}
+
+#[test]
+fn acting_without_forge_checks_is_an_explicit_approve_or_merge_opt_in() {
+    use artidezi_config::model::*;
+    let mut config = github_merge_handler_config();
+    // Omitted, it means passing checks and is not written back out.
+    assert_eq!(
+        handler(&mut config).safe_verdict_checks,
+        SafeVerdictChecks::Passing
+    );
+    assert!(
+        !serde_json::to_string(handler(&mut config))
+            .unwrap()
+            .contains("safe_verdict_checks")
+    );
+
+    handler(&mut config).safe_verdict_checks = SafeVerdictChecks::PassingOrNone;
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
+    handler(&mut config).safe_verdict_action = SafeVerdictAction::Approve;
+    config
+        .projects
+        .values_mut()
+        .next()
+        .unwrap()
+        .effects
+        .merge_source_merge_request_on_safe_verdict = false;
+    assert!(artidezi_config::validate(&config).is_empty());
+
+    // Nothing to relax for a comment-only handler.
+    let mut bad = config.clone();
+    handler(&mut bad).safe_verdict_action = SafeVerdictAction::Comment;
+    let problems = artidezi_config::validate(&bad);
+    assert!(
+        problems.iter().any(|p| p
+            .to_string()
+            .contains("only applies to safe_verdict_action approve or merge")),
+        "{problems:?}"
+    );
+    // Without checks, that freshness gate would refuse every comment review and adaptation.
+    let mut bad = config.clone();
+    handler(&mut bad).require_successful_checks = true;
+    let problems = artidezi_config::validate(&bad);
+    assert!(
+        problems.iter().any(|p| p
+            .to_string()
+            .contains("requires require_successful_checks: false")),
+        "{problems:?}"
+    );
+
+    let yaml = include_str!("fixtures/valid.yaml");
+    assert!(
+        artidezi_config::parse(&format!(
+            "{yaml}    pull_requests:\n      poll_interval_seconds: 60\n      settle_seconds: 0\n      max_runs_per_pull_request: 1\n      max_active_tasks: 1\n      repositories: [x]\n      handlers:\n        - id: h\n          authors: [a]\n          action: assess\n          require_successful_checks: false\n          safe_verdict_checks: skipped\n          instructions: x\n"
+        ))
+        .is_err(),
+        "unknown values are rejected"
+    );
 }
 
 #[test]

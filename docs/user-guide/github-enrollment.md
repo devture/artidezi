@@ -178,7 +178,9 @@ unreleased tags, create duplicate releases, or equate paired PRs with an ordered
 The adapter combines visible commit statuses and check runs. `wait_for_checks_to_finish` waits for
 all reported checks to finish before assessment, whether they pass or fail. An empty check set is
 distinct from running checks and permits assessment after the settle window. An all-skipped/neutral
-set also permits assessment but does not satisfy automatic source-action requirements. ArtiDezi
+set also permits assessment but does not satisfy automatic source-action requirements. An empty
+set satisfies them only for a handler with
+[`safe_verdict_checks: passing_or_none`](pr-discovery.md#repositories-without-ci). ArtiDezi
 does not inspect branch protection, required-check producers or review policies. Passing CI does
 not establish migration safety.
 Configure worker setup/verification commands appropriate to each repository; the example intentionally
@@ -296,8 +298,10 @@ instructions: >-
 
 `wait_for_checks_to_finish` controls whether assessment waits for reported CI to finish; it defaults
 to true. `require_successful_checks` retains a separate successful-check freshness gate when
-publishing the assessment. Approval and merging **always** require successful current forge checks,
-even when an assessment was allowed after failed or absent CI. They require an unchanged accepted
+publishing the assessment. Approval and merging require successful current forge checks, even when
+an assessment was allowed after failed or absent CI, unless the handler accepts a head with no
+checks at all through [`safe_verdict_checks: passing_or_none`](pr-discovery.md#repositories-without-ci).
+They require an unchanged accepted
 result and no outstanding change-request review. Pending CI
 puts an otherwise eligible result in **Waiting for CI**. Risk ratings, evidence and questions are recorded in the task as worker-supplied context; they do not
 replace the controller's forge, freshness or authority checks.

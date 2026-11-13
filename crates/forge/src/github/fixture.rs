@@ -417,7 +417,9 @@ fn reply(r: &Request, state: &mut State) -> Reply {
             if r.body["sha"] != state.head {
                 return Reply::new(409, json!({"message":"Head changed"}));
             }
-            assert!(state.open && state.conclusion == "success");
+            // Tripwire: the adapter merges a source only with green checks, or with none at all
+            // when a handler opted in. Skipped, running and failed checks never reach here.
+            assert!(state.open && matches!(state.conclusion.as_str(), "success" | "none"));
             assert_eq!(r.body["merge_method"], "merge");
             state.open = false;
             state.merged = true;

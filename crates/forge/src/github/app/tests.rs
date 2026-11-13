@@ -788,3 +788,114 @@ fn a_push_racing_the_close_reopens_the_proposal_at_the_new_head() {
         assert_eq!(fixture.state.lock().unwrap().comments.len(), 1);
     }
 }
+
+#[test]
+fn source_actions_without_checks_need_their_own_narrower_grant() {
+    let fixture = fixture();
+    fixture.state.lock().unwrap().publication = true;
+    let head = CommitSha("a".repeat(40));
+    let renovate = || -> SourceMergeAuthors {
+        [("org/app".into(), "renovate[bot]".into())]
+            .into_iter()
+            .collect()
+    };
+    let forge = |without_checks: SourceActionsWithoutChecks| {
+        fixture
+            .forge()
+            .with_publication_repositories(["org/app".into()].into())
+            .unwrap()
+            .with_source_actions(["org/app".into()].into(), renovate())
+            .unwrap()
+            .with_source_actions_without_checks(without_checks)
+            .unwrap()
+    };
+    let both = || SourceActionsWithoutChecks {
+        approvals: renovate(),
+        merges: renovate(),
+    };
+    let writes = || {
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .filter(|r| r.method != "GET" && !r.path.starts_with("/app/"))
+            .count()
+    };
+
+    // Skipped and failed checks never qualify, whatever the grant.
+    for conclusion in ["skipped", "failure", "running"] {
+        fixture.state.lock().unwrap().conclusion = conclusion.into();
+        let forge = forge(both());
+        assert!(
+            forge
+                .create_approval_review("org/app", 33, &head, "Approve")
+                .is_err()
+        );
+        assert!(
+            forge
+                .merge("org/app", 33, &head, MergeMethod::Merge)
+                .is_err()
+        );
+    }
+    // No checks at all: refused without the grant.
+    fixture.state.lock().unwrap().conclusion = "none".into();
+    let plain = forge(SourceActionsWithoutChecks::default());
+    assert!(
+        plain
+            .create_approval_review("org/app", 33, &head, "Approve")
+            .is_err()
+    );
+    assert!(
+        plain
+            .merge("org/app", 33, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    assert_eq!(writes(), 0);
+    // A grant for another author grants nothing for this one.
+    let elsewhere = || -> SourceMergeAuthors {
+        [("org/app".to_owned(), "someone-else".to_owned())]
+            .into_iter()
+            .collect()
+    };
+    let other = forge(SourceActionsWithoutChecks {
+        approvals: elsewhere(),
+        merges: elsewhere(),
+    });
+    assert!(
+        other
+            .create_approval_review("org/app", 33, &head, "Approve")
+            .is_err()
+    );
+    assert!(
+        other
+            .merge("org/app", 33, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    assert_eq!(writes(), 0);
+    // An approval grant does not extend to merging.
+    let approve_only = forge(SourceActionsWithoutChecks {
+        approvals: renovate(),
+        merges: Default::default(),
+    });
+    approve_only
+        .create_approval_review("org/app", 33, &head, "Approve")
+        .unwrap();
+    assert!(
+        approve_only
+            .merge("org/app", 33, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    forge(both())
+        .merge("org/app", 33, &head, MergeMethod::Merge)
+        .unwrap();
+    assert!(fixture.state.lock().unwrap().merged);
+    // The grant needs publication authority for its repositories.
+    assert!(
+        fixture
+            .forge()
+            .with_source_actions_without_checks(both())
+            .is_err()
+    );
+}

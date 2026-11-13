@@ -67,7 +67,7 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | --- | --- |
 | No discovery, unmatched or ignored author | No task |
 | Draft, running checks or unsettled head | Wait without a model call; revisit the known source when due |
-| No reported checks after settling | Queue an evaluation; source approval/merge still requires passing checks |
+| No reported checks after settling | Queue an evaluation; source approval/merge still requires passing checks unless the handler sets `safe_verdict_checks: passing_or_none` |
 | All reported checks terminal, including failures | Queue an evaluation; failed CI is evidence for the assessment |
 | Existing active evaluation | Do not overlap it |
 | Queued evaluation has an old head | Cancel it; consider the newest head on a later scan |

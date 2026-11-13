@@ -1486,6 +1486,14 @@ pub(super) fn projects(
                         } else {
                             "adaptations require review"
                         };
+                        let checks = match handler.safe_verdict_checks {
+                            artidezi_config::model::SafeVerdictChecks::Passing => {
+                                "with successful checks"
+                            }
+                            artidezi_config::model::SafeVerdictChecks::PassingOrNone => {
+                                "with successful checks, or with no checks at all"
+                            }
+                        };
                         match handler.safe_verdict_action {
                             artidezi_config::model::SafeVerdictAction::Comment => (
                                 "Publish",
@@ -1495,14 +1503,12 @@ pub(super) fn projects(
                             ),
                             artidezi_config::model::SafeVerdictAction::Approve => (
                                 "Approve safe updates",
-                                format!(
-                                    "Approves unchanged updates with successful checks; {adaptations}"
-                                ),
+                                format!("Approves unchanged updates {checks}; {adaptations}"),
                             ),
                             artidezi_config::model::SafeVerdictAction::Merge => (
                                 "Merge safe updates",
                                 format!(
-                                    "Approves and merges unchanged updates from the handler's authors with successful checks; {adaptations}"
+                                    "Approves and merges unchanged updates from the handler's authors {checks}; {adaptations}"
                                 ),
                             ),
                         }

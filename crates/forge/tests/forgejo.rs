@@ -579,3 +579,133 @@ fn forgejo_source_approval_and_merge_contract() {
         Err(ForgeError::NotMergeable(..))
     ));
 }
+
+#[test]
+fn forgejo_source_actions_without_checks_contract() {
+    let (Some(url), Some(token), Some(user)) = (
+        env("ARTIDEZI_FORGEJO_URL"),
+        env("ARTIDEZI_FORGEJO_TOKEN"),
+        env("ARTIDEZI_FORGEJO_USER"),
+    ) else {
+        eprintln!("skipping: ARTIDEZI_FORGEJO_* not set");
+        return;
+    };
+    let (renovate_user, renovate_token) = other_user("RENOVATE");
+    let plain = ForgejoForge::new(&url, &token, &user);
+    let remote = plain
+        .create_repository(
+            &format!("artidezi-checkless-{}", std::process::id()),
+            "main",
+        )
+        .unwrap();
+    plain.add_collaborator(&remote, &renovate_user).unwrap();
+    let renovate_authors = || -> SourceMergeAuthors {
+        [(remote.clone(), renovate_user.clone())]
+            .into_iter()
+            .collect()
+    };
+    let with = |without_checks: SourceActionsWithoutChecks| {
+        ForgejoForge::new(&url, &token, &user)
+            .with_source_actions([remote.clone()], renovate_authors())
+            .with_source_actions_without_checks(without_checks)
+    };
+    let renovate = ForgejoForge::new(&url, &renovate_token, &renovate_user);
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = BareCache::open_or_init(&dir.path().join("cache")).unwrap();
+    let creds = plain.git_credentials(&remote).unwrap();
+    cache
+        .fetch(
+            &plain.clone_url(&remote),
+            &["+refs/heads/main:refs/heads/main"],
+            creds.as_ref(),
+        )
+        .unwrap();
+    let repo = Repository::open_bare(cache.path()).unwrap();
+    let parent = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    let mut tree = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+    tree.insert("lib.txt", repo.blob(b"2.0\n").unwrap(), 0o100644)
+        .unwrap();
+    let tree = repo.find_tree(tree.write().unwrap()).unwrap();
+    let sig = Signature::now("Renovate", "renovate@invalid").unwrap();
+    let update = repo
+        .commit(None, &sig, &sig, "Update lib", &tree, &[&parent])
+        .unwrap();
+    cache
+        .set_ref("refs/heads/renovate/lib", update, "")
+        .unwrap();
+    cache
+        .push(
+            &plain.clone_url(&remote),
+            "refs/heads/renovate/lib:refs/heads/renovate/lib",
+            creds.as_ref(),
+        )
+        .unwrap();
+    let pull = renovate
+        .create_merge_request(
+            &remote,
+            &NewMergeRequest {
+                title: "Update lib".into(),
+                body: "Automated update.".into(),
+                source_branch: "renovate/lib".into(),
+                target_branch: "main".into(),
+                draft: false,
+            },
+        )
+        .unwrap();
+    let head = pull.head_commit.clone();
+    assert_eq!(pull.checks, ChecksState::Absent);
+
+    // Ordinary source authority, or a grant naming another author, still needs green checks.
+    let ordinary = with(SourceActionsWithoutChecks::default());
+    let mut someone_else = SourceMergeAuthors::default();
+    someone_else.allow(&remote, MergeAuthor::Login("someone-else".into()));
+    let other = with(SourceActionsWithoutChecks {
+        approvals: someone_else.clone(),
+        merges: someone_else,
+    });
+    for forge in [&ordinary, &other] {
+        assert!(
+            forge
+                .create_approval_review(&remote, pull.number, &head, "Approve.")
+                .is_err()
+        );
+        assert!(
+            forge
+                .merge(&remote, pull.number, &head, MergeMethod::Merge)
+                .is_err()
+        );
+    }
+    assert!(plain.list_reviews(&remote, pull.number).unwrap().is_empty());
+
+    // An approval grant approves the check-less head but does not extend to merging it.
+    let approve_only = with(SourceActionsWithoutChecks {
+        approvals: renovate_authors(),
+        merges: Default::default(),
+    });
+    let approval = approve_only
+        .create_approval_review(&remote, pull.number, &head, "Approve.")
+        .unwrap();
+    assert_eq!(approval.state, ReviewState::Approved);
+    assert_eq!(approval.head_commit, head);
+    assert!(
+        approve_only
+            .merge(&remote, pull.number, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    let merged = with(SourceActionsWithoutChecks {
+        approvals: renovate_authors(),
+        merges: renovate_authors(),
+    })
+    .merge(&remote, pull.number, &head, MergeMethod::Merge)
+    .unwrap();
+    assert_eq!(plain.branch_head(&remote, "main").unwrap(), merged);
+    assert_eq!(
+        plain.get_merge_request(&remote, pull.number).unwrap().state,
+        MergeRequestState::Merged
+    );
+}

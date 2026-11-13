@@ -221,6 +221,36 @@ fn reopen(w: &mut World, fixture: &Fixture) {
                         },
                     )
                     .unwrap()
+                    .with_source_actions_without_checks({
+                        let h = &w.orchestrator.config.projects["roles"]
+                            .pull_requests
+                            .as_ref()
+                            .unwrap()
+                            .handlers[0];
+                        let opted_in = h.safe_verdict_checks
+                            == artidezi_config::model::SafeVerdictChecks::PassingOrNone;
+                        let authors = || -> artidezi_forge::SourceMergeAuthors {
+                            [("org/app".into(), "renovate[bot]".into())]
+                                .into_iter()
+                                .collect()
+                        };
+                        artidezi_forge::SourceActionsWithoutChecks {
+                            approvals: if opted_in {
+                                authors()
+                            } else {
+                                Default::default()
+                            },
+                            merges: if opted_in
+                                && h.safe_verdict_action
+                                    == artidezi_config::model::SafeVerdictAction::Merge
+                            {
+                                authors()
+                            } else {
+                                Default::default()
+                            },
+                        }
+                    })
+                    .unwrap()
                     .with_adaptation_merges(
                         if w.orchestrator.config.projects["roles"]
                             .effects
@@ -286,6 +316,7 @@ fn world() -> (World, Fixture) {
             adaptation_action: Default::default(),
             agent_profile: None,
             safe_verdict_action: Default::default(),
+            safe_verdict_checks: Default::default(),
             mode: Default::default(),
             id: "renovate".into(),
             authors: Some(vec!["renovate[bot]".into()]),
@@ -1437,6 +1468,177 @@ fn safe_delivery_blocks_checks_objections_and_changed_authority() {
                 || r.method == "GET"
                 || r.path.starts_with("/app/")),
             "{reason}"
+        );
+    }
+}
+/// A merge handler on a repository whose forge reports no checks at all.
+fn checkless_world(opted_in: bool) -> (World, Fixture) {
+    let (mut w, f) = safe_world(true);
+    f.state.lock().unwrap().conclusion = "none".into();
+    if opted_in {
+        w.orchestrator
+            .config
+            .projects
+            .get_mut("roles")
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .handlers[0]
+            .safe_verdict_checks = artidezi_config::model::SafeVerdictChecks::PassingOrNone;
+        assert!(
+            artidezi_config::validate(&w.orchestrator.config).is_empty(),
+            "{:?}",
+            artidezi_config::validate(&w.orchestrator.config)
+        );
+        reopen(&mut w, &f);
+    }
+    (w, f)
+}
+fn hold_reason(w: &World, id: &str) -> String {
+    w.orchestrator
+        .db
+        .list_events(id)
+        .unwrap()
+        .into_iter()
+        .rfind(|e| e.kind == "task.needs_human")
+        .unwrap()
+        .payload["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+#[test]
+fn a_checkless_source_merges_only_with_the_explicit_opt_in() {
+    let (mut w, f) = checkless_world(true);
+    let id = scan(&mut w).remove(0);
+    assert_eq!(
+        w.work(&safe_result(&w, Some("low"), true)),
+        AttemptState::Valid
+    );
+    assert_eq!(task_state(&w, &id), TaskState::Done);
+    let s = f.state.lock().unwrap();
+    assert!(s.merged);
+    assert_eq!(s.reviews.len(), 1);
+    assert_eq!(s.reviews[0]["state"], "APPROVED");
+    let body = s.reviews[0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("No forge checks were reported for this commit"),
+        "{body}"
+    );
+    drop(s);
+    // The audit trail records that both the approval and the merge relied on the assessment.
+    let events = w.orchestrator.db.list_events(&id).unwrap();
+    for kind in ["assessment.approval_planned", "source.merge_planned"] {
+        let event = events.iter().find(|e| e.kind == kind).unwrap();
+        assert_eq!(event.payload["forge_checks"], "none", "{kind}");
+    }
+
+    // Without the opt-in the same source waits for a person and nothing is written.
+    let (mut w, f) = checkless_world(false);
+    let id = scan(&mut w).remove(0);
+    assert_eq!(
+        w.work(&safe_result(&w, Some("low"), true)),
+        AttemptState::Valid
+    );
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert!(
+        hold_reason(&w, &id).contains("safe_verdict_checks: passing_or_none"),
+        "{}",
+        hold_reason(&w, &id)
+    );
+    let s = f.state.lock().unwrap();
+    assert!(!s.merged);
+    assert!(
+        s.requests
+            .iter()
+            .all(|r| r.method == "GET" || r.path.starts_with("/app/"))
+    );
+}
+#[test]
+fn checks_appearing_after_a_checkless_approval_do_not_orphan_it() {
+    let (mut w, f) = checkless_world(true);
+    let id = scan(&mut w).remove(0);
+    // CI starts right after the approval: the merge waits for it.
+    f.state.lock().unwrap().pending_on_approval = true;
+    w.work(&safe_result(&w, Some("low"), true));
+    assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
+    assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
+    f.state.lock().unwrap().conclusion = "success".into();
+    reopen(&mut w, &f);
+    w.orchestrator
+        .tick_at(chrono::Utc::now() + chrono::Duration::seconds(601))
+        .unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::Done);
+    let s = f.state.lock().unwrap();
+    assert!(s.merged);
+    assert_eq!(s.reviews.len(), 1);
+    assert!(
+        s.reviews[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("No forge checks were reported for this commit")
+    );
+    drop(s);
+    // The merge itself relied on the checks that passed by then.
+    let events = w.orchestrator.db.list_events(&id).unwrap();
+    let merge = events
+        .iter()
+        .find(|e| e.kind == "source.merge_planned")
+        .unwrap();
+    assert!(merge.payload.get("forge_checks").is_none());
+}
+#[test]
+fn the_checkless_opt_in_still_waits_blocks_and_follows_configuration() {
+    for case in ["skipped", "pending", "failed", "revoked"] {
+        let (mut w, f) = checkless_world(true);
+        let id = scan(&mut w).remove(0);
+        match case {
+            // All-skipped checks mean CI exists and did not run; that is not a check-less head.
+            "skipped" => f.state.lock().unwrap().conclusion = "skipped".into(),
+            "pending" => f.state.lock().unwrap().conclusion = "running".into(),
+            "failed" => f.state.lock().unwrap().conclusion = "failure".into(),
+            "revoked" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .pull_requests
+                    .as_mut()
+                    .unwrap()
+                    .handlers[0]
+                    .safe_verdict_checks = Default::default();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            w.work(&safe_result(&w, Some("low"), true)),
+            AttemptState::Valid
+        );
+        assert_eq!(
+            task_state(&w, &id),
+            if case == "pending" {
+                TaskState::WaitingForCi
+            } else {
+                TaskState::NeedsHuman
+            },
+            "{case}"
+        );
+        if case == "revoked" {
+            assert!(
+                hold_reason(&w, &id).contains("no longer permits"),
+                "{}",
+                hold_reason(&w, &id)
+            );
+        }
+        let s = f.state.lock().unwrap();
+        assert!(!s.merged, "{case}");
+        assert!(
+            s.requests
+                .iter()
+                .all(|r| r.method == "GET" || r.path.starts_with("/app/")),
+            "{case}"
         );
     }
 }

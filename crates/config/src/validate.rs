@@ -409,6 +409,21 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                         handler.id
                     )));
                 }
+                if handler.safe_verdict_checks == crate::model::SafeVerdictChecks::PassingOrNone {
+                    if handler.safe_verdict_action == SafeVerdictAction::Comment {
+                        problems.push(problem(format!(
+                            "{ctx}: handler {} safe_verdict_checks: passing_or_none only applies to safe_verdict_action approve or merge",
+                            handler.id
+                        )));
+                    }
+                    // Without checks this gate refuses every comment review and adaptation.
+                    if handler.require_successful_checks {
+                        problems.push(problem(format!(
+                            "{ctx}: handler {} safe_verdict_checks: passing_or_none requires require_successful_checks: false",
+                            handler.id
+                        )));
+                    }
+                }
                 if handler.safe_verdict_action == SafeVerdictAction::Comment {
                     continue;
                 }

@@ -104,7 +104,10 @@ A future independent verifier would need a clean separately provisioned executio
 candidate trees, trusted test selection, constrained network/resources and no forge/model credentials,
 with reset between jobs. It is not implemented. Source auto-merge is enabled only by explicit project
 policy and an accepted `approve_untouched` result, while current forge checks, fresh source state and
-review/authority gates remain enforced. Worker risk ratings and evidence are recorded context rather
+review/authority gates remain enforced. A handler may explicitly accept a head with no forge checks
+at all (`safe_verdict_checks: passing_or_none`); its approval or merge then rests on the worker's
+assessment alone, which this trust model does not treat as independent verification, and the
+receipts record that no checks were reported. Worker risk ratings and evidence are recorded context rather
 than an independent controller veto. Repository rules govern merge protection and read/effect races;
 the operator must accept this trust model. Dry-run results have no merge effect.
 

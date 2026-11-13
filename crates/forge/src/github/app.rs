@@ -24,7 +24,8 @@ use super::{
 use crate::{
     CheckResult, CheckResultKind, ChecksState, CiJobLog, ExpectedProposal, ForgeAdapter,
     ForgeError, MergeMethod, MergeRequestInfo, MergeRequestListing, MergeRequestState,
-    MergeRequestSummary, NewMergeRequest, Result, SourceMergeAuthors,
+    MergeRequestSummary, NewMergeRequest, Result, SourceActionsWithoutChecks, SourceMergeAuthors,
+    source_checks_permit,
 };
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
@@ -92,6 +93,8 @@ pub struct GithubForge {
     approval_repositories: BTreeSet<String>,
     /// Authors per repository whose pull requests a merge handler may merge.
     merge_authors: SourceMergeAuthors,
+    /// Narrower still: authors whose pull requests may be approved or merged with no checks.
+    without_checks: SourceActionsWithoutChecks,
     /// Lowercased repositories where ArtiDezi may merge its own adaptation pull requests.
     adaptation_merge_repositories: BTreeSet<String>,
     write_tokens: Mutex<BTreeMap<String, Token>>,
@@ -191,6 +194,7 @@ impl GithubForge {
             publication_repositories: BTreeSet::new(),
             approval_repositories: BTreeSet::new(),
             merge_authors: SourceMergeAuthors::default(),
+            without_checks: SourceActionsWithoutChecks::default(),
             adaptation_merge_repositories: BTreeSet::new(),
             write_tokens: Mutex::new(BTreeMap::new()),
             workflow_write_tokens: Mutex::new(BTreeMap::new()),
@@ -220,6 +224,19 @@ impl GithubForge {
         }
         self.approval_repositories = approvals.into_iter().map(|r| r.to_lowercase()).collect();
         self.merge_authors = merges;
+        Ok(self)
+    }
+
+    /// Source approvals and merges that may proceed when GitHub reports no checks at all for the
+    /// head. Each still needs the matching `with_source_actions` authority.
+    pub fn with_source_actions_without_checks(
+        mut self,
+        actions: SourceActionsWithoutChecks,
+    ) -> Result<Self> {
+        for remote in actions.approvals.remotes().chain(actions.merges.remotes()) {
+            self.require_publication(remote)?;
+        }
+        self.without_checks = actions;
         Ok(self)
     }
 
@@ -938,7 +955,12 @@ impl ForgeAdapter for GithubForge {
         if current.head_commit != *head
             || current.state != MergeRequestState::Open
             || current.draft
-            || current.checks != ChecksState::Success
+            || !source_checks_permit(
+                current.checks,
+                self.without_checks
+                    .approvals
+                    .permits(remote, &current.author_login),
+            )
             || current.author_login == self.identity.bot_login
         {
             return Err(invalid("source changed or is not eligible for approval"));
@@ -977,18 +999,26 @@ impl ForgeAdapter for GithubForge {
         }
         let current = self.get_merge_request(remote, number)?;
         // Another author's pull request is a source merge; this bot's own is an adaptation.
+        // Only a source merge whose handler opted in may proceed without checks.
         let permitted = if current
             .author_login
             .eq_ignore_ascii_case(&self.identity.bot_login)
         {
-            adaptations && current.source_branch.starts_with("artidezi/")
+            adaptations
+                && current.source_branch.starts_with("artidezi/")
+                && current.checks == ChecksState::Success
         } else {
             self.merge_authors.permits(remote, &current.author_login)
+                && source_checks_permit(
+                    current.checks,
+                    self.without_checks
+                        .merges
+                        .permits(remote, &current.author_login),
+                )
         };
         if current.head_commit != *expected_head
             || current.state != MergeRequestState::Open
             || current.draft
-            || current.checks != ChecksState::Success
             || !permitted
         {
             return Err(invalid("source changed or is not eligible for merging"));

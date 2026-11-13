@@ -10,12 +10,12 @@ use std::path::Path;
 use artidezi_config::Config;
 use artidezi_config::model::{
     AdaptationAction, ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction,
-    author_pattern,
+    SafeVerdictChecks, author_pattern,
 };
 use artidezi_forge::fake::FakeForge;
 use artidezi_forge::forgejo::ForgejoForge;
 use artidezi_forge::github::{GithubAppIdentity, GithubForge};
-use artidezi_forge::{ForgeAdapter, MergeAuthor, SourceMergeAuthors};
+use artidezi_forge::{ForgeAdapter, MergeAuthor, SourceActionsWithoutChecks, SourceMergeAuthors};
 
 use crate::secrets::SecretsDir;
 use crate::{OrchestratorError, Result};
@@ -37,7 +37,10 @@ pub fn build_forges(
                         .with_source_actions(
                             source_action_repositories(config, name),
                             source_merge_authors(config, name),
-                        ),
+                        )
+                        .with_source_actions_without_checks(source_actions_without_checks(
+                            config, name,
+                        )),
                 )
             }
             ForgeProvider::Fake => Box::new(FakeForge::new(&fake_root.join(name))),
@@ -58,10 +61,35 @@ fn source_action_repositories(config: &Config, name: &str) -> BTreeSet<String> {
 
 /// Authors per remote on forge `name` whose unchanged sources a merge handler may merge.
 fn source_merge_authors(config: &Config, name: &str) -> SourceMergeAuthors {
+    handler_authors(
+        source_action_handlers(config, name)
+            .filter(|(_, handler)| handler.safe_verdict_action == SafeVerdictAction::Merge),
+    )
+}
+
+/// Authors per remote on forge `name` whose handlers opted into approving, or merging, an
+/// unchanged source when the forge reports no checks at all.
+fn source_actions_without_checks(config: &Config, name: &str) -> SourceActionsWithoutChecks {
+    let opted_in = || {
+        source_action_handlers(config, name)
+            .filter(|(_, handler)| handler.safe_verdict_checks == SafeVerdictChecks::PassingOrNone)
+    };
+    SourceActionsWithoutChecks {
+        approvals: handler_authors(
+            opted_in().filter(|(_, h)| h.safe_verdict_action != SafeVerdictAction::Comment),
+        ),
+        merges: handler_authors(
+            opted_in().filter(|(_, h)| h.safe_verdict_action == SafeVerdictAction::Merge),
+        ),
+    }
+}
+
+/// The authors each `(remote, handler)` pair names, as the adapter enforces them.
+fn handler_authors<'a>(
+    pairs: impl Iterator<Item = (String, &'a PullRequestHandler)>,
+) -> SourceMergeAuthors {
     let mut authors = SourceMergeAuthors::default();
-    for (remote, handler) in source_action_handlers(config, name)
-        .filter(|(_, handler)| handler.safe_verdict_action == SafeVerdictAction::Merge)
-    {
+    for (remote, handler) in pairs {
         if handler.catch_all {
             authors.allow(&remote, MergeAuthor::Any);
         }
@@ -157,6 +185,7 @@ fn github_binding(config: &Config, secrets: &SecretsDir, name: &str) -> Result<G
         source_action_repositories(config, name),
         source_merge_authors(config, name),
     )?
+    .with_source_actions_without_checks(source_actions_without_checks(config, name))?
     .with_adaptation_merges(adaptation_merge_repositories(config, name))?)
 }
 
@@ -238,5 +267,36 @@ mod tests {
         let authors = source_merge_authors(&config, "forge-acme");
         assert!(authors.permits(remote, "anyone"));
         assert!(!authors.permits("acme/acme-playbook", "anyone"));
+        // Without the opt-in, nothing may act on a head without checks.
+        let without = source_actions_without_checks(&config, "forge-acme");
+        assert!(!without.approvals.permits(remote, "anyone"));
+        assert!(!without.merges.permits(remote, "anyone"));
+    }
+
+    #[test]
+    fn acting_without_checks_follows_only_opted_in_handlers() {
+        let remote = "acme/ansible-role-notes";
+        let opted_in = |id: &str, selector: &str, action: &str| {
+            handler(id, selector, action).replace(
+                "require_successful_checks: true",
+                "require_successful_checks: false\n          safe_verdict_checks: passing_or_none",
+            )
+        };
+        let config = with_handlers(&format!(
+            "{}{}{}",
+            opted_in("bots", "authors: [renovate-bot]", "merge"),
+            opted_in("people", "authors: [maintainer]", "approve"),
+            handler("others", "authors: [other-bot]", "merge"),
+        ));
+        let without = source_actions_without_checks(&config, "forge-acme");
+        assert!(without.approvals.permits(remote, "renovate-bot"));
+        assert!(without.merges.permits(remote, "renovate-bot"));
+        // An approve handler's opt-in grants no merge.
+        assert!(without.approvals.permits(remote, "maintainer"));
+        assert!(!without.merges.permits(remote, "maintainer"));
+        // A handler that did not opt in still needs passing checks.
+        assert!(!without.approvals.permits(remote, "other-bot"));
+        assert!(!without.merges.permits(remote, "other-bot"));
+        assert!(source_merge_authors(&config, "forge-acme").permits(remote, "other-bot"));
     }
 }

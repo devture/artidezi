@@ -815,6 +815,11 @@ impl Orchestrator {
             } else {
                 Default::default()
             },
+            safe_verdict_checks: if publishing {
+                handler.safe_verdict_checks
+            } else {
+                Default::default()
+            },
             adaptation_action: if publishing {
                 handler.adaptation_action
             } else {

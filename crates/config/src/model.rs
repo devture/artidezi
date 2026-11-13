@@ -344,6 +344,9 @@ pub struct PullRequestHandler {
     /// Action after an unchanged verdict and successful current forge checks.
     #[serde(default)]
     pub safe_verdict_action: SafeVerdictAction,
+    /// Which current forge check states let `safe_verdict_action` approve or merge.
+    #[serde(default, skip_serializing_if = "SafeVerdictChecks::is_passing")]
+    pub safe_verdict_checks: SafeVerdictChecks,
     /// What happens to ArtiDezi's own adaptation PRs for this handler's sources.
     #[serde(default, skip_serializing_if = "AdaptationAction::is_review")]
     pub adaptation_action: AdaptationAction,
@@ -422,6 +425,25 @@ pub enum SafeVerdictAction {
 impl SafeVerdictAction {
     pub fn is_comment(&self) -> bool {
         *self == Self::Comment
+    }
+}
+
+/// The forge check states under which a source approval or merge may proceed. Running checks
+/// always wait and failed checks always block; an all-skipped set never qualifies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeVerdictChecks {
+    /// Checks must have been reported for the head and passed.
+    #[default]
+    Passing,
+    /// Also proceed when the forge reports no checks at all for the head, relying on the
+    /// assessment alone. For repositories without CI.
+    PassingOrNone,
+}
+
+impl SafeVerdictChecks {
+    pub fn is_passing(&self) -> bool {
+        *self == Self::Passing
     }
 }
 

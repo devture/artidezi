@@ -27,6 +27,8 @@ pub struct ForgejoForge {
     approval_repositories: BTreeSet<String>,
     /// Lowercased `(remote, author)` pairs whose pull requests this adapter may merge.
     merge_authors: SourceMergeAuthors,
+    /// Narrower still: authors whose pull requests may be approved or merged with no checks.
+    without_checks: SourceActionsWithoutChecks,
 }
 
 /// Pages of commit statuses read before refusing an incomplete listing.
@@ -131,6 +133,7 @@ impl ForgejoForge {
             agent,
             approval_repositories: BTreeSet::new(),
             merge_authors: SourceMergeAuthors::default(),
+            without_checks: SourceActionsWithoutChecks::default(),
         }
     }
 
@@ -147,6 +150,16 @@ impl ForgejoForge {
             .map(|remote| remote.to_ascii_lowercase())
             .collect();
         self.merge_authors = merges;
+        self
+    }
+
+    /// Source approvals and merges that may proceed when the forge reports no checks at all for
+    /// the head. Each still needs the matching `with_source_actions` authority.
+    pub fn with_source_actions_without_checks(
+        mut self,
+        actions: SourceActionsWithoutChecks,
+    ) -> Self {
+        self.without_checks = actions;
         self
     }
 
@@ -538,7 +551,12 @@ impl ForgeAdapter for ForgejoForge {
         if current.head_commit != *head
             || current.state != MergeRequestState::Open
             || current.draft
-            || current.checks != ChecksState::Success
+            || !source_checks_permit(
+                current.checks,
+                self.without_checks
+                    .approvals
+                    .permits(remote, &current.author_login),
+            )
             || current.author_login.eq_ignore_ascii_case(&self.bot_login)
         {
             return Err(ForgeError::Other(
@@ -739,10 +757,17 @@ impl ForgeAdapter for ForgejoForge {
             });
         }
         // ArtiDezi's own proposals follow their delivery mode. Anyone else's pull request is a
-        // source merge, allowed only for an author a merge handler names, with green checks.
+        // source merge, allowed only for an author a merge handler names, with green checks (or,
+        // where a handler opted in, none at all).
         let own = info.author_login.eq_ignore_ascii_case(&self.bot_login);
         let named = self.merge_authors.permits(remote, &info.author_login);
-        if info.draft || (!own && (!named || info.checks != ChecksState::Success)) {
+        let checks = source_checks_permit(
+            info.checks,
+            self.without_checks
+                .merges
+                .permits(remote, &info.author_login),
+        );
+        if info.draft || (!own && (!named || !checks)) {
             return Err(ForgeError::Other(
                 "source changed or is not eligible for merging".into(),
             ));

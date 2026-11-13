@@ -263,6 +263,22 @@ impl SourceMergeAuthors {
     }
 }
 
+/// Per repository, the authors whose unchanged pull requests a source action may approve or merge
+/// when the forge reports no checks at all for the head. Empty unless a handler opts in with
+/// `safe_verdict_checks: passing_or_none`; it never lets anything act on skipped, running or
+/// failed checks.
+#[derive(Clone, Debug, Default)]
+pub struct SourceActionsWithoutChecks {
+    pub approvals: SourceMergeAuthors,
+    pub merges: SourceMergeAuthors,
+}
+
+/// Whether the head's current checks let a source action proceed: they passed, or none were
+/// reported and the configuration explicitly accepts that for this author.
+pub fn source_checks_permit(checks: ChecksState, without_checks_allowed: bool) -> bool {
+    checks == ChecksState::Success || (without_checks_allowed && checks == ChecksState::Absent)
+}
+
 /// Exact `(remote, login)` pairs.
 impl FromIterator<(String, String)> for SourceMergeAuthors {
     fn from_iter<I: IntoIterator<Item = (String, String)>>(pairs: I) -> Self {

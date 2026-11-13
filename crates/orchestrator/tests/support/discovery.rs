@@ -24,6 +24,7 @@ fn enable(w: &mut World) {
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             safe_verdict_action: Default::default(),
+            safe_verdict_checks: Default::default(),
             mode: Default::default(),
             id: "renovate".into(),
             agent_profile: None,
@@ -565,6 +566,7 @@ fn first_matching_handler_does_not_fall_through_while_waiting_for_checks() {
     discovery.handlers.push(PullRequestHandler {
         adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
+        safe_verdict_checks: Default::default(),
         mode: Default::default(),
         id: "fallback".into(),
         agent_profile: None,

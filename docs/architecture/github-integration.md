@@ -40,7 +40,8 @@ Credential callbacks accept only the original Git URL; Git HTTP redirects are di
 
 The visible CI summary is conservative but is not required-check/branch-protection verification.
 An empty check set is distinct from pending; all-skipped/neutral checks are terminal but cannot
-authorize automatic source action. Running or unknown checks keep the summary pending even when
+authorize automatic source action. An empty set authorizes it only under a handler's explicit
+`safe_verdict_checks: passing_or_none`. Running or unknown checks keep the summary pending even when
 another check has already failed. The read-only
 inspector uses the same checks parser. API file patches are optional/incomplete and never substitute
 for the Git bundles used by the worker.
@@ -144,11 +145,19 @@ for historical snapshot-digest stability). Title-scoped tasks also freeze the se
 require it to remain exact through delivery. Approval/merge rechecks that current policy still grants
 that action. Accepted unchanged results qualify when the configured source checks and review gates
 pass. The controller requires fresh green forge checks regardless of intake gating, and rejects
-outstanding change-request reviews. Worker risk ratings, evidence and questions are retained as
+outstanding change-request reviews. The snapshot also freezes `safe_verdict_checks` (`passing` by
+default, omitted on serialization). Under `passing_or_none` a head with no reported checks at all
+qualifies too; the approval body says so and the `assessment.approval_planned` and
+`source.merge_planned` events record `"forge_checks": "none"`. Pending, failed and all-skipped
+checks are treated as before. The adapters enforce the same rule independently: a separate
+`SourceActionsWithoutChecks` grant, derived only from opted-in handlers and scoped per repository
+and author, lets them approve (or, for merge handlers, merge) a source with no checks. Worker risk ratings, evidence and questions are retained as
 audit context; they are not a second independent veto over the configured action.
 
 An `assessment.approval_planned` event precedes APPROVE. Retry accepts exactly one matching bot,
-commit, body and APPROVED state; edited, dismissed or missing approvals are not recreated.
+commit, body and APPROVED state; edited, dismissed or missing approvals are not recreated. The
+expected body is the planned one, so checks that appear after a check-less approval do not make it
+look foreign.
 If a planned approval has no matching receipt, explicit retry stops; inspect before a new evaluation. A
 `source.merge_planned` event precedes the merge API call, which includes the expected head SHA.
 A successful response records `source.merge_accepted`. A matching merged source plus the exact owned
@@ -160,7 +169,8 @@ or publish without the existing explicit retry path.
 The merge endpoint has no expected-base parameter; APPROVE has no atomic expected-head condition.
 Read/effect races remain, so repository required checks, up-to-date rules and stale-review dismissal
 must enforce the operator's final policy. Do not grant the App bypass permission. Missing CI stays
-pending and errors never become green checks. ArtiDezi neither changes protection nor falls back to
+pending, errors never become green checks, and an empty check set qualifies only under the opt-in
+above. ArtiDezi neither changes protection nor falls back to
 another merge method. Failed gates hold the task for inspection/retry. Pending checks on an otherwise
 eligible unchanged result use a distinct `waiting_for_ci` state. Failed checks hold the task too,
 but that hold is rechecked (below).
