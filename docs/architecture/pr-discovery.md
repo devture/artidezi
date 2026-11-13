@@ -115,10 +115,15 @@ When the matched handler requests CI results, the adapter's already-fetched comp
 listing is normalized and frozen in the source policy alongside the exact head: commit statuses and
 latest check runs on GitHub, and the latest status of each context on Forgejo, where Actions jobs
 report commit statuses. Prompt template 9 renders the overall state and each name/status/conclusion as an
-explicitly untrusted point-in-time JSON block. When separately permitted, the controller uses a
-single-repository Actions-read token to find completed failed jobs at that head, verifies their run
-attempt and exact job identity, and freezes up to two sanitized, bounded excerpts as private content-addressed
-artifacts. A failed or unavailable log fetch records an outcome without suppressing task creation.
+explicitly untrusted point-in-time JSON block. When separately permitted, the controller finds
+completed failed jobs at that head, verifies their run attempt and exact job identity, and freezes up
+to two sanitized, bounded excerpts as private content-addressed artifacts. The adapter decides which
+results are candidates. GitHub uses a single-repository Actions-read token and failed check runs.
+Forgejo uses failed commit statuses whose target URL links an Actions job of the same repository
+(`…/actions/runs/<run index>/jobs/<position>`). It lists the runs for the exact head, refusing a
+listing over one page, finds the run by index and the job by its own URL. The status name must end
+in `/ <job> (<event>)`. It reads that attempt's plaintext log and rereads the job afterwards; a
+rerun in between discards the log. Statuses from other CI systems are skipped. A failed or unavailable log fetch records an outcome without suppressing task creation.
 The worker receives only the selected excerpt in its task document, not the token or signed URL.
 The bounded excerpt preserves a strong diagnostic from the final 64 KiB of sanitized output when
 cleanup or teardown would otherwise displace it from the final lines.

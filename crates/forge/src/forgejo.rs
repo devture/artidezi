@@ -15,6 +15,8 @@ use serde_json::json;
 
 use crate::*;
 
+mod ci_logs;
+
 pub struct ForgejoForge {
     /// Instance root, for example `https://code.example.org`. No trailing slash.
     base_url: String,
@@ -89,6 +91,8 @@ struct StatusEntry {
     context: String,
     #[serde(alias = "state")]
     status: String,
+    #[serde(default)]
+    target_url: String,
 }
 
 /// The overall state of the latest status per context. Forgejo's own combined state only covers
@@ -185,6 +189,27 @@ impl ForgejoForge {
             .map_err(|e| ForgeError::Other(e.to_string()))?;
         self.check(status, &body, path)?;
         serde_json::from_str(&body).map_err(|e| ForgeError::Other(format!("{path}: bad JSON: {e}")))
+    }
+
+    /// Streams a plaintext job log into `consume`, bounded like every collected CI log.
+    fn job_log(
+        &self,
+        path: &str,
+        consume: impl FnMut(&[u8]),
+    ) -> std::result::Result<u64, CiLogOutcome> {
+        let mut response = self
+            .agent
+            .get(self.api(path))
+            .header("Authorization", &self.auth())
+            .header("Accept-Encoding", "identity")
+            .call()
+            .map_err(|_| CiLogOutcome::FetchFailed)?;
+        match response.status().as_u16() {
+            200 => crate::ci_log::read_bounded(&mut response, consume),
+            401 | 403 => Err(CiLogOutcome::PermissionDenied),
+            404 | 410 => Err(CiLogOutcome::MissingOrInaccessible),
+            _ => Err(CiLogOutcome::FetchFailed),
+        }
     }
 
     fn send_json(&self, method: &str, path: &str, payload: &serde_json::Value) -> Result<String> {
@@ -408,6 +433,13 @@ impl ForgeAdapter for ForgejoForge {
             ".gitea/workflows",
             ".github/workflows",
         ]
+    }
+    fn ci_log_candidate(&self, result: &CheckResult) -> bool {
+        result.kind == CheckResultKind::CommitStatus
+            && matches!(result.status.as_str(), "failure" | "error")
+    }
+    fn ci_job_logs(&self, remote: &str, head: &CommitSha, names: &[String]) -> Vec<CiJobLog> {
+        ci_logs::collect(self, remote, head, names)
     }
     /// The token has no narrower workflow-free scope to fall back from.
     fn git_push_workflow_credentials(&self, remote: &str) -> Result<Option<HttpsCredentials>> {
@@ -901,6 +933,7 @@ mod tests {
                 .map(|(i, state)| StatusEntry {
                     context: format!("ci/{i}"),
                     status: (*state).into(),
+                    target_url: String::new(),
                 })
                 .collect();
             summarize_statuses(&statuses)

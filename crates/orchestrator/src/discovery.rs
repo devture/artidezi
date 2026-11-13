@@ -713,15 +713,12 @@ impl Orchestrator {
         } else {
             None
         };
-        let mut failed_names: Vec<String> = ci_snapshot
-            .as_ref()
-            .into_iter()
-            .flat_map(|snapshot| snapshot.results.iter())
-            .filter(|result| {
-                result.kind == PullRequestCiResultKind::CheckRun
-                    && result.status == "completed"
-                    && result.conclusion.as_deref() == Some("failure")
-            })
+        let forge = self.forge(&repository.forge)?;
+        let mut failed_names: Vec<String> = pull
+            .check_results
+            .iter()
+            .flatten()
+            .filter(|result| ci_snapshot.is_some() && forge.ci_log_candidate(result))
             .map(|result| result.name.clone())
             .collect();
         failed_names.sort();

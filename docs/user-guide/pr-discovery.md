@@ -84,7 +84,7 @@ an agent focus on an actual failure when `require_successful_checks: false`; it 
 eligibility, prove required checks or replace the controller's fresh publication gate. Omit the
 setting (the default) where exposing CI metadata is undesirable.
 
-GitHub Actions job logs require two separate opt-ins: set
+GitHub Actions and Forgejo Actions job logs require two separate opt-ins: set
 `pull_requests.ci_log_context.permitted: true` for the project and `ci_context.logs: true` on
 the assessing handler. The handler must also set `ci_context.results: true`. No job names need to
 be configured; failed jobs are discovered from the PR's exact source commit:
@@ -103,8 +103,11 @@ pull_requests:
 
 Collection is off by default, even when the App has Actions read permission. The result overview
 includes passing, failing and pending checks whenever `results: true`, even if no log is collected.
-At most two completed failed GitHub Actions jobs matching failed check runs from the exact source
-SHA are selected. Successful job logs and logs from other CI providers are not collected. Each
+At most two completed failed jobs from the exact source SHA are selected: on GitHub, Actions jobs
+matching failed check runs; on Forgejo, the Actions jobs that failed commit statuses link to.
+Forgejo selects the job by that link rather than by name, since several workflows can share a job
+name, and reads the log of the job's latest attempt. Successful job logs and logs from other CI
+providers are not collected. Each
 sanitized excerpt is at most 3 KiB of text
 inside a 4 KiB per-job and 8 KiB per-task rendered limit; raw downloads over 8 MiB are rejected.
 The excerpt keeps a strong failure diagnostic when one appears within the final 64 KiB of
@@ -117,8 +120,9 @@ remains. The prompt labels log text as untrusted and forbids copying it into a p
 These controls do not prove that logs are free of secrets: selected text reaches the model worker,
 private controller artifacts, task history, backups and administrators. Source-CI evidence has no
 automatic expiry.
-Enable this only for jobs whose output is acceptable in those places. A separate one-repository
-Actions-read App token is used; Workflows write does not grant log access. This snapshot never
+Enable this only for jobs whose output is acceptable in those places. On GitHub a separate
+one-repository Actions-read App token is used; Workflows write does not grant log access. On
+Forgejo the bot's token reads the log, so it needs read access to the repository. This snapshot never
 replaces fresh publication checks.
 
 The scheduler scans due projects; **Incoming changes → Scan now** uses the same matching and eligibility

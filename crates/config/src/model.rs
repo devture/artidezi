@@ -375,7 +375,8 @@ pub struct PullRequestCiContext {
     /// Include all provider-reported commit status and check-run names/states.
     #[serde(default)]
     pub results: bool,
-    /// Automatically include bounded excerpts for failed GitHub Actions jobs at the source head.
+    /// Automatically include bounded excerpts for failed GitHub or Forgejo Actions jobs at the
+    /// source head.
     #[serde(default)]
     pub logs: bool,
 }

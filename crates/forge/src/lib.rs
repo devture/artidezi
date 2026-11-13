@@ -219,8 +219,16 @@ pub trait ForgeAdapter: Send + Sync {
     /// Repository paths that define what this forge's CI runs. Publishing a change under any of
     /// them needs human authorization. Required, so that a new adapter has to decide.
     fn protected_paths(&self) -> &'static [&'static str];
-    /// Optional exact-head log collection for failed check-run names. A provider may return
-    /// unavailable outcomes; failure never grants a publication or CI-check capability.
+    /// Whether `result` is a failure whose job log `ci_job_logs` may be able to collect: a failed
+    /// check run by default.
+    fn ci_log_candidate(&self, result: &CheckResult) -> bool {
+        result.kind == CheckResultKind::CheckRun
+            && result.status == "completed"
+            && result.conclusion.as_deref() == Some("failure")
+    }
+    /// Optional exact-head log collection for failed result names chosen by `ci_log_candidate`.
+    /// A provider may return unavailable outcomes; failure never grants a publication or CI-check
+    /// capability.
     fn ci_job_logs(&self, _remote: &str, _head: &CommitSha, names: &[String]) -> Vec<CiJobLog> {
         names
             .iter()
