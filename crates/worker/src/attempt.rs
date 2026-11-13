@@ -39,6 +39,9 @@ pub struct WorkerConfig {
     pub credentials_root: Option<PathBuf>,
     /// Logs above this size are truncated (head kept) before upload.
     pub max_log_bytes: u64,
+    /// The host's shared temporary directory (normally `/tmp`), swept after each attempt of what
+    /// the worker's user created there during it. `None` disables the sweep.
+    pub system_tmp: Option<PathBuf>,
 }
 
 pub struct PreviousInputs {

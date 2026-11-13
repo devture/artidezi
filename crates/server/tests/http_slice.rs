@@ -286,6 +286,7 @@ fn daemon(w: &World, token: &str) -> Daemon {
             workspaces_root: w.root.join("workspaces"),
             credentials_root: None,
             max_log_bytes: 65536,
+            system_tmp: None,
         },
         poll_interval: Duration::from_millis(10),
         tags: vec![],

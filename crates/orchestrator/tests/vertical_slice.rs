@@ -262,6 +262,7 @@ impl World {
             workspaces_root: self.root.join("workspaces"),
             credentials_root: None,
             max_log_bytes: 65536,
+            system_tmp: None,
         };
         let harness = FakeHarness {
             script: script.to_path_buf(),

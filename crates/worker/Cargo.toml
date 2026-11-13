@@ -16,7 +16,7 @@ artidezi-harness.workspace = true
 chrono.workspace = true
 git2.workspace = true
 hex.workspace = true
-nix = { version = "0.31", features = ["signal", "fs"], default-features = false }
+nix = { version = "0.31", features = ["signal", "fs", "user"], default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

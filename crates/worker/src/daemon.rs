@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use artidezi_contract::common::{ArtifactRef, RepositoryId};
 use artidezi_contract::job::Harness;
@@ -231,6 +231,7 @@ impl Daemon {
             .join("inputs")
             .join(&attempt_id);
         let heartbeat = self.heartbeat(&lease);
+        let started = SystemTime::now();
         let result = self.process(&lease, &inputs_dir, &heartbeat.cancellation);
         drop(heartbeat);
         if let Err(
@@ -244,6 +245,13 @@ impl Daemon {
         } else {
             let _ = std::fs::remove_dir_all(&inputs_dir);
             scrub_retained_workspace(&self.config.worker.workspaces_root.join(&attempt_id));
+            if let Some(system_tmp) = &self.config.worker.system_tmp {
+                // Creation times can be coarser than the clock; err towards this attempt's files.
+                let since = started
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or(started);
+                sweep_system_tmp(system_tmp, since);
+            }
         }
         match result {
             Err(WorkerError::Cancelled) => {
@@ -560,6 +568,62 @@ fn scrub_retained_workspace(workspace: &std::path::Path) {
     }
 }
 
+/// Tools that hard-code `/tmp` instead of honoring `TMPDIR` leave files there, and on hosts where
+/// `/tmp` is a tmpfs they hold memory until removed. Removes the top-level entries that this
+/// process's user created since `since`, by their birth time, without following symlinks. Entries
+/// without a birth time are left alone: a modification time would also match older directories
+/// that the attempt merely wrote into. It cannot tell this daemon's files from those of another
+/// process of the same user, so it is only enabled for a `/tmp` of the worker's own.
+/// Best effort: failures are logged for the operator.
+fn sweep_system_tmp(system_tmp: &std::path::Path, since: SystemTime) {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = nix::unistd::geteuid().as_raw();
+    let entries = match std::fs::read_dir(system_tmp) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(path = %system_tmp.display(), "could not sweep temporary files: {error}");
+            return;
+        }
+    };
+    let mut removed = 0usize;
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                tracing::warn!(path = %system_tmp.display(), "could not list temporary files: {error}");
+                continue;
+            }
+        };
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "could not inspect temporary files: {error}");
+                continue;
+            }
+        };
+        if metadata.uid() != uid || !metadata.created().is_ok_and(|created| created >= since) {
+            continue;
+        }
+        let outcome = if metadata.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match outcome {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "could not remove temporary files: {error}");
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(path = %system_tmp.display(), removed, "removed temporary files the attempt left behind");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -594,6 +658,7 @@ mod tests {
                 workspaces_root: root.to_owned(),
                 credentials_root: None,
                 max_log_bytes: 1024,
+                system_tmp: None,
             },
             poll_interval: Duration::from_millis(1),
             tags: vec![],
@@ -618,6 +683,43 @@ mod tests {
         assert!(workspace.join("out").is_dir());
         // A workspace that was never created is not an error.
         scrub_retained_workspace(&dir.path().join("missing"));
+    }
+
+    #[test]
+    fn system_tmp_sweep_removes_only_what_was_created_since_the_attempt_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let system_tmp = dir.path().join("tmp");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&system_tmp).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "x").unwrap();
+        std::fs::write(system_tmp.join("earlier"), "x").unwrap();
+        std::fs::create_dir(system_tmp.join("earlier-dir")).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let since = super::SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::create_dir_all(system_tmp.join("build/target/debug")).unwrap();
+        std::fs::write(system_tmp.join("build/target/debug/big"), "x").unwrap();
+        std::fs::write(system_tmp.join("check.log"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, system_tmp.join("link")).unwrap();
+        // An older directory the attempt only wrote into is not the attempt's.
+        std::fs::write(system_tmp.join("earlier-dir/new"), "x").unwrap();
+        if std::fs::metadata(&system_tmp).unwrap().created().is_err() {
+            // Without birth times the sweep removes nothing, which the rest assumes.
+            return;
+        }
+
+        super::sweep_system_tmp(&system_tmp, since);
+
+        assert!(system_tmp.join("earlier").exists());
+        assert!(system_tmp.join("earlier-dir/new").exists());
+        assert!(!system_tmp.join("build").exists());
+        assert!(!system_tmp.join("check.log").exists());
+        assert!(std::fs::symlink_metadata(system_tmp.join("link")).is_err());
+        // The symlink was removed, not followed.
+        assert!(outside.join("keep").exists());
+        // A missing directory is logged, not an error.
+        super::sweep_system_tmp(&dir.path().join("missing"), since);
     }
 
     #[test]

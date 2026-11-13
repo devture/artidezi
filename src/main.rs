@@ -203,6 +203,10 @@ struct WorkerFile {
     poll_seconds: u64,
     #[serde(default = "default_max_log_bytes")]
     max_log_bytes: u64,
+    /// Removes what the worker's user created in `/tmp` during an attempt, once it ends. Only for a
+    /// `/tmp` that no other process of the same user uses.
+    #[serde(default)]
+    sweep_system_tmp: bool,
     #[serde(default)]
     codex_binary: Option<PathBuf>,
     #[serde(default)]
@@ -533,6 +537,7 @@ fn worker(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
             workspaces_root: file.workspaces_root,
             credentials_root: file.credentials_root,
             max_log_bytes: file.max_log_bytes,
+            system_tmp: file.sweep_system_tmp.then(|| PathBuf::from("/tmp")),
         },
         poll_interval: Duration::from_secs(file.poll_seconds),
         tags: file.tags,

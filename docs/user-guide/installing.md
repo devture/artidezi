@@ -112,6 +112,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    useradd --system --create-home --home-dir /var/lib/artidezi-worker artidezi-worker
    install -d -o artidezi-worker -m 0700 /etc/artidezi-worker
    install -o artidezi-worker -m 0600 worker-1-token /etc/artidezi-worker/token
+   install -d -o artidezi-worker -m 0700 /var/lib/artidezi-worker/tmp
    ```
 
 3. Write `/etc/artidezi-worker/worker.yaml`:
@@ -123,6 +124,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    worker_id: worker-1
    workspaces_root: /var/lib/artidezi-worker/workspaces
    credentials_root: /var/lib/artidezi-worker/credentials
+   sweep_system_tmp: true
    codex_binary: codex
    ```
 
@@ -138,6 +140,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    | `credentials_root` | Model credentials, by `credential_ref`. Unique per worker |
    | `poll_seconds` | How often to ask for work. Default 15 |
    | `max_log_bytes` | Limit for each captured log. Default 16 MiB |
+   | `sweep_system_tmp` | After each attempt, remove what the worker's user created in `/tmp` during it, for tools that ignore `TMPDIR`. Default `false`. Enable it only for a `/tmp` of the worker's own, as in the unit below |
    | `codex_binary`, `pi_binary` | The harnesses this worker offers, by name or path. Set at least 1 |
 
 4. Provide the model credentials, in `<credentials_root>/<credential_ref>/`, owned by the worker's user:
@@ -168,6 +171,9 @@ It doesn't need the orchestrator's configuration or any forge credential.
    User=artidezi-worker
    ExecStart=/usr/local/bin/artidezi worker --config /etc/artidezi-worker/worker.yaml
    Restart=on-failure
+   # A /tmp of its own on disk, so builds that write to /tmp don't fill a tmpfs /tmp's memory
+   # and only this worker's files are there for `sweep_system_tmp`.
+   BindPaths=/var/lib/artidezi-worker/tmp:/tmp
 
    [Install]
    WantedBy=multi-user.target

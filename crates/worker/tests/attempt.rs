@@ -193,6 +193,7 @@ fn config(f: &Fixture) -> WorkerConfig {
         workspaces_root: f.root.join("workspaces"),
         credentials_root: None,
         max_log_bytes: 4096,
+        system_tmp: None,
     }
 }
 

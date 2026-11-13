@@ -57,7 +57,13 @@ under it, `TMPDIR` set to `tmp/`, `ARTIDEZI_WORKSPACE`, `ARTIDEZI_TASK_DOCUMENT`
 `LC_ALL=C.UTF-8`. Adapters add their own variables, such as `CODEX_HOME`. Temporary files from
 tools that honor `TMPDIR` therefore land on the workspaces disk rather than in the host's `/tmp`,
 which may be a small `tmpfs`, and disappear with the workspace. `TMP` and `TEMP` are not set; tools
-that ignore `TMPDIR`, such as the JVM's default `java.io.tmpdir`, still use `/tmp`.
+that ignore `TMPDIR`, such as the JVM's default `java.io.tmpdir`, and commands that name `/tmp`
+explicitly (`mktemp -d /tmp/build-XXXXXX`) still use `/tmp`. Give the worker a `/tmp` of its own on
+disk (for example with systemd `BindPaths=`) and enable `sweep_system_tmp`: after each attempt,
+unless the worker is quarantined, the daemon then removes the top-level `/tmp` entries its user
+created since the attempt started, by birth time and without following symlinks. It cannot tell them
+from files of another process of the same user, so it is off by default. Processes that outlive the
+attempt keep removed files they still hold open until they exit.
 The worker credential root is separate; the selected harness can copy required model login material
 into the attempt home. Codex may rotate a ChatGPT refresh token while it runs. After the process
 exits, the worker validates a changed `auth.json`, requires the same authentication mode and account,
