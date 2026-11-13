@@ -4,11 +4,13 @@
 
 //! Builds forge adapters from configuration plus secrets.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use artidezi_config::Config;
-use artidezi_config::model::ForgeProvider;
+use artidezi_config::model::{
+    ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction,
+};
 use artidezi_forge::ForgeAdapter;
 use artidezi_forge::fake::FakeForge;
 use artidezi_forge::forgejo::ForgejoForge;
@@ -41,6 +43,52 @@ pub fn build_forges(
         forges.insert(name.clone(), adapter);
     }
     Ok(forges)
+}
+
+/// Remotes on forge `name` watched by a publish handler that may approve unchanged sources.
+fn source_action_repositories(config: &Config, name: &str) -> BTreeSet<String> {
+    source_action_handlers(config, name)
+        .filter(|(_, handler)| handler.safe_verdict_action != SafeVerdictAction::Comment)
+        .map(|(remote, _)| remote)
+        .collect()
+}
+
+/// `(remote, author)` pairs on forge `name` whose unchanged sources a merge handler may merge.
+fn source_merge_authors(config: &Config, name: &str) -> BTreeSet<(String, String)> {
+    source_action_handlers(config, name)
+        .filter(|(_, handler)| handler.safe_verdict_action == SafeVerdictAction::Merge)
+        .flat_map(|(remote, handler)| {
+            handler
+                .authors
+                .iter()
+                .flatten()
+                .map(move |author| (remote.clone(), author.clone()))
+        })
+        .collect()
+}
+
+/// Publish handlers with explicit authors, paired with each watched remote on forge `name`.
+fn source_action_handlers<'a>(
+    config: &'a Config,
+    name: &str,
+) -> impl Iterator<Item = (String, &'a PullRequestHandler)> {
+    let mut pairs = Vec::new();
+    for project in config.projects.values() {
+        let Some(discovery) = &project.pull_requests else {
+            continue;
+        };
+        for id in &discovery.repositories {
+            let Some(repository) = project.repositories.get(id).filter(|r| r.forge == name) else {
+                continue;
+            };
+            for handler in &discovery.handlers {
+                if handler.mode == PullRequestMode::Publish && !handler.catch_all {
+                    pairs.push((repository.remote.clone(), handler));
+                }
+            }
+        }
+    }
+    pairs.into_iter()
 }
 
 fn github_binding(config: &Config, secrets: &SecretsDir, name: &str) -> Result<GithubForge> {
@@ -81,34 +129,6 @@ fn github_binding(config: &Config, secrets: &SecretsDir, name: &str) -> Result<G
         })
         .map(|r| r.remote.clone())
         .collect();
-    let action_repositories = |merge: bool| {
-        config
-            .projects
-            .values()
-            .flat_map(|p| {
-                p.pull_requests
-                    .iter()
-                    .filter(move |d| {
-                        d.handlers.iter().any(|h| {
-                            use artidezi_config::model::{PullRequestMode, SafeVerdictAction};
-                            h.mode == PullRequestMode::Publish
-                                && if merge {
-                                    h.safe_verdict_action == SafeVerdictAction::Merge
-                                } else {
-                                    h.safe_verdict_action != SafeVerdictAction::Comment
-                                }
-                        })
-                    })
-                    .flat_map(move |d| {
-                        d.repositories
-                            .iter()
-                            .filter_map(|id| p.repositories.get(id))
-                    })
-            })
-            .filter(|r| r.forge == name)
-            .map(|r| r.remote.clone())
-            .collect()
-    };
     Ok(GithubForge::new(
         GithubAppIdentity {
             client_id: app.client_id.clone(),
@@ -120,7 +140,10 @@ fn github_binding(config: &Config, secrets: &SecretsDir, name: &str) -> Result<G
         repositories,
     )?
     .with_publication_repositories(publication_repositories)?
-    .with_source_actions(action_repositories(false), action_repositories(true))?)
+    .with_source_actions(
+        source_action_repositories(config, name),
+        source_merge_authors(config, name),
+    )?)
 }
 
 /// Live authentication preflight, independent of SQLite, the scheduler and the worker.

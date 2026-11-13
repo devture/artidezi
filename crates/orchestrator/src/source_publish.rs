@@ -315,18 +315,12 @@ impl Orchestrator {
         if source.safe_verdict_action != SafeVerdictAction::Comment {
             let handler = handler.unwrap();
             let repo = &policy.repositories[&source.repository_id];
-            let custom_renovate_author = source.author.to_ascii_lowercase();
-            let is_renovate = custom_renovate_author == "renovate[bot]"
-                || custom_renovate_author.ends_with("-renovate[bot]")
-                || (custom_renovate_author.starts_with("app/")
-                    && custom_renovate_author.ends_with("renovate"));
             if handler.catch_all
                 || repo.forge_provider != artidezi_config::model::ForgeProvider::Github
                 || repo.access != RepositoryAccess::ReadWrite
                 || (source.safe_verdict_action == SafeVerdictAction::Merge
                     && (!policy.effects.merge_renovate_merge_request_on_safe_verdict
-                        || !project.effects.merge_renovate_merge_request_on_safe_verdict
-                        || !is_renovate))
+                        || !project.effects.merge_renovate_merge_request_on_safe_verdict))
             {
                 return Err(invalid(
                     "source approval/merge authority is absent or changed",

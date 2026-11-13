@@ -273,7 +273,9 @@ result says the source needs no adaptation. By default it produces only a COMMEN
 
 These actions require `mode: publish`, the project publication effect, explicit author matches
 (no catch-all), and writable GitHub source repositories. `merge` additionally requires
-`effects.merge_renovate_merge_request_on_safe_verdict: true` and only `renovate[bot]` authors.
+`effects.merge_renovate_merge_request_on_safe_verdict: true`. A merge handler merges pull requests
+from the authors it names, whoever they are: a bot such as `renovate[bot]`, or a person you trust
+that far. Listing an author is the decision to merge their unchanged PRs without a person.
 For example, within an existing enrolled project's handler:
 
 ```yaml

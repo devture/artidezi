@@ -213,7 +213,7 @@ fn reopen(w: &mut World, fixture: &Fixture) {
                             .safe_verdict_action
                             == artidezi_config::model::SafeVerdictAction::Merge
                         {
-                            ["org/app".into()].into()
+                            [("org/app".into(), "renovate[bot]".into())].into()
                         } else {
                             Default::default()
                         },

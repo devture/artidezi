@@ -655,8 +655,8 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
     );
 }
 
-#[test]
-fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority() {
+/// A valid project whose only handler merges `renovate[bot]` pull requests on a GitHub forge.
+fn github_merge_handler_config() -> artidezi_config::Config {
     use artidezi_config::model::*;
     let mut config = parse(VALID).unwrap();
     let forge = config.forges.get_mut("forge-acme").unwrap();
@@ -707,6 +707,13 @@ fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority
         "{:?}",
         artidezi_config::validate(&config)
     );
+    config
+}
+
+#[test]
+fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority() {
+    use artidezi_config::model::*;
+    let mut config = github_merge_handler_config();
     for variant in 0..5 {
         let mut bad = config.clone();
         let p = bad.projects.values_mut().next().unwrap();
@@ -717,7 +724,7 @@ fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority
                 h.catch_all = true;
             }
             1 => h.mode = PullRequestMode::DryRun,
-            2 => h.authors = Some(vec!["a-human".into()]),
+            2 => h.authors = Some(vec![]),
             3 => p.effects.merge_renovate_merge_request_on_safe_verdict = false,
             4 => p.effects.publish_adaptation_merge_requests = false,
             _ => unreachable!(),
@@ -728,6 +735,29 @@ fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority
     p.effects.merge_renovate_merge_request_on_safe_verdict = false;
     p.pull_requests.as_mut().unwrap().handlers[0].safe_verdict_action = SafeVerdictAction::Approve;
     assert!(artidezi_config::validate(&config).is_empty());
+}
+
+#[test]
+fn a_merge_handler_may_merge_any_author_it_names() {
+    // Whether an author is a bot or a trusted person is the operator's decision, not a login shape.
+    let mut config = github_merge_handler_config();
+    for author in ["deps-bot", "a-human", "acme-updates[bot]"] {
+        config
+            .projects
+            .values_mut()
+            .next()
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .handlers[0]
+            .authors = Some(vec![author.into()]);
+        assert!(
+            artidezi_config::validate(&config).is_empty(),
+            "{author}: {:?}",
+            artidezi_config::validate(&config)
+        );
+    }
 }
 
 #[test]

@@ -46,13 +46,6 @@ pub fn valid_ui_initial_hash(value: &str) -> bool {
             .is_some_and(|output| output.as_bytes().len() == 32)
 }
 
-fn is_renovate_author(author: &str) -> bool {
-    let author = author.trim().to_ascii_lowercase();
-    author == "renovate[bot]"
-        || author.ends_with("-renovate[bot]")
-        || (author.starts_with("app/") && author.ends_with("renovate"))
-}
-
 pub fn validate(config: &Config) -> Vec<Problem> {
     let mut problems = Vec::new();
     let mut watched = BTreeSet::new();
@@ -400,13 +393,11 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                     problems.push(problem(format!("{ctx}: source approval/merge currently requires writable GitHub source repositories")));
                 }
                 if handler.safe_verdict_action == SafeVerdictAction::Merge
-                    && (!project.effects.merge_renovate_merge_request_on_safe_verdict
-                        || handler
-                            .authors
-                            .as_ref()
-                            .is_none_or(|a| a.iter().any(|s| !is_renovate_author(s))))
+                    && !project.effects.merge_renovate_merge_request_on_safe_verdict
                 {
-                    problems.push(problem(format!("{ctx}: source merge requires the project merge effect and an explicit Renovate author")));
+                    problems.push(problem(format!(
+                        "{ctx}: source merge requires the project merge effect"
+                    )));
                 }
             }
         }
@@ -572,53 +563,6 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             .values()
             .filter(|r| r.agent_access == RepositoryAccess::ReadWrite)
             .count();
-        // Formal approvals can activate another bot's automerge: treat them as delivery authority.
-        if project.effects.merge_renovate_merge_request_on_safe_verdict
-            && !project.pull_requests.as_ref().is_some_and(|d| {
-                d.handlers
-                    .iter()
-                    .any(|h| h.safe_verdict_action == crate::model::SafeVerdictAction::Merge)
-            })
-        {
-            problems.push(problem(format!(
-                "{ctx}: automatic source merging requires an explicit merge handler"
-            )));
-        }
-        if let Some(discovery) = &project.pull_requests {
-            for handler in &discovery.handlers {
-                use crate::model::{PullRequestAction, PullRequestMode, SafeVerdictAction};
-                if handler.safe_verdict_action == SafeVerdictAction::Comment {
-                    continue;
-                }
-                if handler.mode != PullRequestMode::Publish
-                    || handler.action != PullRequestAction::Assess
-                    || handler.catch_all
-                    || handler.authors.as_ref().is_none_or(|a| a.is_empty())
-                {
-                    problems.push(problem(format!("{ctx}: source approval/merge requires a publish assessment with explicit authors and no catch-all")));
-                }
-                if discovery.repositories.iter().any(|id| {
-                    project.repositories.get(id).is_none_or(|r| {
-                        r.agent_access != RepositoryAccess::ReadWrite
-                            || config
-                                .forges
-                                .get(&r.forge)
-                                .is_none_or(|f| f.provider != ForgeProvider::Github)
-                    })
-                }) {
-                    problems.push(problem(format!("{ctx}: source approval/merge currently requires writable GitHub source repositories")));
-                }
-                if handler.safe_verdict_action == SafeVerdictAction::Merge
-                    && (!project.effects.merge_renovate_merge_request_on_safe_verdict
-                        || handler
-                            .authors
-                            .as_ref()
-                            .is_none_or(|a| a.iter().any(|s| !is_renovate_author(s))))
-                {
-                    problems.push(problem(format!("{ctx}: source merge requires the project merge effect and an explicit Renovate author")));
-                }
-            }
-        }
         if project
             .allowed_delivery_modes
             .contains(&DeliveryMode::DirectPushFastForward)

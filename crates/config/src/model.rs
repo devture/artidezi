@@ -432,12 +432,13 @@ impl PullRequestHandler {
     }
 }
 
-/// Effects the orchestrator may perform for this project. Renovate's own automerge rules are not
+/// Effects the orchestrator may perform for this project. Another bot's own automerge rules are not
 /// duplicated here; these only grant what ArtiDezi itself may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Effects {
-    /// Permit a merge handler to merge an untouched Renovate request after an unchanged verdict and forge checks.
+    /// Permit a merge handler to merge an untouched pull request from one of its authors after an
+    /// unchanged verdict and forge checks.
     pub merge_renovate_merge_request_on_safe_verdict: bool,
     /// Publish agent-authored superseding changes (subject to the delivery mode).
     pub publish_adaptation_merge_requests: bool,
