@@ -451,8 +451,12 @@ fn forgejo_source_approval_and_merge() {
     forges.insert(
         "forgejo".into(),
         Box::new(
-            ForgejoForge::new(&url, &token, &user)
-                .with_source_actions([remote.clone()], [(remote.clone(), renovate_user.clone())]),
+            ForgejoForge::new(&url, &token, &user).with_source_actions(
+                [remote.clone()],
+                [(remote.clone(), renovate_user.clone())]
+                    .into_iter()
+                    .collect(),
+            ),
         ),
     );
     let mut orchestrator = Orchestrator::open(config, &root.join("data"), forges).unwrap();

@@ -9,12 +9,12 @@ use std::path::Path;
 
 use artidezi_config::Config;
 use artidezi_config::model::{
-    ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction,
+    ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction, author_pattern,
 };
-use artidezi_forge::ForgeAdapter;
 use artidezi_forge::fake::FakeForge;
 use artidezi_forge::forgejo::ForgejoForge;
 use artidezi_forge::github::{GithubAppIdentity, GithubForge};
+use artidezi_forge::{ForgeAdapter, MergeAuthor, SourceMergeAuthors};
 
 use crate::secrets::SecretsDir;
 use crate::{OrchestratorError, Result};
@@ -55,21 +55,31 @@ fn source_action_repositories(config: &Config, name: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// `(remote, author)` pairs on forge `name` whose unchanged sources a merge handler may merge.
-fn source_merge_authors(config: &Config, name: &str) -> BTreeSet<(String, String)> {
-    source_action_handlers(config, name)
+/// Authors per remote on forge `name` whose unchanged sources a merge handler may merge.
+fn source_merge_authors(config: &Config, name: &str) -> SourceMergeAuthors {
+    let mut authors = SourceMergeAuthors::default();
+    for (remote, handler) in source_action_handlers(config, name)
         .filter(|(_, handler)| handler.safe_verdict_action == SafeVerdictAction::Merge)
-        .flat_map(|(remote, handler)| {
-            handler
-                .authors
-                .iter()
-                .flatten()
-                .map(move |author| (remote.clone(), author.clone()))
-        })
-        .collect()
+    {
+        if handler.catch_all {
+            authors.allow(&remote, MergeAuthor::Any);
+        }
+        for login in handler.authors.iter().flatten() {
+            authors.allow(&remote, MergeAuthor::Login(login.clone()));
+        }
+        // Validation rejects an invalid pattern; one that fails here grants nothing.
+        if let Some(pattern) = handler
+            .author_regex
+            .as_deref()
+            .and_then(|p| author_pattern(p).ok())
+        {
+            authors.allow(&remote, MergeAuthor::Pattern(pattern));
+        }
+    }
+    authors
 }
 
-/// Publish handlers with explicit authors, paired with each watched remote on forge `name`.
+/// Publish handlers paired with each watched remote on forge `name`.
 fn source_action_handlers<'a>(
     config: &'a Config,
     name: &str,
@@ -84,7 +94,7 @@ fn source_action_handlers<'a>(
                 continue;
             };
             for handler in &discovery.handlers {
-                if handler.mode == PullRequestMode::Publish && !handler.catch_all {
+                if handler.mode == PullRequestMode::Publish {
                     pairs.push((repository.remote.clone(), handler));
                 }
             }
@@ -155,4 +165,53 @@ pub fn verify_github_binding(
     name: &str,
 ) -> Result<Vec<String>> {
     Ok(github_binding(config, secrets, name)?.verify_installation()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_handlers(handlers: &str) -> Config {
+        let yaml = include_str!("../../config/tests/fixtures/valid.yaml").replace(
+            "      merge_source_merge_request_on_safe_verdict: false",
+            "      merge_source_merge_request_on_safe_verdict: true",
+        );
+        let config = artidezi_config::parse(&format!(
+            "{yaml}    pull_requests:\n      poll_interval_seconds: 60\n      settle_seconds: 0\n      max_runs_per_pull_request: 1\n      max_active_tasks: 1\n      repositories: [ansible-role-notes]\n      handlers:\n{handlers}"
+        ))
+        .unwrap();
+        assert!(
+            artidezi_config::validate(&config).is_empty(),
+            "{:?}",
+            artidezi_config::validate(&config)
+        );
+        config
+    }
+
+    fn handler(id: &str, selector: &str, action: &str) -> String {
+        format!(
+            "        - id: {id}\n          {selector}\n          mode: publish\n          safe_verdict_action: {action}\n          action: assess\n          require_successful_checks: true\n          instructions: Assess.\n"
+        )
+    }
+
+    #[test]
+    fn merge_scope_follows_each_merge_handlers_author_selector() {
+        let remote = "acme/ansible-role-notes";
+        let config = with_handlers(&format!(
+            "{}{}",
+            handler("bots", r#"author_regex: '[a-z-]+\[bot\]'"#, "merge"),
+            handler("people", "authors: [maintainer]", "approve"),
+        ));
+        let authors = source_merge_authors(&config, "forge-acme");
+        assert!(authors.permits(remote, "Renovate[bot]"));
+        assert!(!authors.permits(remote, "renovate[bot]-x"));
+        // An approve handler grants no merge.
+        assert!(!authors.permits(remote, "maintainer"));
+        assert!(source_action_repositories(&config, "forge-acme").contains(remote));
+
+        let config = with_handlers(&handler("everyone", "catch_all: true", "merge"));
+        let authors = source_merge_authors(&config, "forge-acme");
+        assert!(authors.permits(remote, "anyone"));
+        assert!(!authors.permits("acme/acme-playbook", "anyone"));
+    }
 }

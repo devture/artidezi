@@ -376,10 +376,10 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                 }
                 if handler.mode != PullRequestMode::Publish
                     || handler.action != PullRequestAction::Assess
-                    || handler.catch_all
-                    || handler.authors.as_ref().is_none_or(|a| a.is_empty())
                 {
-                    problems.push(problem(format!("{ctx}: source approval/merge requires a publish assessment with explicit authors and no catch-all")));
+                    problems.push(problem(format!(
+                        "{ctx}: source approval/merge requires a publish assessment"
+                    )));
                 }
                 if discovery.repositories.iter().any(|id| {
                     project.repositories.get(id).is_none_or(|r| {
@@ -435,13 +435,26 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                     )));
                 }
                 catch_all = handler.catch_all;
-                if handler.catch_all == handler.authors.is_some() {
-                    problems.push(problem(format!("{ctx}: PR handler {} needs either authors or explicit catch_all: true, never both", handler.id)));
+                let author_selectors = usize::from(handler.catch_all)
+                    + usize::from(handler.authors.is_some())
+                    + usize::from(handler.author_regex.is_some());
+                if author_selectors != 1 {
+                    problems.push(problem(format!("{ctx}: PR handler {} needs exactly one of authors, author_regex or explicit catch_all: true", handler.id)));
                 }
                 if handler.authors.as_ref().is_some_and(|authors| {
                     authors.is_empty() || authors.iter().any(|a| a.trim().is_empty())
                 }) {
                     problems.push(problem(format!("{ctx}: PR handler authors must be nonempty; use catch_all: true for an explicit catch-all")));
+                }
+                if let Some(pattern) = &handler.author_regex
+                    && crate::model::author_pattern(pattern)
+                        .ok()
+                        .is_none_or(|r| r.is_match(""))
+                {
+                    problems.push(problem(format!(
+                        "{ctx}: PR handler {} author_regex must be a valid regex that matches no empty login",
+                        handler.id
+                    )));
                 }
                 if let Some(pattern) = &handler.title_regex {
                     if pattern.is_empty() || Regex::new(pattern).is_err() {
@@ -452,7 +465,7 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                     }
                     if handler.catch_all {
                         problems.push(problem(format!(
-                            "{ctx}: PR handler {} title_regex requires explicit authors, not catch_all",
+                            "{ctx}: PR handler {} title_regex requires authors or author_regex, not catch_all",
                             handler.id
                         )));
                     }

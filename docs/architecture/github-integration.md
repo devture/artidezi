@@ -55,7 +55,7 @@ point-in-time evidence and never weakens the fresh publication gate.
 
 ## Scoped publication
 
-Each handler defaults to `mode: dry_run`. An optional title regex narrows an explicit author rule;
+Each handler defaults to `mode: dry_run`. An optional title regex narrows an author list or pattern;
 it never replaces repository or author authority. A `publish` handler also requires the project publication
 effect; tasks freeze this choice. Dry runs clear all effects and tagging. Publish tasks permit
 COMMENT reviews and human-reviewed adaptation PRs by default, with an explicit source-action

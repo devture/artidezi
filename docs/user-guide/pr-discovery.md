@@ -50,10 +50,16 @@ pull_requests:
         Prepare an adaptation only when the original update needs changes.
 ```
 
-Authors are matched against forge identities. A handler with explicit authors may additionally set
-`title_regex`; both the author and complete forge title must then match. The expression uses Rust
-regular-expression syntax, so anchor it with `^` and `$` when the complete title is the intended
-contract. Title matching is unavailable on a catch-all. For example:
+Authors are matched against forge identities, ignoring case. A handler names them with exactly one
+of `authors` (a list of logins), `author_regex` or an explicit `catch_all: true`. `author_regex` uses
+Rust regular-expression syntax and must match the whole login, as if wrapped in `^(?:...)$`: for
+example `'[a-z0-9-]+\[bot\]'` matches every GitHub App bot but not `someone[bot]-fork`. A pattern that
+matches an empty login is invalid.
+
+A handler with `authors` or `author_regex` may additionally set `title_regex`; both the author and
+complete forge title must then match. Unlike `author_regex`, the title expression is not anchored for
+you, so anchor it with `^` and `$` when the complete title is the intended contract. Title matching
+is unavailable on a catch-all. For example:
 
 ```yaml
 - id: command-image
@@ -70,8 +76,9 @@ several ordered rules for one updater identity, with distinct instructions and d
 An optional `agent_profile` selects one of the project's `allowed_agent_profiles` for that handler;
 omitting it uses the project default. The resolved profile is frozen into each source task.
 Unmatched PRs are ignored. `action: ignore` excludes matching PRs. An optional catch-all must
-explicitly set `catch_all: true`, omit `authors` and `title_regex`, and appear last. Missing both
-author selectors is invalid; there is no built-in catch-all and no automatic repository discovery.
+explicitly set `catch_all: true`, omit `authors`, `author_regex` and `title_regex`, and appear last.
+A handler without an author selector is invalid; there is no built-in catch-all and no automatic
+repository discovery.
 Only the named repositories and their configured target branches are watched. Context repositories
 are not automatically watched; a remote/branch can have only one discovery project owner.
 
@@ -298,12 +305,12 @@ with the source PR, on GitHub and on Forgejo:
 | `approve` | Submit an approving review on the exact assessed commit; another bot may then merge |
 | `merge` | Submit that approval, then merge the exact assessed commit with a merge commit |
 
-Both actions need `mode: publish`, the project's `publish_adaptation_merge_requests` effect,
-explicit `authors` (no catch-all) and writable source repositories. `merge` also needs
+Both actions need `mode: publish`, the project's `publish_adaptation_merge_requests` effect and
+writable source repositories. `merge` also needs
 `effects.merge_source_merge_request_on_safe_verdict: true` (formerly
 `merge_renovate_merge_request_on_safe_verdict`, which ArtiDezi still accepts; `artidezi schema
 config` shows only the new name, so rename it when validating against that schema). A merge handler merges unchanged PRs
-from exactly the authors it lists, whoever they are: a dependency bot such as `renovate[bot]` on
+from exactly the authors it matches, whoever they are: a dependency bot such as `renovate[bot]` on
 GitHub or `renovate-bot` on Forgejo, another automation account, or a person. Separate handlers give
 different authors different actions:
 
@@ -332,6 +339,12 @@ The author controls the change and its description, and can word both to persuad
 agent. Whether that is acceptable depends on who can open PRs as that login and on the repository,
 so ArtiDezi leaves it to the operator instead of guessing from login shapes or repository
 visibility.
+
+An `author_regex` or `catch_all: true` on an approve or merge handler widens that decision to every
+login it matches, including accounts created later. `catch_all` covers everyone who can open a PR
+against the watched branch, which on a public repository includes anyone with an account, so
+reserve it for repositories where only trusted people can open PRs. ArtiDezi's own PRs and
+`artidezi/` branches are never taken in as sources, whatever the selector.
 
 Right before approving and again before merging, the controller requires current successful
 commit statuses on the assessed head, no reviewer whose latest decision requests changes, an

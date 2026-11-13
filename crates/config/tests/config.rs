@@ -213,6 +213,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         id: "renovate".into(),
         agent_profile: None,
         authors: Some(vec!["renovate[bot]".into()]),
+        author_regex: None,
         title_regex: None,
         catch_all: false,
         action: PullRequestAction::Assess,
@@ -344,7 +345,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     assert!(
         artidezi_config::validate(&missing_selector)
             .iter()
-            .any(|p| p.0.contains("explicit catch_all: true"))
+            .any(|p| p.0.contains("exactly one of authors, author_regex"))
     );
     let mut conflicting_selectors = config.clone();
     conflicting_selectors
@@ -359,8 +360,27 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     assert!(
         artidezi_config::validate(&conflicting_selectors)
             .iter()
-            .any(|p| p.0.contains("never both"))
+            .any(|p| p.0.contains("exactly one of authors, author_regex"))
     );
+    for pattern in ["", "(", "x*"] {
+        let mut invalid_author = config.clone();
+        let handler = &mut invalid_author
+            .projects
+            .get_mut(&project_name)
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .handlers[0];
+        handler.authors = None;
+        handler.author_regex = Some(pattern.into());
+        assert!(
+            artidezi_config::validate(&invalid_author)
+                .iter()
+                .any(|p| p.0.contains("author_regex must be a valid regex")),
+            "{pattern:?}"
+        );
+    }
     for pattern in ["", "("] {
         let mut invalid_title = config.clone();
         invalid_title
@@ -393,7 +413,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     assert!(
         artidezi_config::validate(&title_catch_all)
             .iter()
-            .any(|p| p.0.contains("title_regex requires explicit authors"))
+            .any(|p| p.0.contains("title_regex requires authors or author_regex"))
     );
     let discovery = config
         .projects
@@ -630,6 +650,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
             id: "updates".into(),
             agent_profile: None,
             authors: Some(vec!["updater".into()]),
+            author_regex: None,
             title_regex: None,
             catch_all: false,
             action: PullRequestAction::Assess,
@@ -700,6 +721,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
             id: "renovate".into(),
             agent_profile: None,
             authors: Some(vec!["renovate[bot]".into()]),
+            author_regex: None,
             title_regex: None,
             catch_all: false,
             mode: PullRequestMode::Publish,
@@ -720,7 +742,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
 }
 
 #[test]
-fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority() {
+fn source_actions_are_opt_in_and_reject_unscoped_and_dry_run_authority() {
     use artidezi_config::model::*;
     let mut config = github_merge_handler_config();
     for variant in 0..5 {
@@ -728,10 +750,7 @@ fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority
         let p = bad.projects.values_mut().next().unwrap();
         let h = &mut p.pull_requests.as_mut().unwrap().handlers[0];
         match variant {
-            0 => {
-                h.authors = None;
-                h.catch_all = true;
-            }
+            0 => h.authors = None,
             1 => h.mode = PullRequestMode::DryRun,
             2 => h.authors = Some(vec![]),
             3 => p.effects.merge_source_merge_request_on_safe_verdict = false,
@@ -767,6 +786,59 @@ fn a_merge_handler_may_merge_any_author_it_names() {
             artidezi_config::validate(&config)
         );
     }
+}
+
+#[test]
+fn a_merge_handler_may_name_its_authors_by_pattern_or_take_every_author() {
+    let mut config = github_merge_handler_config();
+    let handler = &mut config
+        .projects
+        .values_mut()
+        .next()
+        .unwrap()
+        .pull_requests
+        .as_mut()
+        .unwrap()
+        .handlers[0];
+    handler.authors = None;
+    handler.author_regex = Some(r"[a-z-]+\[bot\]".into());
+    handler.title_regex = Some("^Update ".into());
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
+    let handler = &config
+        .projects
+        .values()
+        .next()
+        .unwrap()
+        .pull_requests
+        .as_ref()
+        .unwrap()
+        .handlers[0];
+    // The pattern covers the whole login, ignoring case, like an exact author.
+    assert!(handler.matches_pull_request("Renovate[bot]", "Update x"));
+    assert!(!handler.matches_pull_request("renovate[bot]-impostor", "Update x"));
+    assert!(!handler.matches_pull_request("not renovate[bot]", "Update x"));
+    assert!(!handler.matches_pull_request("renovate[bot]", "Bump x"));
+    let handler = &mut config
+        .projects
+        .values_mut()
+        .next()
+        .unwrap()
+        .pull_requests
+        .as_mut()
+        .unwrap()
+        .handlers[0];
+    handler.author_regex = None;
+    handler.title_regex = None;
+    handler.catch_all = true;
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@ pub struct ForgejoForge {
     /// Lowercased `owner/name` remotes whose source pull requests this adapter may approve.
     approval_repositories: BTreeSet<String>,
     /// Lowercased `(remote, author)` pairs whose pull requests this adapter may merge.
-    merge_authors: BTreeSet<(String, String)>,
+    merge_authors: SourceMergeAuthors,
 }
 
 /// Pages of commit statuses read before refusing an incomplete listing.
@@ -130,26 +130,23 @@ impl ForgejoForge {
             bot_login: bot_login.to_owned(),
             agent,
             approval_repositories: BTreeSet::new(),
-            merge_authors: BTreeSet::new(),
+            merge_authors: SourceMergeAuthors::default(),
         }
     }
 
     /// Source approval and merge authority, narrower than ordinary publication. Merges of other
-    /// authors' pull requests are limited to the `(remote, author)` pairs named by merge handlers.
+    /// authors' pull requests are limited to the authors merge handlers name per repository.
     /// Without it the adapter approves nothing and merges only ArtiDezi's own proposals.
     pub fn with_source_actions(
         mut self,
         approvals: impl IntoIterator<Item = String>,
-        merges: impl IntoIterator<Item = (String, String)>,
+        merges: SourceMergeAuthors,
     ) -> Self {
         self.approval_repositories = approvals
             .into_iter()
             .map(|remote| remote.to_ascii_lowercase())
             .collect();
-        self.merge_authors = merges
-            .into_iter()
-            .map(|(remote, author)| (remote.to_ascii_lowercase(), author.to_ascii_lowercase()))
-            .collect();
+        self.merge_authors = merges;
         self
     }
 
@@ -744,10 +741,7 @@ impl ForgeAdapter for ForgejoForge {
         // ArtiDezi's own proposals follow their delivery mode. Anyone else's pull request is a
         // source merge, allowed only for an author a merge handler names, with green checks.
         let own = info.author_login.eq_ignore_ascii_case(&self.bot_login);
-        let named = self.merge_authors.contains(&(
-            remote.to_ascii_lowercase(),
-            info.author_login.to_ascii_lowercase(),
-        ));
+        let named = self.merge_authors.permits(remote, &info.author_login);
         if info.draft || (!own && (!named || info.checks != ChecksState::Success)) {
             return Err(ForgeError::Other(
                 "source changed or is not eligible for merging".into(),

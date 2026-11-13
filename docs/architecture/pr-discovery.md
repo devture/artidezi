@@ -9,13 +9,14 @@ SPDX-License-Identifier: Apache-2.0
 [Configuration](../../crates/config/src/model.rs) adds optional `pull_requests` to a project.
 [Validation](../../crates/config/src/validate.rs) requires watched writable repositories, explicit
 polling/settle/limit settings and ordered handlers. Each handler has a stable ID, exactly one of an
-author list or `catch_all: true`, an `assess`/`ignore` action, a check gate and instructions. A handler
+author list, an `author_regex` (anchored to the whole login, case-insensitive) or `catch_all: true`,
+an `assess`/`ignore` action, a check gate and instructions. A handler
 may select an agent profile already allowed by its project; otherwise the project default applies.
 GitHub assessment handlers may independently opt into a frozen structured CI-result snapshot.
 Failed Actions job excerpts additionally require a project permit and handler opt-in; neither
 context setting alters the check gate.
-Explicit author handlers may additionally carry a validated `title_regex`, matched against the
-complete forge title after the author match. A catch-all must be last and cannot carry a title
+Author-list and author-pattern handlers may additionally carry a validated `title_regex`, matched
+against the forge title after the author match. A catch-all must be last and cannot carry a title
 expression. There is no broader expression language or hidden default reviewer.
 
 ## Ownership and scheduling
@@ -232,9 +233,11 @@ Source approval/merge uses the additional policy and recovery gates described in
 apply on Forgejo.
 
 The Forgejo adapter adds its own guards. It approves only repositories watched by an approve/merge
-handler, and merges another author's PR only when a merge handler watching that repository names
-the author and checks are green; ArtiDezi's own proposals follow their delivery mode. The GitHub
-adapter applies the same `(repository, author)` limit to merges. Approval rereads the PR and posts an `APPROVED` review on the exact head; the receipt
+handler, and merges another author's PR only when a merge handler watching that repository matches
+the author (a login, an anchored pattern or a catch-all) and checks are green; ArtiDezi's own
+proposals follow their delivery mode. The GitHub adapter applies the same per-repository author
+limit to merges ([`SourceMergeAuthors`](../../crates/forge/src/lib.rs), built in
+[`forges.rs`](../../crates/orchestrator/src/forges.rs)). Approval rereads the PR and posts an `APPROVED` review on the exact head; the receipt
 must match bot, commit, body and state. Merge sends `head_commit_id`, so Forgejo answers
 `head out of date` instead of merging a moved head; that maps to a head-moved error. While
 Forgejo is still recalculating mergeability after a review or status change, the adapter retries

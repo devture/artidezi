@@ -213,7 +213,9 @@ fn reopen(w: &mut World, fixture: &Fixture) {
                             .safe_verdict_action
                             == artidezi_config::model::SafeVerdictAction::Merge
                         {
-                            [("org/app".into(), "renovate[bot]".into())].into()
+                            [("org/app".into(), "renovate[bot]".into())]
+                                .into_iter()
+                                .collect()
                         } else {
                             Default::default()
                         },
@@ -275,6 +277,7 @@ fn world() -> (World, Fixture) {
             mode: Default::default(),
             id: "renovate".into(),
             authors: Some(vec!["renovate[bot]".into()]),
+            author_regex: None,
             title_regex: None,
             catch_all: false,
             action: PullRequestAction::Assess,

@@ -12,6 +12,8 @@ pub mod fake;
 pub mod forgejo;
 pub mod github;
 
+use std::collections::BTreeMap;
+
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
 
@@ -215,6 +217,63 @@ impl ExpectedProposal<'_> {
     }
 }
 
+/// Which authors' pull requests a merge handler names, as the adapter enforces it.
+#[derive(Clone, Debug)]
+pub enum MergeAuthor {
+    /// A `catch_all` handler: every author.
+    Any,
+    /// One exact login, compared ignoring case.
+    Login(String),
+    /// A pattern that must already match the whole login, ignoring case, as the configuration
+    /// compiles `author_regex`.
+    Pattern(regex::Regex),
+}
+
+/// Per repository, the authors whose unchanged pull requests a source merge may merge. A
+/// repository absent here gets no source merges at all.
+#[derive(Clone, Debug, Default)]
+pub struct SourceMergeAuthors(BTreeMap<String, Vec<MergeAuthor>>);
+
+impl SourceMergeAuthors {
+    pub fn allow(&mut self, remote: &str, author: MergeAuthor) {
+        self.0
+            .entry(remote.to_lowercase())
+            .or_default()
+            .push(author);
+    }
+
+    pub fn remotes(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    pub fn covers(&self, remote: &str) -> bool {
+        self.0.contains_key(&remote.to_lowercase())
+    }
+
+    pub fn permits(&self, remote: &str, login: &str) -> bool {
+        self.0
+            .get(&remote.to_lowercase())
+            .into_iter()
+            .flatten()
+            .any(|author| match author {
+                MergeAuthor::Any => true,
+                MergeAuthor::Login(name) => name.eq_ignore_ascii_case(login),
+                MergeAuthor::Pattern(pattern) => pattern.is_match(login),
+            })
+    }
+}
+
+/// Exact `(remote, login)` pairs.
+impl FromIterator<(String, String)> for SourceMergeAuthors {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(pairs: I) -> Self {
+        let mut authors = Self::default();
+        for (remote, login) in pairs {
+            authors.allow(&remote, MergeAuthor::Login(login));
+        }
+        authors
+    }
+}
+
 pub trait ForgeAdapter: Send + Sync {
     /// Repository paths that define what this forge's CI runs. Publishing a change under any of
     /// them needs human authorization. Required, so that a new adapter has to decide.
@@ -372,4 +431,29 @@ pub trait ForgeAdapter: Send + Sync {
         Ok(None)
     }
     fn create_tag(&self, remote: &str, name: &str, commit: &CommitSha) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_merge_authors_are_scoped_per_repository() {
+        let mut authors: SourceMergeAuthors = [("Acme/App".to_owned(), "Renovate-Bot".to_owned())]
+            .into_iter()
+            .collect();
+        authors.allow(
+            "acme/lib",
+            MergeAuthor::Pattern(regex::Regex::new("^(?i:deps-[a-z]+)$").unwrap()),
+        );
+        authors.allow("acme/site", MergeAuthor::Any);
+        assert!(authors.permits("acme/app", "renovate-bot"));
+        assert!(!authors.permits("acme/app", "renovate-bot2"));
+        assert!(!authors.permits("acme/lib", "renovate-bot"));
+        assert!(authors.permits("ACME/lib", "Deps-Bot"));
+        assert!(!authors.permits("acme/lib", "deps-bot-2"));
+        assert!(authors.permits("acme/site", "anyone"));
+        assert!(!authors.permits("acme/other", "anyone"));
+        assert!(authors.covers("acme/APP") && !authors.covers("acme/other"));
+    }
 }

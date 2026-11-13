@@ -412,11 +412,19 @@ fn forgejo_source_approval_and_merge_contract() {
     plain.add_collaborator(&remote, &renovate_user).unwrap();
     let forge = ForgejoForge::new(&url, &token, &user).with_source_actions(
         [remote.to_uppercase()],
-        [(remote.clone(), renovate_user.to_uppercase())],
+        [(remote.clone(), renovate_user.to_uppercase())]
+            .into_iter()
+            .collect(),
     );
     // Merge authority names authors, not repositories: another author is refused even when green.
-    let other_author = ForgejoForge::new(&url, &token, &user)
-        .with_source_actions([remote.clone()], [(remote.clone(), "someone-else".into())]);
+    let mut other_authors = SourceMergeAuthors::default();
+    other_authors.allow(&remote, MergeAuthor::Login("someone-else".into()));
+    other_authors.allow(
+        &remote,
+        MergeAuthor::Pattern(regex::Regex::new("^(?i:someone-.*)$").unwrap()),
+    );
+    let other_author =
+        ForgejoForge::new(&url, &token, &user).with_source_actions([remote.clone()], other_authors);
     let renovate = ForgejoForge::new(&url, &renovate_token, &renovate_user);
 
     // The bot pushes a branch; the Renovate-style user opens the pull request from it.

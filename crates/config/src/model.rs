@@ -344,9 +344,13 @@ pub struct PullRequestHandler {
     /// Action after an unchanged verdict and successful current forge checks.
     #[serde(default)]
     pub safe_verdict_action: SafeVerdictAction,
-    /// Exact forge logins. Required unless catch_all is explicitly true.
+    /// Exact forge logins. A handler names its authors with exactly one of `authors`,
+    /// `author_regex` or an explicit `catch_all: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authors: Option<Vec<String>>,
+    /// Regular expression that must match the complete forge login, ignoring case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_regex: Option<String>,
     /// Optional regular expression matched against the complete forge title after the author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_regex: Option<String>,
@@ -418,14 +422,30 @@ impl SafeVerdictAction {
     }
 }
 
+/// Compiles an `author_regex` the way handlers apply it: anchored to the whole login and
+/// case-insensitive, like forge logins themselves.
+pub fn author_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    regex::RegexBuilder::new(&format!("^(?:{pattern})$"))
+        .case_insensitive(true)
+        .build()
+}
+
 impl PullRequestHandler {
-    pub fn matches_pull_request(&self, author: &str, title: &str) -> bool {
-        let author_matches = self.catch_all
+    pub fn matches_author(&self, author: &str) -> bool {
+        self.catch_all
             || self.authors.as_ref().is_some_and(|authors| {
                 authors
                     .iter()
                     .any(|allowed| allowed.eq_ignore_ascii_case(author))
-            });
+            })
+            || self
+                .author_regex
+                .as_ref()
+                .is_some_and(|pattern| author_pattern(pattern).is_ok_and(|r| r.is_match(author)))
+    }
+
+    pub fn matches_pull_request(&self, author: &str, title: &str) -> bool {
+        let author_matches = self.matches_author(author);
         author_matches
             && self.title_regex.as_ref().is_none_or(|pattern| {
                 regex::Regex::new(pattern).is_ok_and(|regex| regex.is_match(title))

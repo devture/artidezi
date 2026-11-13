@@ -156,7 +156,7 @@ Do not use a pasted installation token as a permanent deployment secret.
 | Inspect (implemented) | GET only | Correct source identity, CI visibility and repository ownership |
 | Scheduled dry run (implemented) | Authenticated reads and local evaluations | Verified installation, working worker profile, correct author rules and reviewed dry-run outcomes |
 | Publish (implemented) | COMMENT reviews and owned adaptation branches/PRs; human merge | Freshness and retry reconciliation; reviewers accept the proposed changes |
-| Approval (implemented) | APPROVE review on an unchanged source | Explicit authors, successful current CI, reviewed pilot outcomes; may trigger another bot's automerge |
+| Approval (implemented) | APPROVE review on an unchanged source | Deliberate author selection, successful current CI, reviewed pilot outcomes; may trigger another bot's automerge |
 | Source merging (implemented) | Approval followed by an immediate merge of a PR from a named author | Project merge permission, source freshness, successful current CI and repository protection |
 
 Keep dry run available per project or rule. Do not make a catch-all
@@ -271,12 +271,14 @@ result says the source needs no adaptation. By default it produces only a COMMEN
 | `approve` | Submit a GitHub APPROVE review; another bot may then merge |
 | `merge` | Submit an approval, then request an immediate merge commit |
 
-These actions require `mode: publish`, the project publication effect, explicit author matches
-(no catch-all), and writable source repositories. Forgejo supports the same actions; see
+These actions require `mode: publish`, the project publication effect and writable source
+repositories. Forgejo supports the same actions; see
 [approve or merge safe updates](pr-discovery.md#approve-or-merge-safe-updates). `merge` additionally requires
 `effects.merge_source_merge_request_on_safe_verdict: true`. A merge handler merges pull requests
-from the authors it names, whoever they are: a bot such as `renovate[bot]`, or a person you trust
-that far. Listing an author is the decision to merge their unchanged PRs without a person.
+from the authors it matches, whoever they are: a bot such as `renovate[bot]`, or a person you trust
+that far. Listing an author is the decision to merge their unchanged PRs without a person; an
+`author_regex` or `catch_all: true` extends it to every login the selector matches, which on a
+public repository can include anyone.
 For example, within an existing enrolled project's handler:
 
 ```yaml

@@ -24,7 +24,7 @@ use super::{
 use crate::{
     CheckResult, CheckResultKind, ChecksState, CiJobLog, ExpectedProposal, ForgeAdapter,
     ForgeError, MergeMethod, MergeRequestInfo, MergeRequestListing, MergeRequestState,
-    MergeRequestSummary, NewMergeRequest, Result,
+    MergeRequestSummary, NewMergeRequest, Result, SourceMergeAuthors,
 };
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
@@ -91,7 +91,7 @@ pub struct GithubForge {
     publication_repositories: BTreeSet<String>,
     approval_repositories: BTreeSet<String>,
     /// Lowercased `(remote, author)` pairs a merge handler may merge.
-    merge_authors: BTreeSet<(String, String)>,
+    merge_authors: SourceMergeAuthors,
     write_tokens: Mutex<BTreeMap<String, Token>>,
     workflow_write_tokens: Mutex<BTreeMap<String, Token>>,
     http: Arc<Http>,
@@ -188,7 +188,7 @@ impl GithubForge {
             actions_tokens: Mutex::new(BTreeMap::new()),
             publication_repositories: BTreeSet::new(),
             approval_repositories: BTreeSet::new(),
-            merge_authors: BTreeSet::new(),
+            merge_authors: SourceMergeAuthors::default(),
             write_tokens: Mutex::new(BTreeMap::new()),
             workflow_write_tokens: Mutex::new(BTreeMap::new()),
             http: Arc::new(Http::new(api)),
@@ -206,23 +206,17 @@ impl GithubForge {
     }
 
     /// Approval and merge authority are narrower than ordinary publication authority. Merges are
-    /// limited to the `(remote, author)` pairs named by merge handlers.
+    /// limited to the authors merge handlers name per repository.
     pub fn with_source_actions(
         mut self,
         approvals: BTreeSet<String>,
-        merges: BTreeSet<(String, String)>,
+        merges: SourceMergeAuthors,
     ) -> Result<Self> {
-        for remote in approvals
-            .iter()
-            .chain(merges.iter().map(|(remote, _)| remote))
-        {
+        for remote in approvals.iter().map(String::as_str).chain(merges.remotes()) {
             self.require_publication(remote)?;
         }
         self.approval_repositories = approvals.into_iter().map(|r| r.to_lowercase()).collect();
-        self.merge_authors = merges
-            .into_iter()
-            .map(|(remote, author)| (remote.to_lowercase(), author.to_lowercase()))
-            .collect();
+        self.merge_authors = merges;
         Ok(self)
     }
 
@@ -961,8 +955,7 @@ impl ForgeAdapter for GithubForge {
         method: MergeMethod,
     ) -> Result<CommitSha> {
         self.require_publication(remote)?;
-        let remote_key = remote.to_lowercase();
-        if !self.merge_authors.iter().any(|(r, _)| *r == remote_key) {
+        if !self.merge_authors.covers(remote) {
             return Err(read_only());
         }
         let current = self.get_merge_request(remote, number)?;
@@ -973,9 +966,7 @@ impl ForgeAdapter for GithubForge {
             || current
                 .author_login
                 .eq_ignore_ascii_case(&self.identity.bot_login)
-            || !self
-                .merge_authors
-                .contains(&(remote_key, current.author_login.to_lowercase()))
+            || !self.merge_authors.permits(remote, &current.author_login)
         {
             return Err(invalid("source changed or is not eligible for merging"));
         }

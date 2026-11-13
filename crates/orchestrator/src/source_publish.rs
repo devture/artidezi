@@ -313,15 +313,12 @@ impl Orchestrator {
             ));
         }
         if source.safe_verdict_action != SafeVerdictAction::Comment {
-            let handler = handler.unwrap();
             let repo = &policy.repositories[&source.repository_id];
-            if handler.catch_all
-                || !matches!(
-                    repo.forge_provider,
-                    artidezi_config::model::ForgeProvider::Github
-                        | artidezi_config::model::ForgeProvider::Forgejo
-                )
-                || repo.access != RepositoryAccess::ReadWrite
+            if !matches!(
+                repo.forge_provider,
+                artidezi_config::model::ForgeProvider::Github
+                    | artidezi_config::model::ForgeProvider::Forgejo
+            ) || repo.access != RepositoryAccess::ReadWrite
                 || (source.safe_verdict_action == SafeVerdictAction::Merge
                     && (!policy.effects.merge_source_merge_request_on_safe_verdict
                         || !project.effects.merge_source_merge_request_on_safe_verdict))
