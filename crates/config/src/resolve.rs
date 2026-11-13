@@ -67,6 +67,13 @@ pub struct PullRequestSource {
         skip_serializing_if = "crate::model::SafeVerdictAction::is_comment"
     )]
     pub safe_verdict_action: crate::model::SafeVerdictAction,
+    /// The handler's adaptation action when the task was created. Absent on older tasks, whose
+    /// adaptations are reviewed by a person.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::AdaptationAction::is_review"
+    )]
+    pub adaptation_action: crate::model::AdaptationAction,
     pub tracking_id: String,
     pub repository_id: String,
     pub number: u64,

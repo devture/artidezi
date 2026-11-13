@@ -66,7 +66,8 @@ snapshots participate in each job, so grouping affects access, cost and reasonin
 | [server](../../crates/server/src/lib.rs) | Authenticated transport, UI and timer |
 
 Names in enums are not promises of runtime support. GitHub supports App-authenticated discovery and inspection, with optional reviews,
-human-reviewed adaptation PRs, and explicitly configured approval/merge of unchanged updates.
+adaptation PRs (human-reviewed unless a handler opts into merging them), and explicitly configured
+approval/merge of unchanged updates.
 Forgejo supports the same source actions with a personal access token.
 Release operations remain unavailable. The worker
 implements the current Codex, Pi and scripted paths, not every modeled harness/auth/sandbox mode.

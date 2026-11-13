@@ -210,6 +210,29 @@ equivalent ones, then checks planned branches for open PRs before creating anoth
 checks. Retained open proposals therefore block both replacement routes. Human merges are observed without
 source-merge or tag effects. See [GitHub internals](github-integration.md#scoped-publication).
 
+### Adaptation merges
+
+A handler with `adaptation_action: merge` freezes that choice into the task's source identity, and the
+discovery task keeps the project's `merge_adaptation_merge_requests` effect only for such handlers.
+[`adaptation_merge.rs`](../../crates/orchestrator/src/adaptation_merge.rs) runs inside source-task
+reconciliation after the recorded proposals were compared with the forge. It acts only while the
+task awaits review, the source passes the publication freshness check (authority, unpaused, still
+the tracked task's, open, same author/branches/frozen title, not a draft, frozen head), has no change
+request, and both the frozen policy and the current configuration (handler by ID, project effect,
+no drafts) still allow it. A `publication.workflow_authorized` event excludes the task. Every open
+proposal must still be the bot's open PR from its `artidezi/` branch into the configured target at
+its receipt head (`ExpectedProposal::matches`), not a draft, with successful checks and no change
+request; otherwise nothing merges. The source gates and the gates of every remaining open proposal
+are repeated before each merge. Each merge
+records `adaptation.merge_planned`, passes the receipt head to the adapter (a merge commit) and
+records `merge_request.automerged`; a forge error records `adaptation.merge_failed`. Any plan for an
+open proposal's current head, with or without a failure receipt, stops automatic merging for that
+task: a lost success is observed as a merged proposal, while a refusal or crash is left to a person.
+Revoking the opt-in leaves the task awaiting review instead of holding it. The Forgejo adapter merges
+its own proposals as before; the GitHub adapter merges a bot-authored `artidezi/` PR only in
+repositories `with_adaptation_merges` lists, built from projects with the effect and an opted-in
+publish handler.
+
 After each supersession close or observed adaptation merge, the controller attempts branch cleanup
 inline. It confirms the bot-owned proposal is closed or merged, respectively, at the receipt's head,
 checks current repository write authority, and refuses cleanup if an open proposal or unresolved publication plan uses the

@@ -59,7 +59,7 @@ Each handler defaults to `mode: dry_run`. An optional title regex narrows an aut
 it never replaces repository or author authority. A `publish` handler also requires the project publication
 effect; tasks freeze this choice. Dry runs clear all effects and tagging. Publish tasks permit
 COMMENT reviews and human-reviewed adaptation PRs by default, with an explicit source-action
-policy for approval/merge. Tagging is always cleared; the merge effect is retained only for merge handlers. Historical dry-run tasks cannot be promoted.
+policy for approval/merge and a separate `adaptation_action: merge` opt-in for adaptation PRs. Tagging is always cleared; the merge effect is retained only for merge handlers. Historical dry-run tasks cannot be promoted.
 
 The GitHub binding derives its writable repository set only from explicitly enabled publication
 projects, excluding read-only context. Read tokens always request exactly five read permissions;
@@ -103,7 +103,8 @@ recreated Git objects: retain caches alongside durable state until publication r
 objects fail safely. Fresh evaluation/resume checks all planned branches for open proposals,
 including lost receipts. It cannot create replacement tasks while those proposals remain open.
 
-After delivery, reconciliation observes human merges of the recorded proposal heads and attempts
+After delivery, reconciliation observes human merges of the recorded proposal heads, merges them
+itself only under an opted-in adaptation merge (below), and attempts
 leased cleanup of their branches. Cleanup is independent of delivery success and can retry after
 the task becomes done; see [proposal cleanup](lifecycle.md#proposal-branch-cleanup). A moved source
 can also close owned obsolete proposals and attempt leased cleanup of their recorded branches;

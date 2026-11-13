@@ -586,3 +586,157 @@ fn forgejo_source_approval_and_merge() {
             .all(|r| r.state != ReviewState::Approved)
     );
 }
+
+#[test]
+fn forgejo_adaptation_merges_once_its_checks_pass() {
+    let (Some(url), Some(token), Some(user), Some(renovate_user), Some(renovate_token)) = (
+        env("ARTIDEZI_FORGEJO_URL"),
+        env("ARTIDEZI_FORGEJO_TOKEN"),
+        env("ARTIDEZI_FORGEJO_USER"),
+        env("ARTIDEZI_FORGEJO_RENOVATE_USER"),
+        env("ARTIDEZI_FORGEJO_RENOVATE_TOKEN"),
+    ) else {
+        eprintln!("skipping: ARTIDEZI_FORGEJO_* not set");
+        return;
+    };
+    let maintainer_user = env("ARTIDEZI_FORGEJO_MAINTAINER_USER").unwrap();
+    let maintainer_token = env("ARTIDEZI_FORGEJO_MAINTAINER_TOKEN").unwrap();
+    let forge = ForgejoForge::new(&url, &token, &user);
+    let remote = forge
+        .create_repository(&format!("artidezi-adapt-{}", std::process::id()), "main")
+        .unwrap();
+    forge.add_collaborator(&remote, &renovate_user).unwrap();
+    forge.add_collaborator(&remote, &maintainer_user).unwrap();
+    let renovate = ForgejoForge::new(&url, &renovate_token, &renovate_user);
+    let maintainer = ForgejoForge::new(&url, &maintainer_token, &maintainer_user);
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let cache = BareCache::open_or_init(&root.join("renovate-cache")).unwrap();
+    let yaml = source_config(&url, &user, &renovate_user, &remote)
+        .replace(
+            "publish_adaptation_merge_requests: true}",
+            "publish_adaptation_merge_requests: true, merge_adaptation_merge_requests: true}",
+        )
+        .replace(
+            "          safe_verdict_action: merge\n",
+            "          safe_verdict_action: merge\n          adaptation_action: merge\n",
+        );
+    let config = artidezi_config::parse(&yaml).unwrap();
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
+    let forges: BTreeMap<String, Box<dyn ForgeAdapter>> =
+        artidezi_orchestrator::forges::build_forges(
+            &config,
+            &forgejo_secrets(&root, &token),
+            &root.join("fake"),
+        )
+        .unwrap();
+    let mut orchestrator = Orchestrator::open(config, &root.join("data"), forges).unwrap();
+    let script = root.join("adapt.sh");
+    let json = r#"{"schema_version": 1, "outcome": "proposal", "summary": "Adapted the role.",
+ "repositories": [{"id": "role", "changed": true, "head_commit": "HEADSHA"}]}"#;
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nset -e\necho adapted >> CHANGES.md\ngit add CHANGES.md\n\
+             git commit -q -m 'Adapt the role'\nHEAD=$(git rev-parse HEAD)\n{}\n\
+             sed -i \"s/HEADSHA/$HEAD/\" \"$ARTIDEZI_RESULT_PATH\"\n",
+            result_writer(json)
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let pull = open_renovate_pull(&renovate, &remote, &cache, "renovate/adapt", "Update lib");
+    forge
+        .set_commit_status(&remote, pull.head_commit.as_str(), "success", "ci/test")
+        .unwrap();
+    let queued = orchestrator
+        .scan_pull_requests(Some("roles"), true)
+        .unwrap();
+    assert!(queued.errors.is_empty(), "{:?}", queued.errors);
+    let task = queued.queued[0].clone();
+    assert_eq!(work(&mut orchestrator, &root, &script), AttemptState::Valid);
+    assert_eq!(
+        orchestrator.db.get_task(&task).unwrap().state,
+        TaskState::AwaitingReview
+    );
+    let [adaptation] = orchestrator
+        .db
+        .list_merge_requests(&task)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let info = forge.get_merge_request(&remote, adaptation.number).unwrap();
+    assert!(
+        info.body
+            .contains("ArtiDezi merges this once its checks pass")
+    );
+    let head = info.head_commit.clone();
+
+    // No checks yet, then a maintainer's objection: the adaptation waits for a person.
+    assert_eq!(
+        orchestrator.reconcile_task(&task).unwrap(),
+        TaskState::AwaitingReview
+    );
+    forge
+        .set_commit_status(&remote, head.as_str(), "success", "ci/test")
+        .unwrap();
+    maintainer
+        .submit_review_for_test(
+            &remote,
+            adaptation.number,
+            &head,
+            "REQUEST_CHANGES",
+            "Not yet.",
+        )
+        .unwrap();
+    assert_eq!(
+        orchestrator.reconcile_task(&task).unwrap(),
+        TaskState::AwaitingReview
+    );
+    assert_eq!(
+        forge
+            .get_merge_request(&remote, adaptation.number)
+            .unwrap()
+            .state,
+        ForgeMrState::Open
+    );
+
+    // Once the maintainer's latest decision approves and checks pass, ArtiDezi merges it.
+    maintainer
+        .submit_review_for_test(&remote, adaptation.number, &head, "APPROVED", "Fine now.")
+        .unwrap();
+    assert_eq!(orchestrator.reconcile_task(&task).unwrap(), TaskState::Done);
+    let merged = forge.get_merge_request(&remote, adaptation.number).unwrap();
+    assert_eq!(merged.state, ForgeMrState::Merged);
+    assert_eq!(merged.head_commit, head);
+    assert_eq!(
+        Some(forge.branch_head(&remote, "main").unwrap()),
+        merged.merge_commit
+    );
+    let events: Vec<String> = orchestrator
+        .db
+        .list_events(&task)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    for kind in ["adaptation.merge_planned", "merge_request.automerged"] {
+        assert!(events.iter().any(|e| e == kind), "{kind}: {events:?}");
+    }
+}
+
+fn forgejo_secrets(
+    root: &std::path::Path,
+    token: &str,
+) -> artidezi_orchestrator::secrets::SecretsDir {
+    let dir = root.join("secrets");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("forgejo-token"), token).unwrap();
+    artidezi_orchestrator::secrets::SecretsDir::new(&dir)
+}

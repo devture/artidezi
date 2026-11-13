@@ -5,7 +5,9 @@
 //! Plans precede remote effects in the durable event log; explicit retries reconcile receipts.
 
 use crate::{Orchestrator, OrchestratorError, Result, discovery::source_of};
-use artidezi_config::model::{DeliveryMode, PullRequestAction, PullRequestMode, SafeVerdictAction};
+use artidezi_config::model::{
+    AdaptationAction, DeliveryMode, PullRequestAction, PullRequestMode, SafeVerdictAction,
+};
 use artidezi_config::{ResolvedProjectPolicy, ResolvedRepository};
 use artidezi_contract::{
     Job,
@@ -364,7 +366,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn require_source_fresh(
+    pub(crate) fn require_source_fresh(
         &self,
         task: &Task,
         policy: &ResolvedProjectPolicy,
@@ -509,11 +511,16 @@ impl Orchestrator {
                         cache_ref,
                         title: limited(title, 180),
                         body: format!(
-                            "Adapts {} at `{}`.\n\n{}\n\n{}\nHuman review and merge are required.\n\n<!-- artidezi:proposal:{}:{} -->",
+                            "Adapts {} at `{}`.\n\n{}\n\n{}\n{}\n\n<!-- artidezi:proposal:{}:{} -->",
                             source.url,
                             source.input.commit,
                             summary(result),
                             evidence_section(result, resolved),
+                            if source.adaptation_action == AdaptationAction::Merge {
+                                "ArtiDezi merges this once its checks pass, unless a reviewer requests changes or the original change moves."
+                            } else {
+                                "Human review and merge are required."
+                            },
                             task.id,
                             collection.id
                         ),
@@ -556,6 +563,9 @@ impl Orchestrator {
             }
             Outcome::ApproveUntouched => {
                 "Assessment only: no adaptation is required; no approval or merge was requested."
+            }
+            Outcome::Proposal if source.adaptation_action == AdaptationAction::Merge => {
+                "The agent prepared adaptations. ArtiDezi merges them once their checks pass, unless a reviewer requests changes."
             }
             Outcome::Proposal => {
                 "The agent prepared adaptations for human review. The original change remains open."
@@ -683,7 +693,11 @@ impl Orchestrator {
         self.db.set_task_state(&task.id, state, "orchestrator")?;
         let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
         tracked.status = if state == TaskState::AwaitingReview {
-            "Published adaptations await review"
+            if source.adaptation_action == AdaptationAction::Merge {
+                crate::adaptation_merge::MERGE_PENDING_STATUS
+            } else {
+                "Published adaptations await review"
+            }
         } else if automatic {
             "Source approved; merge remains subject to repository rules"
         } else {
@@ -694,12 +708,17 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Whether any reviewer's latest decision requests changes. Unknown review states fail closed.
+    /// Whether any reviewer's latest decision on the source requests changes.
     pub(crate) fn source_changes_requested(&self, policy: &ResolvedProjectPolicy) -> Result<bool> {
         let source = policy.source_pull_request.as_ref().unwrap();
         let repo = &policy.repositories[&source.repository_id];
-        let forge = self.forge(&repo.forge)?;
-        let mut reviews = forge.list_reviews(&repo.remote, source.number)?;
+        self.changes_requested(&repo.forge, &repo.remote, source.number)
+    }
+
+    /// Whether any reviewer's latest decision on a PR requests changes. Unknown review states
+    /// fail closed.
+    pub(crate) fn changes_requested(&self, forge: &str, remote: &str, number: u64) -> Result<bool> {
+        let mut reviews = self.forge(forge)?.list_reviews(remote, number)?;
         reviews.sort_by_key(|r| r.id);
         let mut decisions = std::collections::BTreeMap::new();
         for review in reviews {
@@ -982,6 +1001,7 @@ impl Orchestrator {
                 self.cleanup_proposal_branch(task, Some(&attempt.id), policy, mr, Utc::now());
             }
         }
+        self.merge_ready_adaptations(task, &attempt, policy, &mut proposals)?;
         if !proposals.is_empty()
             && proposals
                 .iter()

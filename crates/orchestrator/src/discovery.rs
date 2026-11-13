@@ -648,6 +648,8 @@ impl Orchestrator {
         };
         policy.effects.merge_source_merge_request_on_safe_verdict &= publishing
             && handler.safe_verdict_action == artidezi_config::model::SafeVerdictAction::Merge;
+        policy.effects.merge_adaptation_merge_requests &= publishing
+            && handler.adaptation_action == artidezi_config::model::AdaptationAction::Merge;
         // Patches may be prepared and verified in shadow mode even when publishing is forbidden.
         policy.effects.publish_adaptation_merge_requests &= publishing;
         for repository in policy.repositories.values_mut() {
@@ -810,6 +812,11 @@ impl Orchestrator {
         policy.source_pull_request = Some(PullRequestSource {
             safe_verdict_action: if publishing {
                 handler.safe_verdict_action
+            } else {
+                Default::default()
+            },
+            adaptation_action: if publishing {
+                handler.adaptation_action
             } else {
                 Default::default()
             },

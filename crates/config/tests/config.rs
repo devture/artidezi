@@ -208,6 +208,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         .0
         .clone();
     let handler = PullRequestHandler {
+        adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
         mode: Default::default(),
         id: "renovate".into(),
@@ -425,6 +426,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     discovery.handlers[0].authors = None;
     discovery.handlers[0].catch_all = true;
     discovery.handlers.push(PullRequestHandler {
+        adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
         mode: Default::default(),
         id: "unreachable".into(),
@@ -646,6 +648,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
         repositories: vec![repo],
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
+            adaptation_action: Default::default(),
             safe_verdict_action: Default::default(),
             id: "updates".into(),
             agent_profile: None,
@@ -718,6 +721,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
         repositories: vec![repo],
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
+            adaptation_action: Default::default(),
             id: "renovate".into(),
             agent_profile: None,
             authors: Some(vec!["renovate[bot]".into()]),
@@ -838,6 +842,60 @@ fn a_merge_handler_may_name_its_authors_by_pattern_or_take_every_author() {
         artidezi_config::validate(&config).is_empty(),
         "{:?}",
         artidezi_config::validate(&config)
+    );
+}
+
+#[test]
+fn adaptation_merging_is_a_separate_explicit_opt_in() {
+    use artidezi_config::model::*;
+    let mut config = github_merge_handler_config();
+    {
+        let p = config.projects.values_mut().next().unwrap();
+        p.effects.merge_adaptation_merge_requests = true;
+        p.pull_requests.as_mut().unwrap().handlers[0].adaptation_action = AdaptationAction::Merge;
+    }
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
+    for variant in 0..5 {
+        let mut bad = config.clone();
+        let p = bad.projects.values_mut().next().unwrap();
+        let h = &mut p.pull_requests.as_mut().unwrap().handlers[0];
+        match variant {
+            0 => p.effects.merge_adaptation_merge_requests = false,
+            1 => h.adaptation_action = AdaptationAction::Review,
+            2 => p.draft_merge_requests = true,
+            3 => {
+                h.mode = PullRequestMode::DryRun;
+                h.safe_verdict_action = SafeVerdictAction::Comment;
+                p.effects.merge_source_merge_request_on_safe_verdict = false;
+            }
+            4 => {
+                // Every writable repository could receive an adaptation.
+                bad.forges.get_mut("forge-acme").unwrap().provider = ForgeProvider::Fake;
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            artidezi_config::validate(&bad)
+                .iter()
+                .any(|p| p.0.contains("adaptation")),
+            "{variant}: {:?}",
+            artidezi_config::validate(&bad)
+        );
+    }
+    // Stored policies and configurations without the effect still load.
+    let effects: Effects = serde_json::from_str(
+        r#"{"merge_source_merge_request_on_safe_verdict": false, "publish_adaptation_merge_requests": true}"#,
+    )
+    .unwrap();
+    assert!(!effects.merge_adaptation_merge_requests);
+    assert!(
+        !serde_json::to_string(&effects)
+            .unwrap()
+            .contains("merge_adaptation")
     );
 }
 

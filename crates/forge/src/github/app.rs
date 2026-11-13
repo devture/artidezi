@@ -90,8 +90,10 @@ pub struct GithubForge {
     actions_tokens: Mutex<BTreeMap<String, Token>>,
     publication_repositories: BTreeSet<String>,
     approval_repositories: BTreeSet<String>,
-    /// Lowercased `(remote, author)` pairs a merge handler may merge.
+    /// Authors per repository whose pull requests a merge handler may merge.
     merge_authors: SourceMergeAuthors,
+    /// Lowercased repositories where ArtiDezi may merge its own adaptation pull requests.
+    adaptation_merge_repositories: BTreeSet<String>,
     write_tokens: Mutex<BTreeMap<String, Token>>,
     workflow_write_tokens: Mutex<BTreeMap<String, Token>>,
     http: Arc<Http>,
@@ -189,6 +191,7 @@ impl GithubForge {
             publication_repositories: BTreeSet::new(),
             approval_repositories: BTreeSet::new(),
             merge_authors: SourceMergeAuthors::default(),
+            adaptation_merge_repositories: BTreeSet::new(),
             write_tokens: Mutex::new(BTreeMap::new()),
             workflow_write_tokens: Mutex::new(BTreeMap::new()),
             http: Arc::new(Http::new(api)),
@@ -217,6 +220,17 @@ impl GithubForge {
         }
         self.approval_repositories = approvals.into_iter().map(|r| r.to_lowercase()).collect();
         self.merge_authors = merges;
+        Ok(self)
+    }
+
+    /// Repositories where ArtiDezi may merge its own `artidezi/` adaptation pull requests once
+    /// their checks pass. Without it, the adapter never merges a pull request it opened.
+    pub fn with_adaptation_merges(mut self, repositories: BTreeSet<String>) -> Result<Self> {
+        for remote in &repositories {
+            self.require_publication(remote)?;
+        }
+        self.adaptation_merge_repositories =
+            repositories.into_iter().map(|r| r.to_lowercase()).collect();
         Ok(self)
     }
 
@@ -955,18 +969,27 @@ impl ForgeAdapter for GithubForge {
         method: MergeMethod,
     ) -> Result<CommitSha> {
         self.require_publication(remote)?;
-        if !self.merge_authors.covers(remote) {
+        let adaptations = self
+            .adaptation_merge_repositories
+            .contains(&remote.to_lowercase());
+        if !self.merge_authors.covers(remote) && !adaptations {
             return Err(read_only());
         }
         let current = self.get_merge_request(remote, number)?;
+        // Another author's pull request is a source merge; this bot's own is an adaptation.
+        let permitted = if current
+            .author_login
+            .eq_ignore_ascii_case(&self.identity.bot_login)
+        {
+            adaptations && current.source_branch.starts_with("artidezi/")
+        } else {
+            self.merge_authors.permits(remote, &current.author_login)
+        };
         if current.head_commit != *expected_head
             || current.state != MergeRequestState::Open
             || current.draft
             || current.checks != ChecksState::Success
-            || current
-                .author_login
-                .eq_ignore_ascii_case(&self.identity.bot_login)
-            || !self.merge_authors.permits(remote, &current.author_login)
+            || !permitted
         {
             return Err(invalid("source changed or is not eligible for merging"));
         }

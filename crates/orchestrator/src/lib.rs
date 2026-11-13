@@ -5,6 +5,7 @@
 //! The trusted orchestrator core, independent of any transport. An HTTP API and UI will wrap it;
 //! the offline test suite drives it directly together with the in-process worker.
 
+mod adaptation_merge;
 pub mod discovery;
 pub mod forges;
 pub mod ingest;

@@ -1473,23 +1473,37 @@ pub(super) fn projects(
                 .iter()
                 .filter(|h| h.action == artidezi_config::model::PullRequestAction::Assess)
             {
+                let merges_adaptations = handler.adaptation_action
+                    == artidezi_config::model::AdaptationAction::Merge
+                    && project.effects.merge_adaptation_merge_requests;
                 let (label, note) = match handler.mode {
                     artidezi_config::model::PullRequestMode::DryRun => {
-                        ("Dry run", "Results stay in ArtiDezi")
+                        ("Dry run", "Results stay in ArtiDezi".to_owned())
                     }
                     artidezi_config::model::PullRequestMode::Publish => {
+                        let adaptations = if merges_adaptations {
+                            "adaptations merge once their checks pass, unless a reviewer requests changes"
+                        } else {
+                            "adaptations require review"
+                        };
                         match handler.safe_verdict_action {
                             artidezi_config::model::SafeVerdictAction::Comment => (
                                 "Publish",
-                                "Publishes comment reviews and adaptation PRs; human merging",
+                                format!(
+                                    "Publishes comment reviews and adaptation PRs; {adaptations}"
+                                ),
                             ),
                             artidezi_config::model::SafeVerdictAction::Approve => (
                                 "Approve safe updates",
-                                "Approves unchanged updates with successful checks; adaptations require review",
+                                format!(
+                                    "Approves unchanged updates with successful checks; {adaptations}"
+                                ),
                             ),
                             artidezi_config::model::SafeVerdictAction::Merge => (
                                 "Merge safe updates",
-                                "Approves and merges unchanged updates from the handler's authors with successful checks; adaptations require review",
+                                format!(
+                                    "Approves and merges unchanged updates from the handler's authors with successful checks; {adaptations}"
+                                ),
                             ),
                         }
                     }
@@ -1497,7 +1511,7 @@ pub(super) fn projects(
                 write!(
                     body,
                     r#"<span class="badge" title="{}">{} · {label}</span>"#,
-                    e(note),
+                    e(&note),
                     e(&handler.id)
                 )
                 .unwrap();

@@ -19,7 +19,7 @@ provide checkout-local guidance to harnesses that support them. Keep broadly reu
 the project level and the dependency- or workflow-specific assessment procedure in the handler.
 
 **Dry-run mode keeps results inside ArtiDezi.** It is the default for each handler and is useful for
-enrollment and debugging. Opt-in **publish** mode posts informational reviews and human-reviewed
+enrollment and debugging. Opt-in **publish** mode posts informational reviews and, by default, human-reviewed
 adaptation PRs. Publish handlers can additionally opt into [safe source approval or
 merge](#approve-or-merge-safe-updates); dry runs have no forge effects. Tagging and release
 operations remain unavailable. See [GitHub publication](github-enrollment.md#enable-publication)
@@ -232,7 +232,8 @@ The badge describes the current stage of that source and its latest task:
 - **Waiting**: eligibility, timing or capacity prevents an evaluation from starting; the reason appears below the source.
 - **In progress**: an evaluation task is queued or running.
 - **Evaluated**: the latest observed source revision has a completed evaluation. Open its task for the verdict and evidence; the source request may still be open.
-- **Ready for review**: published adaptations are awaiting human review.
+- **Ready for review**: published adaptations are awaiting human review, or their checks when the
+  handler merges adaptations.
 - **Needs attention**: the latest evaluation needs human input.
 - **Paused**: automatic evaluations are held. A running evaluation can still finish and shows a separate pause badge.
 - **Closed or merged**: the source request is closed and no longer evaluated.
@@ -359,3 +360,53 @@ stale approvals, and whether the bot may merge at all. ArtiDezi does not change 
 "merge when checks succeed" or fall back to another merge style; a refused merge holds the task.
 Forgejo statuses count as green only when every reported context succeeded or was skipped and at
 least one succeeded. `warning` counts as a failure.
+
+## Merge ArtiDezi's own adaptations
+
+By default, an adaptation PR waits for a person to review and merge it, whatever the handler's
+`safe_verdict_action`. A publish handler can instead set `adaptation_action: merge`, together with
+the project effect `merge_adaptation_merge_requests: true`:
+
+```yaml
+effects:
+  merge_source_merge_request_on_safe_verdict: true
+  publish_adaptation_merge_requests: true
+  merge_adaptation_merge_requests: true
+pull_requests:
+  handlers:
+    - id: dependency-updates
+      authors: [renovate-bot]
+      action: assess
+      mode: publish
+      safe_verdict_action: merge
+      adaptation_action: merge
+      require_successful_checks: false
+      instructions: >-
+        Review compatibility and run relevant checks. Adapt the repository when the update needs it.
+```
+
+The two settings are independent: a handler can merge adaptations while only commenting on
+unchanged updates, or the reverse. `adaptation_action: merge` needs `mode: publish`,
+`draft_merge_requests: false` and every writable repository of the project on GitHub or Forgejo,
+because an adaptation may change any of them.
+
+The adaptation PR and the review on the original change say that ArtiDezi will merge the adaptation.
+On each reconcile pass (the maintenance tick, or `POST /admin/v1/tasks/{task_id}/reconcile`), the
+controller merges the task's adaptations with a merge commit once all of the following hold:
+
+- every adaptation PR still has the head ArtiDezi published, is not a draft and has successful
+  checks; pending checks keep it waiting, and absent or failed checks leave it to a person;
+- nobody's latest review requests changes, on the adaptations or on the original change;
+- the original change is still open at the assessed commit, not a draft, with the same author,
+  branches and (for title-matched handlers) title; its source is not paused; and the handler and
+  project still allow adaptation merges;
+- the adaptation does not change protected CI paths (those already needed a person to publish them).
+
+Merging gives the agent's own code the same standing as a person's merge, so enable it where
+checks cover what matters: tests, linting, a deployment dry run. A merge the forge refuses, for
+example because branch protection requires an approval, is recorded as `adaptation.merge_failed`
+and not tried again for that head; neither is a merge interrupted by a restart. The adaptation then
+waits for a person, as without this setting. With several writable repositories, adaptations merge
+one after another once all are ready, and the conditions above are checked again before each one; a
+failure or change part-way leaves the remaining ones open. The original change is not merged or closed by
+ArtiDezi: once the adaptation lands, the updater usually closes or rebases it.

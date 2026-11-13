@@ -9,7 +9,8 @@ use std::path::Path;
 
 use artidezi_config::Config;
 use artidezi_config::model::{
-    ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction, author_pattern,
+    AdaptationAction, ForgeProvider, PullRequestHandler, PullRequestMode, SafeVerdictAction,
+    author_pattern,
 };
 use artidezi_forge::fake::FakeForge;
 use artidezi_forge::forgejo::ForgejoForge;
@@ -155,7 +156,31 @@ fn github_binding(config: &Config, secrets: &SecretsDir, name: &str) -> Result<G
     .with_source_actions(
         source_action_repositories(config, name),
         source_merge_authors(config, name),
-    )?)
+    )?
+    .with_adaptation_merges(adaptation_merge_repositories(config, name))?)
+}
+
+/// Writable remotes on forge `name` in projects whose handlers may merge their own adaptations.
+fn adaptation_merge_repositories(config: &Config, name: &str) -> BTreeSet<String> {
+    config
+        .projects
+        .values()
+        .filter(|p| {
+            p.effects.merge_adaptation_merge_requests
+                && p.pull_requests.as_ref().is_some_and(|d| {
+                    d.handlers.iter().any(|h| {
+                        h.mode == PullRequestMode::Publish
+                            && h.adaptation_action == AdaptationAction::Merge
+                    })
+                })
+        })
+        .flat_map(|p| p.repositories.values())
+        .filter(|r| {
+            r.forge == name
+                && r.agent_access == artidezi_contract::common::RepositoryAccess::ReadWrite
+        })
+        .map(|r| r.remote.clone())
+        .collect()
 }
 
 /// Live authentication preflight, independent of SQLite, the scheduler and the worker.

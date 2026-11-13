@@ -203,7 +203,8 @@ transactional external effect queue are not implemented.
 ## Incoming publication recovery
 
 Source tasks use the handler's frozen dry-run or publish mode. Publish mode supports COMMENT
-reviews, human-reviewed adaptation PRs and explicitly configured unchanged-source approval/merge.
+reviews, adaptation PRs (human-reviewed unless the handler opts into merging them once checks pass)
+and explicitly configured unchanged-source approval/merge.
 Durable plans precede Git/API effects. A process restart during incomplete delivery holds it for
 explicit retry. A task explicitly in `waiting_for_ci` retains its scheduled check and can resume
 the accepted result automatically without another worker. If the head changes before any

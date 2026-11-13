@@ -22,6 +22,7 @@ fn enable(w: &mut World) {
         repositories: vec!["role".into()],
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
+            adaptation_action: Default::default(),
             safe_verdict_action: Default::default(),
             mode: Default::default(),
             id: "renovate".into(),
@@ -562,6 +563,7 @@ fn first_matching_handler_does_not_fall_through_while_waiting_for_checks() {
     discovery.handlers[0].require_successful_checks = true;
     discovery.handlers[0].wait_for_checks_to_finish = true;
     discovery.handlers.push(PullRequestHandler {
+        adaptation_action: Default::default(),
         safe_verdict_action: Default::default(),
         mode: Default::default(),
         id: "fallback".into(),

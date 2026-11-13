@@ -66,6 +66,8 @@ pub struct State {
     pub branches: BTreeMap<String, String>,
     pub proposals: BTreeMap<u64, Value>,
     pub reviews: Vec<Value>,
+    /// Reviews on ArtiDezi's own proposals, by number.
+    pub proposal_reviews: BTreeMap<u64, Vec<Value>>,
     pub comments: Vec<Value>,
     /// A branch head pushed just before the next close request is processed.
     pub push_before_close: Option<String>,
@@ -112,6 +114,7 @@ impl Fixture {
             branches: BTreeMap::new(),
             proposals: BTreeMap::new(),
             reviews: vec![],
+            proposal_reviews: BTreeMap::new(),
             comments: vec![],
             push_before_close: None,
             fail_reopen: false,
@@ -422,6 +425,50 @@ fn reply(r: &Request, state: &mut State) -> Reply {
                 return Reply::new(503, json!({"message":"lost merge response"}));
             }
             json!({"merged":true,"sha":"e".repeat(40),"message":"Merged"})
+        }
+        ("GET", path)
+            if path.ends_with("/reviews?per_page=100&page=1")
+                && path
+                    .split('/')
+                    .nth(5)
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| state.proposals.contains_key(&n)) =>
+        {
+            let number = path.split('/').nth(5).unwrap().parse::<u64>().unwrap();
+            json!(
+                state
+                    .proposal_reviews
+                    .get(&number)
+                    .cloned()
+                    .unwrap_or_default()
+            )
+        }
+        ("PUT", path)
+            if path.ends_with("/merge")
+                && path
+                    .split('/')
+                    .nth(5)
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| state.proposals.contains_key(&n)) =>
+        {
+            assert!(state.publication);
+            let number = path.split('/').nth(5).unwrap().parse::<u64>().unwrap();
+            let branch = state.proposals[&number]["head"]["ref"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            if r.body["sha"] != json!(state.branches.get(&branch)) {
+                return Reply::new(409, json!({"message":"Head changed"}));
+            }
+            assert_eq!(state.conclusion, "success");
+            let proposal = state.proposals.get_mut(&number).unwrap();
+            assert_eq!(proposal["state"], "open");
+            proposal["state"] = json!("closed");
+            proposal["merged"] = json!(true);
+            if std::mem::take(&mut state.lose_merge_response) {
+                return Reply::new(503, json!({"message":"lost merge response"}));
+            }
+            json!({"merged":true,"sha":"f".repeat(40),"message":"Merged"})
         }
         ("GET", path)
             if path.starts_with("/repos/org/app/pulls/")

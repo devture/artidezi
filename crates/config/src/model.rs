@@ -344,6 +344,9 @@ pub struct PullRequestHandler {
     /// Action after an unchanged verdict and successful current forge checks.
     #[serde(default)]
     pub safe_verdict_action: SafeVerdictAction,
+    /// What happens to ArtiDezi's own adaptation PRs for this handler's sources.
+    #[serde(default, skip_serializing_if = "AdaptationAction::is_review")]
+    pub adaptation_action: AdaptationAction,
     /// Exact forge logins. A handler names its authors with exactly one of `authors`,
     /// `author_regex` or an explicit `catch_all: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -422,6 +425,23 @@ impl SafeVerdictAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptationAction {
+    /// A person reviews and merges each adaptation PR.
+    #[default]
+    Review,
+    /// Merge each adaptation PR with a merge commit once its checks pass, unless anyone requests
+    /// changes or the source moves.
+    Merge,
+}
+
+impl AdaptationAction {
+    pub fn is_review(&self) -> bool {
+        *self == Self::Review
+    }
+}
+
 /// Compiles an `author_regex` the way handlers apply it: anchored to the whole login and
 /// case-insensitive, like forge logins themselves.
 pub fn author_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
@@ -465,6 +485,10 @@ pub struct Effects {
     pub merge_source_merge_request_on_safe_verdict: bool,
     /// Publish agent-authored superseding changes (subject to the delivery mode).
     pub publish_adaptation_merge_requests: bool,
+    /// Permit a handler with `adaptation_action: merge` to merge ArtiDezi's own adaptation PRs
+    /// once their checks pass. Absent in configurations and task policies that predate it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge_adaptation_merge_requests: bool,
     /// Permit this project's explicit manual tasks to publish GitHub merge requests.
     ///
     /// GitHub publication remains disabled by default. Source PR assessments have their

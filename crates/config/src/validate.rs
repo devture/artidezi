@@ -360,9 +360,47 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                 "{ctx}: automatic source merging requires an explicit merge handler"
             )));
         }
+        if project.effects.merge_adaptation_merge_requests
+            && !project.pull_requests.as_ref().is_some_and(|d| {
+                d.handlers
+                    .iter()
+                    .any(|h| h.adaptation_action == crate::model::AdaptationAction::Merge)
+            })
+        {
+            problems.push(problem(format!(
+                "{ctx}: merge_adaptation_merge_requests requires a handler with adaptation_action: merge"
+            )));
+        }
         if let Some(discovery) = &project.pull_requests {
             for handler in &discovery.handlers {
                 use crate::model::{PullRequestAction, PullRequestMode, SafeVerdictAction};
+                if handler.adaptation_action == crate::model::AdaptationAction::Merge {
+                    if handler.mode != PullRequestMode::Publish
+                        || handler.action != PullRequestAction::Assess
+                        || !project.effects.merge_adaptation_merge_requests
+                        || project.draft_merge_requests
+                    {
+                        problems.push(problem(format!(
+                            "{ctx}: handler {} adaptation_action: merge requires a publish assessment, the project merge_adaptation_merge_requests effect and draft_merge_requests: false",
+                            handler.id
+                        )));
+                    }
+                    // Adaptations may change any writable repository, not only the watched one.
+                    if project.repositories.values().any(|r| {
+                        r.agent_access == RepositoryAccess::ReadWrite
+                            && config.forges.get(&r.forge).is_none_or(|f| {
+                                !matches!(
+                                    f.provider,
+                                    ForgeProvider::Github | ForgeProvider::Forgejo
+                                )
+                            })
+                    }) {
+                        problems.push(problem(format!(
+                            "{ctx}: handler {} adaptation_action: merge requires every writable repository on GitHub or Forgejo",
+                            handler.id
+                        )));
+                    }
+                }
                 if let Some(profile) = &handler.agent_profile
                     && !project.allowed_agent_profiles.contains(profile)
                 {

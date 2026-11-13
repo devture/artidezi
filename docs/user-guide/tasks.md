@@ -144,6 +144,8 @@ what actually ran. Source movement/closure during execution makes a result obsol
 With an explicit `mode: publish` handler, unchanged assessments post COMMENT reviews by default
 and adaptations open human-reviewed PRs. An explicit `safe_verdict_action` can approve or merge
 an unchanged update on GitHub or Forgejo; see [source delivery policy](pr-discovery.md#approve-or-merge-safe-updates).
+`adaptation_action: merge` lets ArtiDezi merge its own adaptation PRs once their checks pass; see
+[merging adaptations](pr-discovery.md#merge-artidezis-own-adaptations).
 Eligible automatic delivery with pending checks shows **Waiting for CI**, also available as a task
 filter. It continues automatically when checks pass and the assessment is still current. No worker
 stays occupied, and no new evaluation is created. Close the task or pause its incoming source to stop it.

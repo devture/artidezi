@@ -302,9 +302,10 @@ result and no outstanding change-request review. Pending CI
 puts an otherwise eligible result in **Waiting for CI**. Risk ratings, evidence and questions are recorded in the task as worker-supplied context; they do not
 replace the controller's forge, freshness or authority checks.
 
-Adaptations remain human-reviewed PRs even under a merge handler. ArtiDezi neither merges its own
-adaptation PRs through this policy nor changes repository protection, enables GitHub auto-merge,
-uses a GitHub merge queue or creates release tags. If merge commits are disabled, or repository rules
+Adaptations remain human-reviewed PRs even under a merge handler, unless the handler separately sets
+`adaptation_action: merge` (see [merge ArtiDezi's own adaptations](pr-discovery.md#merge-artidezis-own-adaptations)).
+ArtiDezi does not change repository protection, enable GitHub auto-merge, use a GitHub merge queue
+or create release tags. If merge commits are disabled, or repository rules
 reject the operation, publication stops for attention; there is no fallback merge method or bypass.
 
 The merge request sends the assessed head SHA to GitHub. The controller also rechecks target/context

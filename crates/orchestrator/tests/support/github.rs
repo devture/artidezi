@@ -221,6 +221,17 @@ fn reopen(w: &mut World, fixture: &Fixture) {
                         },
                     )
                     .unwrap()
+                    .with_adaptation_merges(
+                        if w.orchestrator.config.projects["roles"]
+                            .effects
+                            .merge_adaptation_merge_requests
+                        {
+                            ["org/app".into()].into()
+                        } else {
+                            Default::default()
+                        },
+                    )
+                    .unwrap()
             } else {
                 fixture.forge()
             },
@@ -272,6 +283,7 @@ fn world() -> (World, Fixture) {
         repositories: vec!["role".into()],
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
+            adaptation_action: Default::default(),
             agent_profile: None,
             safe_verdict_action: Default::default(),
             mode: Default::default(),
@@ -1571,4 +1583,205 @@ fn an_edited_or_dismissed_approval_is_not_recreated_during_retry() {
         assert!(!s.merged);
         assert_eq!(s.reviews.len(), 1, "{changed}");
     }
+}
+
+fn adaptation_merge_world() -> (World, Fixture) {
+    let (mut w, f) = publishing_world();
+    let p = w.orchestrator.config.projects.get_mut("roles").unwrap();
+    p.effects.merge_adaptation_merge_requests = true;
+    p.pull_requests.as_mut().unwrap().handlers[0].adaptation_action =
+        artidezi_config::model::AdaptationAction::Merge;
+    assert!(
+        artidezi_config::validate(&w.orchestrator.config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&w.orchestrator.config)
+    );
+    reopen(&mut w, &f);
+    (w, f)
+}
+
+fn proposal_merges(f: &Fixture) -> usize {
+    f.state
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|r| r.method == "PUT" && r.path == "/repos/org/app/pulls/100/merge")
+        .count()
+}
+
+#[test]
+fn adaptation_merges_once_its_checks_pass() {
+    let (mut w, f) = adaptation_merge_world();
+    let id = scan(&mut w).remove(0);
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
+    // The fixture reports one check state for every commit, so the adaptation's checks now run.
+    f.state.lock().unwrap().conclusion = "running".into();
+    {
+        let s = f.state.lock().unwrap();
+        assert!(
+            s.proposals[&100]["body"]
+                .as_str()
+                .unwrap()
+                .contains("ArtiDezi merges this once its checks pass")
+        );
+        assert!(
+            s.reviews[0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("ArtiDezi merges them once their checks pass")
+        );
+    }
+    // Pending checks wait.
+    assert_eq!(
+        w.orchestrator.reconcile_task(&id).unwrap(),
+        TaskState::AwaitingReview
+    );
+    assert_eq!(proposal_merges(&f), 0);
+    f.state.lock().unwrap().conclusion = "success".into();
+    assert_eq!(w.orchestrator.reconcile_task(&id).unwrap(), TaskState::Done);
+    assert_eq!(proposal_merges(&f), 1);
+    let s = f.state.lock().unwrap();
+    assert_eq!(s.proposals[&100]["merged"], true);
+    let put = s
+        .requests
+        .iter()
+        .find(|r| r.method == "PUT" && r.path == "/repos/org/app/pulls/100/merge")
+        .unwrap();
+    assert_eq!(put.body["merge_method"], "merge");
+    // The source itself is neither approved nor merged by ArtiDezi.
+    assert!(!s.merged);
+    assert!(s.reviews.iter().all(|r| r["state"] == "COMMENTED"));
+    drop(s);
+    let events: Vec<String> = w
+        .orchestrator
+        .db
+        .list_events(&id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    for kind in ["adaptation.merge_planned", "merge_request.automerged"] {
+        assert!(events.iter().any(|e| e == kind), "{kind}: {events:?}");
+    }
+}
+
+#[test]
+fn adaptation_merge_leaves_failed_objected_moved_revoked_or_refused_adaptations_to_a_person() {
+    for reason in [
+        "failed",
+        "objection",
+        "source_objection",
+        "moved",
+        "draft",
+        "retargeted",
+        "revoked",
+        "refused",
+        "interrupted",
+    ] {
+        let (mut w, f) = adaptation_merge_world();
+        let id = scan(&mut w).remove(0);
+        assert_eq!(w.work(&proposal(&w)), AttemptState::Valid, "{reason}");
+        assert_eq!(task_state(&w, &id), TaskState::AwaitingReview, "{reason}");
+        let objection = |login: &str| {
+            json!({"id": 90, "user": {"login": login, "type": "User"}, "commit_id": "0".repeat(40),
+                "body": "Not like this.", "state": "CHANGES_REQUESTED"})
+        };
+        match reason {
+            "failed" => f.state.lock().unwrap().conclusion = "failure".into(),
+            "objection" => {
+                f.state
+                    .lock()
+                    .unwrap()
+                    .proposal_reviews
+                    .insert(100, vec![objection("maintainer")]);
+            }
+            "source_objection" => f
+                .state
+                .lock()
+                .unwrap()
+                .reviews
+                .push(objection("maintainer")),
+            "moved" => {
+                move_source_head(&w, &f);
+            }
+            "revoked" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .pull_requests
+                    .as_mut()
+                    .unwrap()
+                    .handlers[0]
+                    .adaptation_action = Default::default();
+                reopen(&mut w, &f);
+            }
+            "draft" => f.state.lock().unwrap().draft = true,
+            "retargeted" => {
+                f.state.lock().unwrap().proposals.get_mut(&100).unwrap()["base"]["ref"] =
+                    json!("release");
+            }
+            "interrupted" => {
+                // A crash after the plan, before any receipt: the merge is not tried again.
+                let mr = w
+                    .orchestrator
+                    .db
+                    .list_merge_requests(&id)
+                    .unwrap()
+                    .remove(0);
+                w.orchestrator
+                    .db
+                    .record_event(
+                        Some(&id),
+                        None,
+                        "orchestrator",
+                        "adaptation.merge_planned",
+                        json!({"repository": mr.repository_id, "number": mr.number, "head": mr.head_commit}),
+                    )
+                    .unwrap();
+            }
+            "refused" => {
+                f.state.lock().unwrap().overrides.insert(
+                    "/repos/org/app/pulls/100/merge".into(),
+                    Reply::new(405, json!({"message":"Required reviews are missing"})),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let _ = w.orchestrator.reconcile_task(&id);
+        let _ = w.orchestrator.reconcile_task(&id);
+        assert_ne!(task_state(&w, &id), TaskState::Done, "{reason}");
+        assert_eq!(
+            f.state.lock().unwrap().proposals[&100]["merged"],
+            false,
+            "{reason}"
+        );
+        // A refused merge is tried once per head, then left to a person.
+        assert_eq!(
+            proposal_merges(&f),
+            usize::from(reason == "refused"),
+            "{reason}"
+        );
+        if ["refused", "revoked", "interrupted", "objection"].contains(&reason) {
+            assert_eq!(task_state(&w, &id), TaskState::AwaitingReview, "{reason}");
+        }
+    }
+}
+
+#[test]
+fn a_lost_adaptation_merge_response_is_observed_without_a_second_merge() {
+    let (mut w, f) = adaptation_merge_world();
+    let id = scan(&mut w).remove(0);
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    f.state.lock().unwrap().lose_merge_response = true;
+    assert_eq!(
+        w.orchestrator.reconcile_task(&id).unwrap(),
+        TaskState::AwaitingReview
+    );
+    assert_eq!(f.state.lock().unwrap().proposals[&100]["merged"], true);
+    assert_eq!(w.orchestrator.reconcile_task(&id).unwrap(), TaskState::Done);
+    assert_eq!(proposal_merges(&f), 1);
 }
