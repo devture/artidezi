@@ -7,6 +7,7 @@
 //!
 //! Vocabulary is provider-neutral: merge request, not pull request.
 
+mod ci_log;
 pub mod fake;
 pub mod forgejo;
 pub mod github;

@@ -34,7 +34,7 @@ impl Http {
         &self,
         path: &str,
         token: &str,
-        mut consume: impl FnMut(&[u8]),
+        consume: impl FnMut(&[u8]),
     ) -> std::result::Result<u64, CiLogOutcome> {
         let started = std::time::Instant::now();
         let mut response = self
@@ -109,34 +109,7 @@ impl Http {
         if response.status().as_u16() != 200 {
             return Err(CiLogOutcome::FetchFailed);
         }
-        const MAX_RAW: u64 = 8 * 1024 * 1024;
-        if response
-            .headers()
-            .get("content-length")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .is_some_and(|length| length > MAX_RAW)
-        {
-            return Err(CiLogOutcome::TooLarge);
-        }
-        use std::io::Read;
-        let mut reader = response.body_mut().as_reader();
-        let mut raw_bytes = 0u64;
-        let mut chunk = [0u8; 8192];
-        loop {
-            let count = reader
-                .read(&mut chunk)
-                .map_err(|_| CiLogOutcome::FetchFailed)?;
-            if count == 0 {
-                break;
-            }
-            raw_bytes += count as u64;
-            if raw_bytes > MAX_RAW {
-                return Err(CiLogOutcome::TooLarge);
-            }
-            consume(&chunk[..count]);
-        }
-        Ok(raw_bytes)
+        crate::ci_log::read_bounded(&mut response, consume)
     }
     pub fn new(api: &str) -> Self {
         Self {
