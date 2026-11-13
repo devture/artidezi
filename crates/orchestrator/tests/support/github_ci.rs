@@ -214,7 +214,7 @@ fn waiting_never_bypasses_failures_changed_inputs_policy_or_human_intervention()
                     .get_mut("roles")
                     .unwrap()
                     .effects
-                    .merge_renovate_merge_request_on_safe_verdict = false
+                    .merge_source_merge_request_on_safe_verdict = false
             }
             "project_removed" => {
                 w.orchestrator.config.projects.remove("roles");

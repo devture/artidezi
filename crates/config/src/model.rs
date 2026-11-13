@@ -440,7 +440,9 @@ impl PullRequestHandler {
 pub struct Effects {
     /// Permit a merge handler to merge an untouched pull request from one of its authors after an
     /// unchanged verdict and forge checks.
-    pub merge_renovate_merge_request_on_safe_verdict: bool,
+    /// Configurations and stored task policies written before the rename use the old name.
+    #[serde(alias = "merge_renovate_merge_request_on_safe_verdict")]
+    pub merge_source_merge_request_on_safe_verdict: bool,
     /// Publish agent-authored superseding changes (subject to the delivery mode).
     pub publish_adaptation_merge_requests: bool,
     /// Permit this project's explicit manual tasks to publish GitHub merge requests.

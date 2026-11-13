@@ -646,7 +646,7 @@ impl Orchestrator {
         } else {
             DeliveryMode::Shadow
         };
-        policy.effects.merge_renovate_merge_request_on_safe_verdict &= publishing
+        policy.effects.merge_source_merge_request_on_safe_verdict &= publishing
             && handler.safe_verdict_action == artidezi_config::model::SafeVerdictAction::Merge;
         // Patches may be prepared and verified in shadow mode even when publishing is forbidden.
         policy.effects.publish_adaptation_merge_requests &= publishing;

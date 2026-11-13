@@ -300,7 +300,9 @@ with the source PR, on GitHub and on Forgejo:
 
 Both actions need `mode: publish`, the project's `publish_adaptation_merge_requests` effect,
 explicit `authors` (no catch-all) and writable source repositories. `merge` also needs
-`effects.merge_renovate_merge_request_on_safe_verdict: true`. A merge handler merges unchanged PRs
+`effects.merge_source_merge_request_on_safe_verdict: true` (formerly
+`merge_renovate_merge_request_on_safe_verdict`, which ArtiDezi still accepts; `artidezi schema
+config` shows only the new name, so rename it when validating against that schema). A merge handler merges unchanged PRs
 from exactly the authors it lists, whoever they are: a dependency bot such as `renovate[bot]` on
 GitHub or `renovate-bot` on Forgejo, another automation account, or a person. Separate handlers give
 different authors different actions:

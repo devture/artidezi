@@ -130,7 +130,7 @@ projects:
       command_egress: {mode: blocked, denied_domains: [], private_network: blocked, allowed_private_endpoints: []}
       web_search: {mode: disabled, domain_scope: public_internet}
     limits: {wall_clock_seconds: 60, result_json_max_bytes: 65536, max_commits_per_repository: 5, max_diff_bytes_per_repository: 65536, max_commit_message_bytes: 1024}
-    effects: {merge_renovate_merge_request_on_safe_verdict: false, publish_adaptation_merge_requests: true}
+    effects: {merge_source_merge_request_on_safe_verdict: false, publish_adaptation_merge_requests: true}
     repositories:
       role:
         forge: fake

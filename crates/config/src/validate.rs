@@ -349,7 +349,7 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             }
         }
         // Formal approvals can activate another bot's automerge: treat them as delivery authority.
-        if project.effects.merge_renovate_merge_request_on_safe_verdict
+        if project.effects.merge_source_merge_request_on_safe_verdict
             && !project.pull_requests.as_ref().is_some_and(|d| {
                 d.handlers
                     .iter()
@@ -395,7 +395,7 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                     problems.push(problem(format!("{ctx}: source approval/merge requires writable GitHub or Forgejo source repositories")));
                 }
                 if handler.safe_verdict_action == SafeVerdictAction::Merge
-                    && !project.effects.merge_renovate_merge_request_on_safe_verdict
+                    && !project.effects.merge_source_merge_request_on_safe_verdict
                 {
                     problems.push(problem(format!(
                         "{ctx}: source merge requires the project merge effect"

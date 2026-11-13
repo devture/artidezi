@@ -559,7 +559,7 @@ fn github_requires_explicit_installation_scope_and_explicit_merge_policy() {
     });
     let project = config.projects.values_mut().next().unwrap();
     project.effects.publish_adaptation_merge_requests = false;
-    project.effects.merge_renovate_merge_request_on_safe_verdict = false;
+    project.effects.merge_source_merge_request_on_safe_verdict = false;
     for repo in project.repositories.values_mut() {
         repo.tagging = None;
     }
@@ -591,7 +591,7 @@ fn github_requires_explicit_installation_scope_and_explicit_merge_policy() {
                     .next()
                     .unwrap()
                     .effects
-                    .merge_renovate_merge_request_on_safe_verdict = true
+                    .merge_source_merge_request_on_safe_verdict = true
             }
             4 => bad.forges.get_mut("forge-acme").unwrap().credential_ref = "../key".into(),
             _ => unreachable!(),
@@ -617,7 +617,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
         .unwrap()
         .0
         .clone();
-    project.effects.merge_renovate_merge_request_on_safe_verdict = false;
+    project.effects.merge_source_merge_request_on_safe_verdict = false;
     project.pull_requests = Some(PullRequestDiscovery {
         poll_interval_seconds: 60,
         settle_seconds: 0,
@@ -656,7 +656,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
     );
     let p = config.projects.values_mut().next().unwrap();
     p.effects.publish_adaptation_merge_requests = true;
-    p.effects.merge_renovate_merge_request_on_safe_verdict = true;
+    p.effects.merge_source_merge_request_on_safe_verdict = true;
     assert!(
         artidezi_config::validate(&config)
             .iter()
@@ -688,7 +688,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
         .0
         .clone();
     project.effects.publish_adaptation_merge_requests = true;
-    project.effects.merge_renovate_merge_request_on_safe_verdict = true;
+    project.effects.merge_source_merge_request_on_safe_verdict = true;
     project.pull_requests = Some(PullRequestDiscovery {
         poll_interval_seconds: 60,
         settle_seconds: 0,
@@ -734,14 +734,14 @@ fn source_actions_are_opt_in_and_reject_catch_all_unscoped_and_dry_run_authority
             }
             1 => h.mode = PullRequestMode::DryRun,
             2 => h.authors = Some(vec![]),
-            3 => p.effects.merge_renovate_merge_request_on_safe_verdict = false,
+            3 => p.effects.merge_source_merge_request_on_safe_verdict = false,
             4 => p.effects.publish_adaptation_merge_requests = false,
             _ => unreachable!(),
         }
         assert!(!artidezi_config::validate(&bad).is_empty(), "{variant}");
     }
     let p = config.projects.values_mut().next().unwrap();
-    p.effects.merge_renovate_merge_request_on_safe_verdict = false;
+    p.effects.merge_source_merge_request_on_safe_verdict = false;
     p.pull_requests.as_mut().unwrap().handlers[0].safe_verdict_action = SafeVerdictAction::Approve;
     assert!(artidezi_config::validate(&config).is_empty());
 }
@@ -793,7 +793,7 @@ fn forgejo_sources_may_be_approved_or_merged() {
         artidezi_config::validate(&config)
     );
     let p = config.projects.values_mut().next().unwrap();
-    p.effects.merge_renovate_merge_request_on_safe_verdict = false;
+    p.effects.merge_source_merge_request_on_safe_verdict = false;
     p.pull_requests.as_mut().unwrap().handlers[0].safe_verdict_action = SafeVerdictAction::Approve;
     assert!(artidezi_config::validate(&config).is_empty());
     // The fake forge has no source actions.
@@ -803,6 +803,21 @@ fn forgejo_sources_may_be_approved_or_merged() {
             .iter()
             .any(|p| p.0.contains("GitHub or Forgejo"))
     );
+}
+
+#[test]
+fn the_former_merge_effect_name_is_still_accepted() {
+    let config = parse(&VALID.replace(
+        "merge_source_merge_request_on_safe_verdict",
+        "merge_renovate_merge_request_on_safe_verdict",
+    ))
+    .unwrap();
+    assert_eq!(config, parse(VALID).unwrap());
+    let effects: artidezi_config::model::Effects = serde_json::from_str(
+        r#"{"merge_renovate_merge_request_on_safe_verdict": true, "publish_adaptation_merge_requests": true}"#,
+    )
+    .unwrap();
+    assert!(effects.merge_source_merge_request_on_safe_verdict);
 }
 
 #[test]

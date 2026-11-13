@@ -1485,11 +1485,11 @@ pub(super) fn projects(
                             ),
                             artidezi_config::model::SafeVerdictAction::Approve => (
                                 "Approve safe updates",
-                                "Approves low-risk unchanged updates with successful checks; adaptations require review",
+                                "Approves unchanged updates with successful checks; adaptations require review",
                             ),
                             artidezi_config::model::SafeVerdictAction::Merge => (
                                 "Merge safe updates",
-                                "Approves and merges low-risk unchanged Renovate updates with successful checks; adaptations require review",
+                                "Approves and merges unchanged updates from the handler's authors with successful checks; adaptations require review",
                             ),
                         }
                     }

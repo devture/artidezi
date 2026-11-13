@@ -56,7 +56,7 @@ projects:
       max_diff_bytes_per_repository: 2097152
       max_commit_message_bytes: 8192
     effects:
-      merge_renovate_merge_request_on_safe_verdict: false
+      merge_source_merge_request_on_safe_verdict: false
       publish_adaptation_merge_requests: true
     repositories:
       myapp:

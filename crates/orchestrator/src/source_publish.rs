@@ -323,8 +323,8 @@ impl Orchestrator {
                 )
                 || repo.access != RepositoryAccess::ReadWrite
                 || (source.safe_verdict_action == SafeVerdictAction::Merge
-                    && (!policy.effects.merge_renovate_merge_request_on_safe_verdict
-                        || !project.effects.merge_renovate_merge_request_on_safe_verdict))
+                    && (!policy.effects.merge_source_merge_request_on_safe_verdict
+                        || !project.effects.merge_source_merge_request_on_safe_verdict))
             {
                 return Err(invalid(
                     "source approval/merge authority is absent or changed",

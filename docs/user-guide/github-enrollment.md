@@ -206,7 +206,7 @@ publication recovery rules.
 After reviewing dry-run outcomes, change the selected handler to `mode: publish` and set the
 project's `effects.publish_adaptation_merge_requests: true`. Omitted `mode` means `dry_run`.
 Keep `safe_verdict_action: comment` (the default) and
-`merge_renovate_merge_request_on_safe_verdict: false` until enabling the actions below. Recheck the installation, restart and
+`merge_source_merge_request_on_safe_verdict: false` until enabling the actions below. Recheck the installation, restart and
 use **Evaluate again** on the current source task for a fresh evaluation. Existing dry-run tasks
 never gain write authority from a configuration change.
 
@@ -274,7 +274,7 @@ result says the source needs no adaptation. By default it produces only a COMMEN
 These actions require `mode: publish`, the project publication effect, explicit author matches
 (no catch-all), and writable source repositories. Forgejo supports the same actions; see
 [approve or merge safe updates](pr-discovery.md#approve-or-merge-safe-updates). `merge` additionally requires
-`effects.merge_renovate_merge_request_on_safe_verdict: true`. A merge handler merges pull requests
+`effects.merge_source_merge_request_on_safe_verdict: true`. A merge handler merges pull requests
 from the authors it names, whoever they are: a bot such as `renovate[bot]`, or a person you trust
 that far. Listing an author is the decision to merge their unchanged PRs without a person.
 For example, within an existing enrolled project's handler:

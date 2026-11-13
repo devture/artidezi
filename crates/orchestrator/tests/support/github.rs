@@ -1281,7 +1281,7 @@ fn exact_workflow_grant_retries_and_recovers_without_a_second_proposal() {
 fn safe_world(merge: bool) -> (World, Fixture) {
     let (mut w, f) = publishing_world();
     let p = w.orchestrator.config.projects.get_mut("roles").unwrap();
-    p.effects.merge_renovate_merge_request_on_safe_verdict = merge;
+    p.effects.merge_source_merge_request_on_safe_verdict = merge;
     let h = &mut p.pull_requests.as_mut().unwrap().handlers[0];
     h.safe_verdict_action = if merge {
         artidezi_config::model::SafeVerdictAction::Merge
@@ -1381,7 +1381,7 @@ fn safe_delivery_blocks_checks_objections_and_changed_authority() {
                     .get_mut("roles")
                     .unwrap()
                     .effects
-                    .merge_renovate_merge_request_on_safe_verdict = false
+                    .merge_source_merge_request_on_safe_verdict = false
             }
             "head_changed" => f.state.lock().unwrap().head = "d".repeat(40),
             "title_changed" => f.state.lock().unwrap().title = "Update another library".into(),
