@@ -143,7 +143,7 @@ what actually ran. Source movement/closure during execution makes a result obsol
 
 With an explicit `mode: publish` handler, unchanged assessments post COMMENT reviews by default
 and adaptations open human-reviewed PRs. An explicit `safe_verdict_action` can approve or merge
-a unchanged GitHub update; see [source delivery policy](github-enrollment.md#approve-or-merge-safe-updates).
+an unchanged update on GitHub or Forgejo; see [source delivery policy](pr-discovery.md#approve-or-merge-safe-updates).
 Eligible automatic delivery with pending checks shows **Waiting for CI**, also available as a task
 filter. It continues automatically when checks pass and the assessment is still current. No worker
 stays occupied, and no new evaluation is created. Close the task or pause its incoming source to stop it.

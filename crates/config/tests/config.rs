@@ -761,6 +761,42 @@ fn a_merge_handler_may_merge_any_author_it_names() {
 }
 
 #[test]
+fn forgejo_sources_may_be_approved_or_merged() {
+    use artidezi_config::model::{ForgeProvider, SafeVerdictAction};
+    let mut config = github_merge_handler_config();
+    let forge = config.forges.get_mut("forge-acme").unwrap();
+    forge.provider = ForgeProvider::Forgejo;
+    forge.api_base_url = "https://code.example.org".into();
+    forge.github_app = None;
+    let handler = &mut config
+        .projects
+        .values_mut()
+        .next()
+        .unwrap()
+        .pull_requests
+        .as_mut()
+        .unwrap()
+        .handlers[0];
+    handler.authors = Some(vec!["renovate-bot".into()]);
+    assert!(
+        artidezi_config::validate(&config).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&config)
+    );
+    let p = config.projects.values_mut().next().unwrap();
+    p.effects.merge_renovate_merge_request_on_safe_verdict = false;
+    p.pull_requests.as_mut().unwrap().handlers[0].safe_verdict_action = SafeVerdictAction::Approve;
+    assert!(artidezi_config::validate(&config).is_empty());
+    // The fake forge has no source actions.
+    config.forges.get_mut("forge-acme").unwrap().provider = ForgeProvider::Fake;
+    assert!(
+        artidezi_config::validate(&config)
+            .iter()
+            .any(|p| p.0.contains("GitHub or Forgejo"))
+    );
+}
+
+#[test]
 fn shipped_examples_are_valid() {
     for example in [
         include_str!("../../../etc/example.yaml"),

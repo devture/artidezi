@@ -6,6 +6,8 @@
 //! access token of the bot user. Also works against Gitea, which is not a goal but falls out of
 //! the shared API.
 
+use std::collections::BTreeSet;
+
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
 use serde::Deserialize;
@@ -19,7 +21,16 @@ pub struct ForgejoForge {
     token: String,
     bot_login: String,
     agent: ureq::Agent,
+    /// Lowercased `owner/name` remotes whose source pull requests this adapter may approve.
+    approval_repositories: BTreeSet<String>,
+    /// Lowercased `(remote, author)` pairs whose pull requests this adapter may merge.
+    merge_authors: BTreeSet<(String, String)>,
 }
+
+/// Pages of commit statuses read before refusing an incomplete listing.
+const MAX_STATUS_PAGES: u32 = 10;
+/// Attempts while Forgejo is still recalculating mergeability after a review or status change.
+const MERGE_ATTEMPTS: u32 = 20;
 
 #[derive(Deserialize)]
 struct BranchResponse {
@@ -65,9 +76,41 @@ struct RefInfo {
 #[derive(Deserialize)]
 struct CombinedStatus {
     #[serde(default)]
-    state: String,
+    sha: String,
     #[serde(default)]
-    statuses: Option<Vec<serde_json::Value>>,
+    total_count: usize,
+    #[serde(default)]
+    statuses: Option<Vec<StatusEntry>>,
+}
+
+#[derive(Deserialize)]
+struct StatusEntry {
+    #[serde(default)]
+    context: String,
+    #[serde(alias = "state")]
+    status: String,
+}
+
+/// The overall state of the latest status per context. Forgejo's own combined state only covers
+/// the first page, so it is derived here from the complete listing. Unknown states keep waiting.
+fn summarize_statuses(statuses: &[StatusEntry]) -> ChecksState {
+    let has = |states: &[&str]| statuses.iter().any(|s| states.contains(&s.status.as_str()));
+    if statuses.is_empty() {
+        ChecksState::Absent
+    } else if !statuses.iter().all(|s| {
+        matches!(
+            s.status.as_str(),
+            "success" | "failure" | "error" | "warning" | "skipped"
+        )
+    }) {
+        ChecksState::Pending
+    } else if has(&["failure", "error", "warning"]) {
+        ChecksState::Failure
+    } else if has(&["success"]) {
+        ChecksState::Success
+    } else {
+        ChecksState::Inconclusive
+    }
 }
 
 impl ForgejoForge {
@@ -82,7 +125,28 @@ impl ForgejoForge {
             token: token.to_owned(),
             bot_login: bot_login.to_owned(),
             agent,
+            approval_repositories: BTreeSet::new(),
+            merge_authors: BTreeSet::new(),
         }
+    }
+
+    /// Source approval and merge authority, narrower than ordinary publication. Merges of other
+    /// authors' pull requests are limited to the `(remote, author)` pairs named by merge handlers.
+    /// Without it the adapter approves nothing and merges only ArtiDezi's own proposals.
+    pub fn with_source_actions(
+        mut self,
+        approvals: impl IntoIterator<Item = String>,
+        merges: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.approval_repositories = approvals
+            .into_iter()
+            .map(|remote| remote.to_ascii_lowercase())
+            .collect();
+        self.merge_authors = merges
+            .into_iter()
+            .map(|(remote, author)| (remote.to_ascii_lowercase(), author.to_ascii_lowercase()))
+            .collect();
+        self
     }
 
     fn api(&self, path: &str) -> String {
@@ -149,17 +213,45 @@ impl ForgejoForge {
             .ok_or_else(|| ForgeError::Other(format!("remote {remote:?} is not owner/name")))
     }
 
-    fn checks_for(&self, owner: &str, repo: &str, sha: &str) -> Result<ChecksState> {
-        let combined: CombinedStatus =
-            self.get_json(&format!("/repos/{owner}/{repo}/commits/{sha}/status"))?;
-        if combined.statuses.as_ref().is_none_or(Vec::is_empty) {
-            return Ok(ChecksState::Absent);
+    /// The latest status of every context reported for `sha`, across all pages.
+    fn statuses_for(&self, owner: &str, repo: &str, sha: &str) -> Result<Vec<StatusEntry>> {
+        let mut statuses: Vec<StatusEntry> = Vec::new();
+        let mut expected = None;
+        for page in 1..=MAX_STATUS_PAGES {
+            let combined: CombinedStatus = self.get_json(&format!(
+                "/repos/{owner}/{repo}/commits/{sha}/status?limit=50&page={page}"
+            ))?;
+            let batch = combined.statuses.unwrap_or_default();
+            if (!batch.is_empty() && !combined.sha.eq_ignore_ascii_case(sha))
+                || expected.is_some_and(|count| count != combined.total_count)
+            {
+                return Err(ForgeError::Other(
+                    "Forgejo commit statuses changed while reading them; retry".into(),
+                ));
+            }
+            expected = Some(combined.total_count);
+            let empty = batch.is_empty();
+            statuses.extend(batch);
+            if statuses.len() == combined.total_count {
+                break;
+            }
+            if empty || statuses.len() > combined.total_count || page == MAX_STATUS_PAGES {
+                return Err(ForgeError::Other(
+                    "Forgejo commit-status listing is incomplete".into(),
+                ));
+            }
         }
-        Ok(match combined.state.as_str() {
-            "success" => ChecksState::Success,
-            "failure" | "error" => ChecksState::Failure,
-            _ => ChecksState::Pending,
-        })
+        let contexts: BTreeSet<_> = statuses.iter().map(|s| s.context.as_str()).collect();
+        if contexts.len() != statuses.len() {
+            return Err(ForgeError::Other(
+                "Forgejo commit statuses changed while reading them; retry".into(),
+            ));
+        }
+        Ok(statuses)
+    }
+
+    fn checks_for(&self, owner: &str, repo: &str, sha: &str) -> Result<ChecksState> {
+        Ok(summarize_statuses(&self.statuses_for(owner, repo, sha)?))
     }
 
     fn info(&self, owner: &str, repo: &str, pull: PullResponse) -> Result<MergeRequestInfo> {
@@ -218,6 +310,24 @@ impl ForgejoForge {
             .read_to_string()
             .map_err(|e| ForgeError::Other(e.to_string()))?;
         self.check(status, &body, &path)
+    }
+
+    /// Submits a review with any event as this adapter's user. Test tooling only: ArtiDezi itself
+    /// only comments and approves.
+    pub fn submit_review_for_test(
+        &self,
+        remote: &str,
+        number: u64,
+        head: &CommitSha,
+        event: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.send_json(
+            "POST",
+            &format!("/repos/{remote}/pulls/{number}/reviews"),
+            &json!({"event": event, "commit_id": head, "body": body}),
+        )?;
+        Ok(())
     }
 
     /// Posts a commit status. Test tooling only; real checks come from CI.
@@ -368,6 +478,51 @@ impl ForgeAdapter for ForgejoForge {
             || review.state != ReviewState::Commented
         {
             return Err(ForgeError::Other("unexpected review receipt".into()));
+        }
+        Ok(review)
+    }
+
+    fn create_approval_review(
+        &self,
+        remote: &str,
+        number: u64,
+        head: &CommitSha,
+        body: &str,
+    ) -> Result<MergeRequestReview> {
+        if !self
+            .approval_repositories
+            .contains(&remote.to_ascii_lowercase())
+        {
+            return Err(ForgeError::Other(
+                "source approval is not configured for this repository".into(),
+            ));
+        }
+        let current = self.get_merge_request(remote, number)?;
+        if current.head_commit != *head
+            || current.state != MergeRequestState::Open
+            || current.draft
+            || current.checks != ChecksState::Success
+            || current.author_login.eq_ignore_ascii_case(&self.bot_login)
+        {
+            return Err(ForgeError::Other(
+                "source changed or is not eligible for approval".into(),
+            ));
+        }
+        let response: ReviewResponse = serde_json::from_str(&self.send_json(
+            "POST",
+            &format!("/repos/{remote}/pulls/{number}/reviews"),
+            &json!({"event":"APPROVED","commit_id":head,"body":body}),
+        )?)
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
+        let review = response.into_review()?;
+        if review.author_login != self.bot_login
+            || review.head_commit != *head
+            || review.body != body
+            || review.state != ReviewState::Approved
+        {
+            return Err(ForgeError::Other(
+                "Forgejo approval receipt differs from requested review".into(),
+            ));
         }
         Ok(review)
     }
@@ -546,28 +701,65 @@ impl ForgeAdapter for ForgejoForge {
                 actual: info.head_commit,
             });
         }
+        // ArtiDezi's own proposals follow their delivery mode. Anyone else's pull request is a
+        // source merge, allowed only for an author a merge handler names, with green checks.
+        let own = info.author_login.eq_ignore_ascii_case(&self.bot_login);
+        let named = self.merge_authors.contains(&(
+            remote.to_ascii_lowercase(),
+            info.author_login.to_ascii_lowercase(),
+        ));
+        if info.draft || (!own && (!named || info.checks != ChecksState::Success)) {
+            return Err(ForgeError::Other(
+                "source changed or is not eligible for merging".into(),
+            ));
+        }
         let do_what = match method {
             MergeMethod::Merge => "merge",
             MergeMethod::Rebase => "rebase",
         };
         let path = format!("/repos/{owner}/{repo}/pulls/{number}/merge");
-        let mut response = self
-            .agent
-            .post(self.api(&path))
-            .header("Authorization", &self.auth())
-            .send_json(json!({"Do": do_what, "head_commit_id": expected_head.as_str(), "delete_branch_after_merge": false}))
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
-        let status = response.status().as_u16();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
-        match status {
-            200..=299 => {}
-            405 | 409 => return Err(ForgeError::NotMergeable(number, body.trim().to_owned())),
-            _ => self.check(status, &body, &path)?,
+        // `head_commit_id` makes Forgejo refuse the merge if the head moved after the read above.
+        let payload = json!({"Do": do_what, "head_commit_id": expected_head.as_str(), "delete_branch_after_merge": false});
+        for attempt in 1..=MERGE_ATTEMPTS {
+            let mut response = self
+                .agent
+                .post(self.api(&path))
+                .header("Authorization", &self.auth())
+                .send_json(&payload)
+                .map_err(|e| ForgeError::Other(e.to_string()))?;
+            let status = response.status().as_u16();
+            let body = response
+                .body_mut()
+                .read_to_string()
+                .map_err(|e| ForgeError::Other(e.to_string()))?;
+            match status {
+                200..=299 => break,
+                405 if body.contains("Please try again later") && attempt < MERGE_ATTEMPTS => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                409 if body.contains("head out of date") => {
+                    return Err(ForgeError::HeadMoved {
+                        expected: expected_head.clone(),
+                        actual: self.get_merge_request(remote, number)?.head_commit,
+                    });
+                }
+                405 | 409 => return Err(ForgeError::NotMergeable(number, body.trim().to_owned())),
+                _ => self.check(status, &body, &path)?,
+            }
         }
-        self.branch_head(remote, &info.target_branch)
+        let merged = self.get_merge_request(remote, number)?;
+        match merged.merge_commit {
+            Some(commit)
+                if merged.state == MergeRequestState::Merged
+                    && merged.head_commit == *expected_head
+                    && commit.is_well_formed() =>
+            {
+                Ok(commit)
+            }
+            _ => Err(ForgeError::Other(
+                "Forgejo did not confirm the merge of the expected head".into(),
+            )),
+        }
     }
 
     fn tag_commit(&self, remote: &str, name: &str) -> Result<Option<CommitSha>> {
@@ -662,7 +854,7 @@ mod tests {
                 let mut stub = stub.lock().unwrap();
                 let (status, reply) = match (method.as_str(), path.as_str()) {
                     ("GET", "/api/v1/repos/o/r/pulls/5") => (200, pull(&stub)),
-                    ("GET", p) if p.ends_with("/status") => {
+                    ("GET", p) if p.contains("/status?") => {
                         (200, json!({"state":"","statuses":[]}))
                     }
                     ("POST", "/api/v1/repos/o/r/issues/5/comments") => {
@@ -690,6 +882,30 @@ mod tests {
             }
         });
         url
+    }
+
+    #[test]
+    fn statuses_are_green_only_when_every_latest_context_passed() {
+        let summary = |states: &[&str]| {
+            let statuses: Vec<StatusEntry> = states
+                .iter()
+                .enumerate()
+                .map(|(i, state)| StatusEntry {
+                    context: format!("ci/{i}"),
+                    status: (*state).into(),
+                })
+                .collect();
+            summarize_statuses(&statuses)
+        };
+        assert_eq!(summary(&[]), ChecksState::Absent);
+        assert_eq!(summary(&["success", "skipped"]), ChecksState::Success);
+        assert_eq!(summary(&["skipped"]), ChecksState::Inconclusive);
+        assert_eq!(summary(&["success", "pending"]), ChecksState::Pending);
+        assert_eq!(summary(&["failure", "pending"]), ChecksState::Pending);
+        assert_eq!(summary(&["success", "something-new"]), ChecksState::Pending);
+        for failed in ["failure", "error", "warning"] {
+            assert_eq!(summary(&["success", failed]), ChecksState::Failure);
+        }
     }
 
     #[test]

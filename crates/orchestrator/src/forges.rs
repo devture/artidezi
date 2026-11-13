@@ -31,11 +31,13 @@ pub fn build_forges(
         let adapter: Box<dyn ForgeAdapter> = match forge.provider {
             ForgeProvider::Forgejo => {
                 let token = secrets.get(&forge.credential_ref)?;
-                Box::new(ForgejoForge::new(
-                    &forge.api_base_url,
-                    &token,
-                    &forge.bot_login,
-                ))
+                Box::new(
+                    ForgejoForge::new(&forge.api_base_url, &token, &forge.bot_login)
+                        .with_source_actions(
+                            source_action_repositories(config, name),
+                            source_merge_authors(config, name),
+                        ),
+                )
             }
             ForgeProvider::Fake => Box::new(FakeForge::new(&fake_root.join(name))),
             ForgeProvider::Github => Box::new(github_binding(config, secrets, name)?),

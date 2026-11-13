@@ -124,7 +124,7 @@ Node/Chromium are optional test-time dependencies, not runtime dependencies.
 | Layer | What it proves | Entry point |
 | --- | --- | --- |
 | Rust unit/integration | Contract, config, state, Git and controller transitions | `just check` |
-| Real Forgejo contract | Actual API and Git behavior, including PR refs | `just forgejo-test` |
+| Real Forgejo contract | Actual API and Git behavior, including PR refs, reviews and source approval/merge | `just forgejo-test` |
 | Running local lifecycle | Authenticated UI/API through scripted worker and private forge | `just services-test` |
 | Browser | Login, forms, polling/draft preservation and desktop/mobile layout | `just services-browser-test` |
 | Scoped real-model experiment | Reasoning/patch behavior on frozen fixture inputs | Separately configured worker/project, explicit experiment scope |

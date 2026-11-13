@@ -143,9 +143,9 @@ use the secure default behind HTTPS.
 `artidezi schema config` exports the current schema. Configuration parsing rejects unknown fields
 and validation checks cross-references and permission bounds. Validation alone does not prove the
 chosen execution environment exists: Claude and several auth/sandbox modes remain modeled only.
-Forgejo supports delivery; GitHub supports App-authenticated discovery, inspection and opt-in
-COMMENT reviews and adaptation PRs. Explicit source policies can approve or merge unchanged
-GitHub updates; release operations remain unavailable. Coding support includes Codex and Pi with the
+Forgejo supports delivery, discovery, COMMENT reviews and adaptation PRs; GitHub supports
+App-authenticated discovery, inspection and opt-in COMMENT reviews and adaptation PRs. On both,
+explicit source policies can approve or merge unchanged PRs from the authors a handler names. Release operations remain unavailable. Coding support includes Codex and Pi with the
 implemented worker/harness capabilities. Pi consumes an OpenAI-compatible Chat Completions endpoint
 and keeps its API key on the worker. See [worker internals](../architecture/worker-contract.md).
 

@@ -316,7 +316,11 @@ impl Orchestrator {
             let handler = handler.unwrap();
             let repo = &policy.repositories[&source.repository_id];
             if handler.catch_all
-                || repo.forge_provider != artidezi_config::model::ForgeProvider::Github
+                || !matches!(
+                    repo.forge_provider,
+                    artidezi_config::model::ForgeProvider::Github
+                        | artidezi_config::model::ForgeProvider::Forgejo
+                )
                 || repo.access != RepositoryAccess::ReadWrite
                 || (source.safe_verdict_action == SafeVerdictAction::Merge
                     && (!policy.effects.merge_renovate_merge_request_on_safe_verdict
@@ -662,7 +666,7 @@ impl Orchestrator {
                     return Ok(());
                 }
                 return Err(invalid(
-                    "GitHub accepted the merge but its final state is not yet confirmed; retry publication",
+                    "The forge accepted the merge but its final state is not yet confirmed; retry publication",
                 ));
             }
         }

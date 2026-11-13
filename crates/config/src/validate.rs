@@ -384,13 +384,15 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                 if discovery.repositories.iter().any(|id| {
                     project.repositories.get(id).is_none_or(|r| {
                         r.agent_access != RepositoryAccess::ReadWrite
-                            || config
-                                .forges
-                                .get(&r.forge)
-                                .is_none_or(|f| f.provider != ForgeProvider::Github)
+                            || config.forges.get(&r.forge).is_none_or(|f| {
+                                !matches!(
+                                    f.provider,
+                                    ForgeProvider::Github | ForgeProvider::Forgejo
+                                )
+                            })
                     })
                 }) {
-                    problems.push(problem(format!("{ctx}: source approval/merge currently requires writable GitHub source repositories")));
+                    problems.push(problem(format!("{ctx}: source approval/merge requires writable GitHub or Forgejo source repositories")));
                 }
                 if handler.safe_verdict_action == SafeVerdictAction::Merge
                     && !project.effects.merge_renovate_merge_request_on_safe_verdict

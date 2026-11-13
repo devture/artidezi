@@ -183,14 +183,15 @@ fn forgejo_contract() {
     // Another reviewer's decisions are visible to the merge gate, including a later dismissal.
     let (maintainer, maintainer_token) = other_user("MAINTAINER");
     forge.add_collaborator(&remote, &maintainer).unwrap();
-    let objection: serde_json::Value = serde_json::from_str(&api_as(
-        &url,
-        &maintainer_token,
-        "POST",
-        &format!("/repos/{remote}/pulls/{}/reviews", mr.number),
-        serde_json::json!({"event": "REQUEST_CHANGES", "commit_id": mr.head_commit, "body": "Needs a fix."}),
-    ))
-    .unwrap();
+    ForgejoForge::new(&url, &maintainer_token, &maintainer)
+        .submit_review_for_test(
+            &remote,
+            mr.number,
+            &mr.head_commit,
+            "REQUEST_CHANGES",
+            "Needs a fix.",
+        )
+        .unwrap();
     let reviews = forge.list_reviews(&remote, mr.number).unwrap();
     assert_eq!(reviews.len(), 2, "{reviews:?}");
     assert_eq!(reviews[0], review);
@@ -202,7 +203,7 @@ fn forgejo_contract() {
         "POST",
         &format!(
             "/repos/{remote}/pulls/{}/reviews/{}/dismissals",
-            mr.number, objection["id"]
+            mr.number, reviews[1].id
         ),
         serde_json::json!({"message": "Addressed."}),
     );
@@ -390,5 +391,164 @@ fn forgejo_contract() {
     assert!(matches!(
         forge.branch_head(&remote, "artidezi/test"),
         Err(ForgeError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn forgejo_source_approval_and_merge_contract() {
+    let (Some(url), Some(token), Some(user)) = (
+        env("ARTIDEZI_FORGEJO_URL"),
+        env("ARTIDEZI_FORGEJO_TOKEN"),
+        env("ARTIDEZI_FORGEJO_USER"),
+    ) else {
+        eprintln!("skipping: ARTIDEZI_FORGEJO_* not set");
+        return;
+    };
+    let (renovate_user, renovate_token) = other_user("RENOVATE");
+    let plain = ForgejoForge::new(&url, &token, &user);
+    let remote = plain
+        .create_repository(&format!("artidezi-actions-{}", std::process::id()), "main")
+        .unwrap();
+    plain.add_collaborator(&remote, &renovate_user).unwrap();
+    let forge = ForgejoForge::new(&url, &token, &user).with_source_actions(
+        [remote.to_uppercase()],
+        [(remote.clone(), renovate_user.to_uppercase())],
+    );
+    // Merge authority names authors, not repositories: another author is refused even when green.
+    let other_author = ForgejoForge::new(&url, &token, &user)
+        .with_source_actions([remote.clone()], [(remote.clone(), "someone-else".into())]);
+    let renovate = ForgejoForge::new(&url, &renovate_token, &renovate_user);
+
+    // The bot pushes a branch; the Renovate-style user opens the pull request from it.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = BareCache::open_or_init(&dir.path().join("cache")).unwrap();
+    let creds = plain.git_credentials(&remote).unwrap();
+    cache
+        .fetch(
+            &plain.clone_url(&remote),
+            &["+refs/heads/main:refs/heads/main"],
+            creds.as_ref(),
+        )
+        .unwrap();
+    let repo = Repository::open_bare(cache.path()).unwrap();
+    let parent = repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_commit()
+        .unwrap();
+    let mut tree = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+    tree.insert("lib.txt", repo.blob(b"2.0\n").unwrap(), 0o100644)
+        .unwrap();
+    let tree = repo.find_tree(tree.write().unwrap()).unwrap();
+    let sig = Signature::now("Renovate", "renovate@invalid").unwrap();
+    let update = repo
+        .commit(None, &sig, &sig, "Update lib", &tree, &[&parent])
+        .unwrap();
+    cache
+        .set_ref("refs/heads/renovate/lib", update, "")
+        .unwrap();
+    cache
+        .push(
+            &plain.clone_url(&remote),
+            "refs/heads/renovate/lib:refs/heads/renovate/lib",
+            creds.as_ref(),
+        )
+        .unwrap();
+    let pull = renovate
+        .create_merge_request(
+            &remote,
+            &NewMergeRequest {
+                title: "Update lib".into(),
+                body: "Automated update.".into(),
+                source_branch: "renovate/lib".into(),
+                target_branch: "main".into(),
+                draft: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(pull.author_login, renovate_user);
+    let head = pull.head_commit.clone();
+    let stale = artidezi_contract::common::CommitSha(parent.id().to_string());
+
+    // Without configured authority, or without green checks, nothing is approved or merged.
+    assert!(
+        plain
+            .create_approval_review(&remote, pull.number, &head, "Approve.")
+            .is_err()
+    );
+    assert!(
+        plain
+            .merge(&remote, pull.number, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    assert!(
+        forge
+            .create_approval_review(&remote, pull.number, &head, "Approve.")
+            .is_err()
+    );
+    assert!(
+        forge
+            .merge(&remote, pull.number, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    plain
+        .set_commit_status(&remote, head.as_str(), "pending", "ci/slow")
+        .unwrap();
+    plain
+        .set_commit_status(&remote, head.as_str(), "success", "ci/test")
+        .unwrap();
+    assert_eq!(
+        forge
+            .get_merge_request(&remote, pull.number)
+            .unwrap()
+            .checks,
+        ChecksState::Pending
+    );
+    assert!(
+        forge
+            .create_approval_review(&remote, pull.number, &head, "Approve.")
+            .is_err()
+    );
+    plain
+        .set_commit_status(&remote, head.as_str(), "success", "ci/slow")
+        .unwrap();
+    assert!(forge.list_reviews(&remote, pull.number).unwrap().is_empty());
+
+    // An approval names the exact head, and a stale expected head refuses the merge.
+    assert!(
+        forge
+            .create_approval_review(&remote, pull.number, &stale, "Approve.")
+            .is_err()
+    );
+    let approval = forge
+        .create_approval_review(&remote, pull.number, &head, "Approve.")
+        .unwrap();
+    assert_eq!(approval.state, ReviewState::Approved);
+    assert_eq!(approval.head_commit, head);
+    assert_eq!(approval.author_login, user);
+    assert_eq!(
+        forge.list_reviews(&remote, pull.number).unwrap(),
+        vec![approval]
+    );
+    assert!(matches!(
+        forge.merge(&remote, pull.number, &stale, MergeMethod::Merge),
+        Err(ForgeError::HeadMoved { .. })
+    ));
+    assert!(
+        other_author
+            .merge(&remote, pull.number, &head, MergeMethod::Merge)
+            .is_err()
+    );
+    let merged = forge
+        .merge(&remote, pull.number, &head, MergeMethod::Merge)
+        .unwrap();
+    assert_eq!(forge.branch_head(&remote, "main").unwrap(), merged);
+    assert_ne!(merged, head, "a merge commit, not a fast-forward");
+    let info = forge.get_merge_request(&remote, pull.number).unwrap();
+    assert_eq!(info.state, MergeRequestState::Merged);
+    assert_eq!(info.merge_commit, Some(merged));
+    assert!(matches!(
+        forge.merge(&remote, pull.number, &head, MergeMethod::Merge),
+        Err(ForgeError::NotMergeable(..))
     ));
 }

@@ -20,9 +20,10 @@ the project level and the dependency- or workflow-specific assessment procedure 
 
 **Dry-run mode keeps results inside ArtiDezi.** It is the default for each handler and is useful for
 enrollment and debugging. Opt-in **publish** mode posts informational reviews and human-reviewed
-adaptation PRs. Publish handlers can additionally opt into safe source approval/merge;
-dry runs have no forge effects. Tagging and release operations remain unavailable. See
-[GitHub publication](github-enrollment.md#enable-publication) for activation and recovery.
+adaptation PRs. Publish handlers can additionally opt into [safe source approval or
+merge](#approve-or-merge-safe-updates); dry runs have no forge effects. Tagging and release
+operations remain unavailable. See [GitHub publication](github-enrollment.md#enable-publication)
+for activation and recovery on GitHub.
 
 Discovery is disabled unless a project explicitly defines `pull_requests`. Add this alongside that
 project's existing repositories and policy (replace `application` with a writable repository ID
@@ -280,3 +281,61 @@ delivery was interrupted.
 Discovery uses the normal worker contract; see [its version notes](../architecture/worker-contract.md). Configurations without discovery keep manual-only behavior.
 
 For internal scheduling and recovery behavior, see [PR discovery internals](../architecture/pr-discovery.md).
+
+## Approve or merge safe updates
+
+A publish handler's `safe_verdict_action` chooses what an accepted `approve_untouched` result may do
+with the source PR, on GitHub and on Forgejo:
+
+| Value | Action |
+| --- | --- |
+| `comment` (default) | Publish an informational review |
+| `approve` | Submit an approving review on the exact assessed commit; another bot may then merge |
+| `merge` | Submit that approval, then merge the exact assessed commit with a merge commit |
+
+Both actions need `mode: publish`, the project's `publish_adaptation_merge_requests` effect,
+explicit `authors` (no catch-all) and writable source repositories. `merge` also needs
+`effects.merge_renovate_merge_request_on_safe_verdict: true`. A merge handler merges unchanged PRs
+from exactly the authors it lists, whoever they are: a dependency bot such as `renovate[bot]` on
+GitHub or `renovate-bot` on Forgejo, another automation account, or a person. Separate handlers give
+different authors different actions:
+
+```yaml
+handlers:
+  - id: dependency-updates
+    authors: [renovate-bot]
+    action: assess
+    mode: publish
+    safe_verdict_action: merge
+    require_successful_checks: false
+    instructions: >-
+      Review compatibility and run relevant checks. Propose adaptations when needed;
+      report uncertainty honestly and request input when evidence is insufficient.
+  - id: contributor-changes
+    authors: [contributor]
+    action: assess
+    mode: publish
+    safe_verdict_action: comment
+    require_successful_checks: false
+    instructions: Review the change for correctness and fit with this repository.
+```
+
+Listing an author on a merge handler is the decision to merge their unchanged PRs without a person.
+The author controls the change and its description, and can word both to persuade the reviewing
+agent. Whether that is acceptable depends on who can open PRs as that login and on the repository,
+so ArtiDezi leaves it to the operator instead of guessing from login shapes or repository
+visibility.
+
+Right before approving and again before merging, the controller requires current successful
+commit statuses on the assessed head, no reviewer whose latest decision requests changes, an
+unchanged source and the same configuration. Pending checks wait for CI; failed checks hold the task
+as described above. The agent's risk rating, evidence and questions appear in the review; they are
+context, not an extra gate, and an agent that needs a decision returns `needs_human` instead.
+
+On Forgejo, the merge request names the assessed commit (`head_commit_id`), so Forgejo itself
+refuses the merge if the PR moved after the last check. The approval has no such guard. Configure
+branch protection for your final policy: required status checks, required approvals, dismissal of
+stale approvals, and whether the bot may merge at all. ArtiDezi does not change protection, use
+"merge when checks succeed" or fall back to another merge style; a refused merge holds the task.
+Forgejo statuses count as green only when every reported context succeeded or was skipped and at
+least one succeeded. `warning` counts as a failure.

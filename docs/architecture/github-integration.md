@@ -125,8 +125,8 @@ repository writes and that credentials stay out of worker documents. Separate ca
 CI, moved source heads, persisted backoff and old queued publication after a forge becomes read-only.
 Publication cases exercise one COMMENT, adaptation delivery, lost PR/review responses, restart
 recovery, forbidden workflows, moved context and authority changes. Multi-repository tests observe
-human merges without release effects. Forgejo tests exercise real Git authentication and COMMENT
-review API receipts.
+human merges without release effects. Forgejo tests exercise real Git authentication, COMMENT,
+change-request and APPROVED review receipts, and source approval and merge of another user's PR.
 
 Source review bodies keep concise verdict/risk/question context visible and place the complete
 agent evidence list in a collapsed disclosure. Evidence-note formatting preserves inline code,

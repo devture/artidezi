@@ -221,5 +221,20 @@ queue, including partial merges in multi-repository tasks; see [proposal cleanup
 There is no sweep of historical or human-closed proposal branches. Equivalent rebases retain their
 open proposals and branches until merged or superseded.
 
-Source approval/merge uses the additional policy and recovery gates described in GitHub internals.
+Source approval/merge uses the additional policy and recovery gates described in
+[GitHub internals](github-integration.md#safe-source-actions); they are provider-neutral and also
+apply on Forgejo.
+
+The Forgejo adapter adds its own guards. It approves only repositories watched by an approve/merge
+handler, and merges another author's PR only when a merge handler watching that repository names
+the author and checks are green; ArtiDezi's own proposals follow their delivery mode. The GitHub
+adapter applies the same `(repository, author)` limit to merges. Approval rereads the PR and posts an `APPROVED` review on the exact head; the receipt
+must match bot, commit, body and state. Merge sends `head_commit_id`, so Forgejo answers
+`head out of date` instead of merging a moved head; that maps to a head-moved error. While
+Forgejo is still recalculating mergeability after a review or status change, the adapter retries
+for up to five seconds. A successful response is confirmed by rereading the PR: it must be merged at
+the expected head, and its `merge_commit_sha` is the returned commit. Review listings report every
+submitted decision, including dismissals; pending drafts and review requests are skipped and unknown
+states stop automatic actions. Commit statuses are read across all pages, because Forgejo's combined
+state covers only the first page.
 Issue intake and comment commands remain future work.
