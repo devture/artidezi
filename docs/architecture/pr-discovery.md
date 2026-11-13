@@ -229,7 +229,7 @@ records `merge_request.automerged`; a forge error records `adaptation.merge_fail
 open proposal's current head, with or without a failure receipt, stops automatic merging for that
 task: a lost success is observed as a merged proposal, while a refusal or crash is left to a person.
 Revoking the opt-in leaves the task awaiting review instead of holding it. The Forgejo adapter merges
-its own proposals as before; the GitHub adapter merges a bot-authored `artidezi/` PR only in
+its own proposals only with green checks; the GitHub adapter merges a bot-authored `artidezi/` PR only in
 repositories `with_adaptation_merges` lists, built from projects with the effect and an opted-in
 publish handler.
 
@@ -258,7 +258,7 @@ apply on Forgejo.
 The Forgejo adapter adds its own guards. It approves only repositories watched by an approve/merge
 handler, and merges another author's PR only when a merge handler watching that repository matches
 the author (a login, an anchored pattern or a catch-all) and checks are green; ArtiDezi's own
-proposals follow their delivery mode. The GitHub adapter applies the same per-repository author
+proposals follow their delivery mode, and also merge only with green checks. The GitHub adapter applies the same per-repository author
 limit to merges ([`SourceMergeAuthors`](../../crates/forge/src/lib.rs), built in
 [`forges.rs`](../../crates/orchestrator/src/forges.rs)). Approval rereads the PR and posts an `APPROVED` review on the exact head; the receipt
 must match bot, commit, body and state. Merge sends `head_commit_id`, so Forgejo answers

@@ -756,18 +756,21 @@ impl ForgeAdapter for ForgejoForge {
                 actual: info.head_commit,
             });
         }
-        // ArtiDezi's own proposals follow their delivery mode. Anyone else's pull request is a
-        // source merge, allowed only for an author a merge handler names, with green checks (or,
-        // where a handler opted in, none at all).
-        let own = info.author_login.eq_ignore_ascii_case(&self.bot_login);
-        let named = self.merge_authors.permits(remote, &info.author_login);
-        let checks = source_checks_permit(
-            info.checks,
-            self.without_checks
-                .merges
-                .permits(remote, &info.author_login),
-        );
-        if info.draft || (!own && (!named || !checks)) {
+        // ArtiDezi's own proposals follow their delivery mode, and merge only with green checks.
+        // Anyone else's pull request is a source merge, allowed only for an author a merge handler
+        // names, with green checks (or, where a handler opted in, none at all).
+        let permitted = if info.author_login.eq_ignore_ascii_case(&self.bot_login) {
+            info.checks == ChecksState::Success
+        } else {
+            self.merge_authors.permits(remote, &info.author_login)
+                && source_checks_permit(
+                    info.checks,
+                    self.without_checks
+                        .merges
+                        .permits(remote, &info.author_login),
+                )
+        };
+        if info.draft || !permitted {
             return Err(ForgeError::Other(
                 "source changed or is not eligible for merging".into(),
             ));

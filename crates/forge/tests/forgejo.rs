@@ -322,6 +322,22 @@ fn forgejo_contract() {
             .is_empty()
     );
 
+    // ArtiDezi's own proposal merges only with green checks: none, pending or failed are refused.
+    assert_eq!(
+        forge.get_merge_request(&remote, mr.number).unwrap().checks,
+        ChecksState::Absent
+    );
+    for state in [None, Some("pending"), Some("failure")] {
+        if let Some(state) = state {
+            forge
+                .set_commit_status(&remote, &feature.to_string(), state, "ci/test")
+                .unwrap();
+        }
+        assert!(matches!(
+            forge.merge(&remote, mr.number, &mr.head_commit, MergeMethod::Rebase),
+            Err(ForgeError::Other(_))
+        ));
+    }
     forge
         .set_commit_status(&remote, &feature.to_string(), "success", "ci/test")
         .unwrap();

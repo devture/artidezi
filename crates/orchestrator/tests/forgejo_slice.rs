@@ -220,6 +220,10 @@ fn forgejo_vertical_slice() {
     let mr = revised;
     let info = forge.get_merge_request(&remote, mr.number).unwrap();
     assert_eq!(info.head_commit.as_str(), mr.head_commit);
+    // A maintainer's merge, made through the bot's adapter, which merges only with green checks.
+    forge
+        .set_commit_status(&remote, info.head_commit.as_str(), "success", "ci/test")
+        .unwrap();
     // Forgejo computes mergeability asynchronously after the revised PR head is pushed.
     let mut merged = false;
     for _ in 0..30 {
