@@ -359,6 +359,7 @@ fn source_config(url: &str, user: &str, renovate: &str, remote: &str) -> String 
           mode: publish
           safe_verdict_action: merge
           require_successful_checks: false
+          ci_context: {{results: true}}
           instructions: Assess the update.
 "#
     )
@@ -485,6 +486,14 @@ fn forgejo_source_approval_and_merge() {
         .unwrap();
     assert!(queued.errors.is_empty(), "{:?}", queued.errors);
     let task = queued.queued[0].clone();
+    let source =
+        artidezi_orchestrator::discovery::source_of(&orchestrator.db.get_task(&task).unwrap())
+            .unwrap()
+            .unwrap();
+    let snapshot = source.ci_snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.results.len(), 1);
+    assert_eq!(snapshot.results[0].name, "ci/test");
+    assert_eq!(snapshot.results[0].status, "success");
     assert_eq!(work(&mut orchestrator, &root, &script), AttemptState::Valid);
     assert_eq!(
         orchestrator.db.get_task(&task).unwrap().state,

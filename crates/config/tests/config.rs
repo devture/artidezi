@@ -292,10 +292,19 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         .handlers[0]
         .ci_context
         .results = true;
+    // The fixture's forge is Forgejo, which reports commit statuses; the fake forge reports none.
+    assert!(
+        artidezi_config::validate(&unsupported_ci).is_empty(),
+        "{:?}",
+        artidezi_config::validate(&unsupported_ci)
+    );
+    for forge in unsupported_ci.forges.values_mut() {
+        forge.provider = artidezi_config::model::ForgeProvider::Fake;
+    }
     assert!(
         artidezi_config::validate(&unsupported_ci)
             .iter()
-            .any(|p| p.0.contains("CI result context currently requires GitHub"))
+            .any(|p| p.0.contains("CI result context requires GitHub or Forgejo"))
     );
     let mut unsafe_logs = config.clone();
     unsafe_logs

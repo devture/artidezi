@@ -250,10 +250,6 @@ impl ForgejoForge {
         Ok(statuses)
     }
 
-    fn checks_for(&self, owner: &str, repo: &str, sha: &str) -> Result<ChecksState> {
-        Ok(summarize_statuses(&self.statuses_for(owner, repo, sha)?))
-    }
-
     fn info(&self, owner: &str, repo: &str, pull: PullResponse) -> Result<MergeRequestInfo> {
         let state = if pull.merged {
             MergeRequestState::Merged
@@ -262,10 +258,22 @@ impl ForgejoForge {
         } else {
             MergeRequestState::Closed
         };
-        let checks = if state == MergeRequestState::Open {
-            self.checks_for(owner, repo, &pull.head.sha)?
+        // Forgejo Actions and external CI both report commit statuses; there are no check runs.
+        let (checks, check_results) = if state == MergeRequestState::Open {
+            let statuses = self.statuses_for(owner, repo, &pull.head.sha)?;
+            let checks = summarize_statuses(&statuses);
+            let results = statuses
+                .into_iter()
+                .map(|status| CheckResult {
+                    kind: CheckResultKind::CommitStatus,
+                    name: status.context,
+                    status: status.status,
+                    conclusion: None,
+                })
+                .collect();
+            (checks, results)
         } else {
-            ChecksState::Pending
+            (ChecksState::Pending, Vec::new())
         };
         Ok(MergeRequestInfo {
             number: pull.number,
@@ -280,7 +288,7 @@ impl ForgejoForge {
             state,
             draft: pull.draft,
             checks,
-            check_results: None,
+            check_results: Some(check_results),
         })
     }
 

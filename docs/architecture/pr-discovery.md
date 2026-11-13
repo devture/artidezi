@@ -111,9 +111,10 @@ show newer target work as absent from the source; that absence is not a change m
 Replacement candidates must preserve unrelated target work. This is agent guidance, not an
 independent semantic guarantee supplied by the controller.
 
-When the matched handler requests CI results, the GitHub adapter's already-fetched complete visible
-commit-status and latest check-run listing is normalized and frozen in the source policy alongside
-the exact head. Prompt template 9 renders the overall state and each name/status/conclusion as an
+When the matched handler requests CI results, the adapter's already-fetched complete visible
+listing is normalized and frozen in the source policy alongside the exact head: commit statuses and
+latest check runs on GitHub, and the latest status of each context on Forgejo, where Actions jobs
+report commit statuses. Prompt template 9 renders the overall state and each name/status/conclusion as an
 explicitly untrusted point-in-time JSON block. When separately permitted, the controller uses a
 single-repository Actions-read token to find completed failed jobs at that head, verifies their run
 attempt and exact job identity, and freezes up to two sanitized, bounded excerpts as private content-addressed

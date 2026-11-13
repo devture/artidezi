@@ -466,14 +466,16 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                     }
                     if discovery.repositories.iter().any(|id| {
                         project.repositories.get(id).is_some_and(|repo| {
-                            config
-                                .forges
-                                .get(&repo.forge)
-                                .is_some_and(|forge| forge.provider != ForgeProvider::Github)
+                            config.forges.get(&repo.forge).is_some_and(|forge| {
+                                !matches!(
+                                    forge.provider,
+                                    ForgeProvider::Github | ForgeProvider::Forgejo
+                                )
+                            })
                         })
                     }) {
                         problems.push(problem(format!(
-                            "{ctx}: PR handler {} CI result context currently requires GitHub source repositories",
+                            "{ctx}: PR handler {} CI result context requires GitHub or Forgejo source repositories",
                             handler.id
                         )));
                     }

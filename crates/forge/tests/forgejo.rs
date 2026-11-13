@@ -513,6 +513,25 @@ fn forgejo_source_approval_and_merge_contract() {
         .set_commit_status(&remote, head.as_str(), "success", "ci/slow")
         .unwrap();
     assert!(forge.list_reviews(&remote, pull.number).unwrap().is_empty());
+    // Only the latest status of each context is reported.
+    let mut results: Vec<_> = forge
+        .get_merge_request(&remote, pull.number)
+        .unwrap()
+        .check_results
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.kind, r.name, r.status, r.conclusion))
+        .collect();
+    results.sort_by(|a, b| a.1.cmp(&b.1));
+    assert_eq!(
+        results,
+        ["ci/slow", "ci/test"].map(|name| (
+            CheckResultKind::CommitStatus,
+            name.to_owned(),
+            "success".to_owned(),
+            None
+        ))
+    );
 
     // An approval names the exact head, and a stale expected head refuses the merge.
     assert!(

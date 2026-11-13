@@ -75,9 +75,10 @@ author selectors is invalid; there is no built-in catch-all and no automatic rep
 Only the named repositories and their configured target branches are watched. Context repositories
 are not automatically watched; a remote/branch can have only one discovery project owner.
 
-`ci_context.results: true` is an independent, optional agent-context setting for GitHub sources. It
-freezes every visible commit-status and latest check-run name/state reported for the exact source
-head into the task. The prompt marks names and states as untrusted forge data, tells the agent not to
+`ci_context.results: true` is an independent, optional agent-context setting for GitHub and Forgejo
+sources. It freezes every visible commit-status and latest check-run name/state reported for the
+exact source head into the task. Forgejo has no check runs: Forgejo Actions jobs and external CI
+both appear as commit statuses, such as `ci / test (pull_request)`. The prompt marks names and states as untrusted forge data, tells the agent not to
 rerun successful checks merely to duplicate CI. The snapshot helps
 an agent focus on an actual failure when `require_successful_checks: false`; it does not change
 eligibility, prove required checks or replace the controller's fresh publication gate. Omit the
