@@ -12,7 +12,7 @@ rust-version.workspace = true
 [dependencies]
 git2.workspace = true
 globset = "0.4"
-nix = { version = "0.31", features = ["signal"], default-features = false }
+nix = { version = "0.32", features = ["signal"], default-features = false }
 thiserror.workspace = true
 
 [dev-dependencies]
