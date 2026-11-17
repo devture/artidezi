@@ -5,7 +5,8 @@ name: Dependency advisories
 
 on:
   schedule:
-    - cron: '17 6 * * *'
+    # Weekly (Monday): a notice that stays unresolved fails, and notifies, once per run.
+    - cron: '17 6 * * 1'
   workflow_dispatch:
 
 permissions:

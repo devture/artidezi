@@ -37,7 +37,7 @@ CI downloads the current RustSec advisories on every run, so a new advisory can 
 It does so only for what a commit can fix by updating or replacing a dependency: a vulnerability or a yanked version (plus `deny.toml`'s license, ban and source rules).
 Unmaintained and unsound notices concern a crate rather than a commit, so CI allows them (`just deny`).
 
-The scheduled `Dependency advisories` workflow ([`advisories.yml`](../../.github/workflows/advisories.yml)) runs daily against `main` with every advisory kind (`just deny-strict`).
+The scheduled `Dependency advisories` workflow ([`advisories.yml`](../../.github/workflows/advisories.yml)) runs weekly (Mondays) against `main` with every advisory kind (`just deny-strict`).
 It fails when it finds one, and GitHub's failed-run notification (sent to whoever last changed its `schedule`) is the report; nothing else is blocked.
 Run it by hand with `gh workflow run advisories.yml`.
 To accept a notice for a while, add its ID to `ignore` in `deny.toml` with the reason.
