@@ -33,6 +33,11 @@ poll interval; failed direct follow-up reads retry on the bounded follow-up cade
 Preparation/result failures retain their explicit hold behavior.
 
 The adapter resolves target branches, lists sources and reads exact-head statuses/check runs.
+Check runs whose GitHub Actions suite came from `workflow_dispatch`, `schedule` or
+`repository_dispatch` are dropped before the checks summary, matching GitHub's pull request rollup:
+those events cannot come from the change under review. The workflow event comes from a complete
+Actions-read listing for the exact head; an incomplete listing is an error, and an installation
+without Actions read keeps every check run.
 `refs/pull/N/head` is fetched from the configured target repository, including fork contributions;
 API-provided clone URLs and fork destinations are never followed. The controller verifies the
 fetched PR head and target branch against their reported commits before building bundles.

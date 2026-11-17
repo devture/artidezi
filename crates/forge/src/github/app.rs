@@ -30,6 +30,8 @@ use crate::{
 use artidezi_contract::common::CommitSha;
 use artidezi_git::cache::HttpsCredentials;
 
+pub(super) const LACKS_PERMISSIONS: &str =
+    "GitHub installation lacks required repository permissions";
 const READ_PERMISSIONS: [&str; 5] = [
     "metadata",
     "contents",
@@ -381,9 +383,7 @@ impl GithubForge {
             let actual = installation.permissions.get(name).map(String::as_str);
             if actual != Some(required.as_str()) && !(required == "read" && actual == Some("write"))
             {
-                return Err(invalid(
-                    "GitHub installation lacks required repository permissions",
-                ));
+                return Err(invalid(LACKS_PERMISSIONS));
             }
         }
         // Even an installation covering all repositories only receives credentials for this
@@ -494,7 +494,10 @@ impl GithubForge {
         let source: PullRequest = reader.get(&path)?;
         validate_source(&source, remote, number)?;
         let (checks, check_results) = if source.state == "open" && !source.merged {
-            let (statuses, check_runs, summary) = reader.checks(remote, &source.head.sha)?;
+            let (statuses, check_runs, summary) =
+                reader.checks(remote, &source.head.sha, |runs| {
+                    super::workflow_events::out_of_band_suites(self, remote, &source.head.sha, runs)
+                })?;
             let checks = match summary {
                 "absent" => ChecksState::Absent,
                 "inconclusive" => ChecksState::Inconclusive,

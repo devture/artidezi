@@ -101,7 +101,7 @@ supplies the controller's private-key file. Registration alone does not activate
 | Contents | Read | Write | Target commits, source refs and Git snapshots |
 | Pull requests | Read | Write | Authors, descriptions, branches and source state |
 | Workflows | None | Conditional write | Only a separately authorized source proposal that changes `.github/workflows` |
-| Actions | Conditional read | Conditional read | Only automatically selected failed-job log excerpts when enabled |
+| Actions | Recommended read | Recommended read | Ignoring manually started or scheduled runs on a source head; selected failed-job log excerpts when enabled |
 | Checks | Read | Read | GitHub Actions and other check runs |
 | Commit statuses | Read | Read | Traditional CI status contexts |
 
@@ -110,9 +110,11 @@ still issues tokens for one explicitly configured repository at a time and verif
 scope. Installation access does not automatically enroll repositories or schedule work. The App key
 itself has authority across the wider installation, including future repositories when All repositories
 is selected. Add context repositories explicitly if the worker needs their snapshots.
-Organization/account permissions, Administration and Issues are not needed. Actions read is needed
-only when a project and handler explicitly enable selected CI job logs; it is separate from Workflows
-write and from the ordinary five-permission read token.
+Organization/account permissions, Administration and Issues are not needed. Actions read lets the
+check gate identify workflow runs that did not come from the pull request (see
+[Operational limits](#operational-limits)), and is needed when a project and handler explicitly
+enable selected CI job logs. It uses its own single-repository token, separate from Workflows write
+and from the ordinary five-permission read token.
 An installation with write permissions can run dry-run-only projects: read tokens stay narrow and
 publication requires explicit configuration. Workflow file changes are withheld; ordinary publication doesn't
 request Workflows permission. A reviewed source proposal can use a
@@ -175,7 +177,13 @@ unreleased tags, create duplicate releases, or equate paired PRs with an ordered
 
 ## Operational limits
 
-The adapter combines visible commit statuses and check runs. `wait_for_checks_to_finish` waits for
+The adapter combines visible commit statuses and check runs. Like the pull request's own check
+summary on GitHub, it leaves out GitHub Actions runs on the same commit that were started by
+`workflow_dispatch`, `schedule` or `repository_dispatch`. For example, a maintainer may run a
+deployment workflow by hand on a Renovate branch and have it rejected by an environment rule. That
+run neither blocks nor satisfies delivery. Identifying these runs needs Actions read; without it,
+every check run on the head counts, and such a failure holds delivery until the run is rerun
+successfully or deleted. `wait_for_checks_to_finish` waits for
 all reported checks to finish before assessment, whether they pass or fail. An empty check set is
 distinct from running checks and permits assessment after the settle window. An all-skipped/neutral
 set also permits assessment but does not satisfy automatic source-action requirements. An empty

@@ -12,6 +12,7 @@ mod ci_logs;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod fixture;
 mod http;
+mod workflow_events;
 pub use app::{GithubAppIdentity, GithubForge};
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +78,20 @@ pub struct CheckRun {
     pub status: String,
     pub conclusion: Option<String>,
     pub head_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<CheckApp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_suite: Option<CheckSuiteRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckApp {
+    pub slug: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckSuiteRef {
+    pub id: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -145,10 +160,14 @@ impl GithubReader {
         self.http.get(path, self.token.as_deref(), self.conditional)
     }
 
+    /// Reads every commit status and latest check run on `head`. `excluded_suites` names check
+    /// suites that do not verify the pull request (see `workflow_events`); their runs are dropped
+    /// before the summary, whether they passed or failed.
     fn checks(
         &self,
         remote: &str,
         head: &str,
+        excluded_suites: impl FnOnce(&[CheckRun]) -> Result<std::collections::BTreeSet<u64>>,
     ) -> Result<(Vec<CommitStatus>, Vec<CheckRun>, &'static str)> {
         let root = format!("/repos/{remote}");
         let mut statuses = Vec::new();
@@ -221,6 +240,12 @@ impl GithubReader {
                 "GitHub checks changed during pagination; duplicate records found".into(),
             ));
         }
+        let excluded = excluded_suites(&check_runs)?;
+        check_runs.retain(|run| {
+            run.check_suite
+                .as_ref()
+                .is_none_or(|suite| !excluded.contains(&suite.id))
+        });
         let summary = summarize_checks(&status_state, &statuses, &check_runs);
         Ok((statuses, check_runs, summary))
     }
@@ -242,7 +267,8 @@ impl GithubReader {
         let source: PullRequest = self.get(&format!("{root}/pulls/{number}"))?;
         validate_source(&source, remote, number)?;
         let head = &source.head.sha;
-        let (statuses, check_runs, checks_summary) = self.checks(remote, head)?;
+        let (statuses, check_runs, checks_summary) =
+            self.checks(remote, head, |_| Ok(Default::default()))?;
         let mut changed_files = Vec::new();
         for page in 1..=MAX_PAGES {
             let batch: Vec<ChangedFile> = self.get(&format!(

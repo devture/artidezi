@@ -899,3 +899,100 @@ fn source_actions_without_checks_need_their_own_narrower_grant() {
             .is_err()
     );
 }
+
+#[test]
+fn out_of_band_actions_runs_do_not_decide_pull_request_checks() {
+    use serde_json::Value;
+    let head = "a".repeat(40);
+    let check_runs =
+        format!("/repos/org/app/commits/{head}/check-runs?filter=latest&per_page=100&page=1");
+    let workflow_runs = format!("/repos/org/app/actions/runs?head_sha={head}&per_page=100&page=1");
+    let check = |id: u64, name: &str, conclusion: &str, suite: u64| {
+        json!({"id":id,"name":name,"status":"completed","conclusion":conclusion,"head_sha":head,
+            "app":{"slug":"github-actions"},"check_suite":{"id":suite}})
+    };
+    let workflow = |id: u64, event: &str, suite: u64| {
+        json!({"id":id,"head_sha":head,"event":event,"check_suite_id":suite,
+            "repository":{"full_name":"org/app"}})
+    };
+    let fixture = fixture();
+    let forge = fixture.forge();
+    let read = |runs: Vec<Value>, workflows: Vec<Value>, actions: bool| {
+        let mut state = fixture.state.lock().unwrap();
+        state.actions_permission = actions;
+        state.overrides.insert(
+            check_runs.clone(),
+            Reply::new(200, json!({"total_count":runs.len(),"check_runs":runs})),
+        );
+        state.overrides.insert(
+            workflow_runs.clone(),
+            Reply::new(
+                200,
+                json!({"total_count":workflows.len(),"workflow_runs":workflows}),
+            ),
+        );
+        drop(state);
+        forge.get_merge_request("org/app", 33).unwrap()
+    };
+
+    let events = vec![
+        workflow(11, "pull_request", 101),
+        workflow(12, "workflow_dispatch", 102),
+    ];
+    // Without Actions read permission the event is unknown, so every run still counts. This is
+    // checked first because the fixture caches an issued Actions token.
+    let current = read(
+        vec![
+            check(1, "Run prek hooks", "success", 101),
+            check(2, "renovate", "failure", 102),
+        ],
+        events.clone(),
+        false,
+    );
+    assert_eq!(current.checks, ChecksState::Failure);
+
+    // A maintainer dispatched a workflow on the source branch and the environment rejected it;
+    // the pull request's own checks passed.
+    let pull_request_and_dispatch = vec![
+        check(1, "Run prek hooks", "success", 101),
+        check(2, "renovate", "failure", 102),
+    ];
+    let current = read(pull_request_and_dispatch, events.clone(), true);
+    assert_eq!(current.checks, ChecksState::Success);
+    let names: Vec<_> = current
+        .check_results
+        .unwrap()
+        .into_iter()
+        .map(|result| result.name)
+        .collect();
+    assert_eq!(names, ["Run prek hooks"]);
+
+    // Failures from the pull request's own runs still block.
+    let current = read(
+        vec![
+            check(1, "Run prek hooks", "failure", 101),
+            check(2, "renovate", "success", 102),
+        ],
+        events,
+        true,
+    );
+    assert_eq!(current.checks, ChecksState::Failure);
+
+    // An out-of-band success cannot stand in for missing pull request checks.
+    let current = read(
+        vec![check(3, "nightly", "success", 103)],
+        vec![workflow(13, "schedule", 103)],
+        true,
+    );
+    assert_eq!(current.checks, ChecksState::Absent);
+
+    // A partial workflow-run listing is an error, never a guess.
+    fixture.state.lock().unwrap().overrides.insert(
+        workflow_runs.clone(),
+        Reply::new(
+            200,
+            json!({"total_count":2,"workflow_runs":[workflow(12, "workflow_dispatch", 102)]}),
+        ),
+    );
+    assert!(forge.get_merge_request("org/app", 33).is_err());
+}
