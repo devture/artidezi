@@ -21,6 +21,7 @@ mod source_supersession;
 pub mod state;
 pub mod tasks;
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -79,9 +80,9 @@ pub struct Orchestrator {
     caches_root: PathBuf,
     forges: BTreeMap<String, Box<dyn ForgeAdapter>>,
     bot: Identity,
-    last_artifact_cleanup: chrono::DateTime<chrono::Utc>,
+    last_artifact_cleanup: Timestamp,
     snapshot_path: PathBuf,
-    last_snapshot: Option<chrono::DateTime<chrono::Utc>>,
+    last_snapshot: Option<Timestamp>,
 }
 
 impl Orchestrator {
@@ -134,7 +135,7 @@ impl Orchestrator {
             caches_root: data_dir.join("caches"),
             forges,
             bot,
-            last_artifact_cleanup: chrono::Utc::now(),
+            last_artifact_cleanup: Timestamp::now(),
             snapshot_path: data_dir.join(SNAPSHOT_PATH),
             last_snapshot: None,
         };
@@ -161,7 +162,7 @@ impl Orchestrator {
 
     pub fn forge(&self, name: &str) -> Result<&dyn ForgeAdapter> {
         if let Some(retry_at) = self.db.forge_retry_after(name)?
-            && retry_at > chrono::Utc::now()
+            && retry_at > Timestamp::now()
         {
             return Err(artidezi_forge::ForgeError::RetryAfter { retry_at }.into());
         }

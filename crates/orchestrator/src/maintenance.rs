@@ -4,8 +4,8 @@
 
 //! Periodic and human-driven housekeeping that does not belong to a single request.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_store::model::*;
-use chrono::{DateTime, Utc};
 
 use crate::{Orchestrator, Result};
 
@@ -21,7 +21,7 @@ pub struct TickReport {
 impl Orchestrator {
     /// One maintenance pass: expire dead leases, resume due CI waits and reconcile proposals.
     pub fn tick(&mut self) -> Result<TickReport> {
-        self.tick_at(Utc::now())
+        self.tick_at(Timestamp::now())
     }
 
     /// Ingest finishes within one exclusive call, so an attempt still uploaded here means a
@@ -50,11 +50,11 @@ impl Orchestrator {
         Ok(())
     }
 
-    pub fn tick_at(&mut self, now: DateTime<Utc>) -> Result<TickReport> {
+    pub fn tick_at(&mut self, now: Timestamp) -> Result<TickReport> {
         let mut report = TickReport::default();
         // First, so that a failure elsewhere in the tick never leaves the backup copy stale.
         if self.last_snapshot.is_none_or(|last| {
-            let age = now.signed_duration_since(last).num_seconds();
+            let age = now.duration_since(last).as_secs();
             !(0..crate::SNAPSHOT_INTERVAL_SECONDS).contains(&age)
         }) {
             self.snapshot_database(now, &mut report);
@@ -82,9 +82,7 @@ impl Orchestrator {
         }
         report.errors.extend(self.recover_held_execution()?);
         if let Some(policy) = &self.config.instance.artifact_retention
-            && now
-                .signed_duration_since(self.last_artifact_cleanup)
-                .num_seconds()
+            && now.duration_since(self.last_artifact_cleanup).as_secs()
                 >= i64::from(policy.cleanup_interval_seconds)
         {
             self.last_artifact_cleanup = now;
@@ -131,7 +129,7 @@ impl Orchestrator {
         Ok(report)
     }
 
-    fn snapshot_database(&mut self, now: DateTime<Utc>, report: &mut TickReport) {
+    fn snapshot_database(&mut self, now: Timestamp, report: &mut TickReport) {
         self.last_snapshot = Some(now);
         if let Err(error) = self.db.snapshot_to(&self.snapshot_path) {
             report.errors.push(format!("database snapshot: {error}"));
@@ -140,7 +138,7 @@ impl Orchestrator {
 
     pub fn cleanup_artifacts_at(
         &mut self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         apply: bool,
     ) -> Result<artidezi_store::retention::CleanupReport> {
         let policy = self
@@ -155,7 +153,7 @@ impl Orchestrator {
             })?;
         let mut refresh_errors = Vec::new();
         let cutoff = now
-            - chrono::Duration::seconds(i64::from(policy.completed_task_bundle_retention_seconds));
+            - SignedDuration::from_secs(i64::from(policy.completed_task_bundle_retention_seconds));
         for task in self.db.list_tasks(None)? {
             if !task.state.is_terminal()
                 || (task.updated_at > cutoff && !self.db.task_inputs_expired(&task.id)?)
@@ -183,7 +181,7 @@ impl Orchestrator {
         &mut self,
         task: &Task,
         mut mr: PublishedMergeRequest,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         let policy: artidezi_config::ResolvedProjectPolicy =
             serde_json::from_str(&task.policy_snapshot)

@@ -8,6 +8,7 @@
 //! never alter an existing task, and the snapshot hash makes it cheap to see which tasks ran under
 //! which policy.
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 
 use artidezi_contract::common::{ArtifactRef, Outcome, RepositoryAccess};
@@ -116,7 +117,7 @@ pub struct PullRequestCiLog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_attempt: Option<u64>,
     pub outcome: PullRequestCiLogOutcome,
-    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub captured_at: Timestamp,
     pub raw_bytes: u64,
     pub sanitized_bytes: u64,
     pub truncated: bool,

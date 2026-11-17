@@ -5,6 +5,7 @@
 //! Worker-facing side of the orchestrator: leasing, heartbeats and ingestion of attempt records.
 //! Everything a worker uploads is re-validated here from the raw artifacts.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -18,7 +19,6 @@ use artidezi_contract::validate::validate_result;
 use artidezi_git::bundle;
 use artidezi_git::publish::{ContentRules, inspect};
 use artidezi_store::model::*;
-use chrono::Duration;
 use git2::Oid;
 use sha2::{Digest, Sha256};
 
@@ -47,12 +47,17 @@ impl Orchestrator {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
+        ttl: SignedDuration,
     ) -> Result<Option<LeasedWork>> {
         self.state_access().lease(worker_pool, worker_id, ttl)
     }
 
-    pub fn heartbeat(&mut self, attempt_id: &str, worker_id: &str, ttl: Duration) -> Result<()> {
+    pub fn heartbeat(
+        &mut self,
+        attempt_id: &str,
+        worker_id: &str,
+        ttl: SignedDuration,
+    ) -> Result<()> {
         self.state_access().heartbeat(attempt_id, worker_id, ttl)
     }
 
@@ -86,7 +91,7 @@ impl Orchestrator {
     ) -> Result<AttemptState> {
         let attempt = self.db.get_attempt(attempt_id)?;
         self.state_access()
-            .require_live_lease(&attempt, chrono::Utc::now())?;
+            .require_live_lease(&attempt, Timestamp::now())?;
         for (name, artifact) in &uploaded {
             if !self.artifacts.contains(artifact) {
                 return Err(OrchestratorError::Invalid(format!(
@@ -564,7 +569,7 @@ impl StateAccess {
             size: patch.len() as u64,
         };
         self.db
-            .pin_artifact_upload(&attempt.id, &artifact, chrono::Utc::now())?;
+            .pin_artifact_upload(&attempt.id, &artifact, Timestamp::now())?;
         Ok((problems, Some(self.artifacts.put(&patch)?)))
     }
 }

@@ -4,9 +4,9 @@
 
 use super::*;
 use artidezi_config::model::{PullRequestAction, PullRequestDiscovery, PullRequestHandler};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{MergeMethod, NewMergeRequest};
 use artidezi_orchestrator::discovery::source_of;
-use chrono::{Duration, Utc};
 
 fn enable(w: &mut World) {
     w.orchestrator
@@ -120,7 +120,7 @@ fn known_source_rechecks_only_when_settled_and_all_checks_finish() {
         "renovate/slow-ci",
         artidezi_forge::ChecksState::Pending,
     );
-    let start = Utc::now();
+    let start = Timestamp::now();
     let first = w
         .orchestrator
         .scan_pull_requests_at(Some("roles"), true, start)
@@ -132,18 +132,21 @@ fn known_source_rechecks_only_when_settled_and_all_checks_finish() {
         .list_pull_request_sources(None)
         .unwrap()
         .remove(0);
-    assert_eq!(source.follow_up.unwrap().at, start + Duration::seconds(120));
+    assert_eq!(
+        source.follow_up.unwrap().at,
+        start + SignedDuration::from_secs(120)
+    );
 
     assert!(
         w.orchestrator
-            .tick_at(start + Duration::seconds(119))
+            .tick_at(start + SignedDuration::from_secs(119))
             .unwrap()
             .discovered
             .is_empty()
     );
     assert!(
         w.orchestrator
-            .tick_at(start + Duration::seconds(120))
+            .tick_at(start + SignedDuration::from_secs(120))
             .unwrap()
             .discovered
             .is_empty()
@@ -154,7 +157,10 @@ fn known_source_rechecks_only_when_settled_and_all_checks_finish() {
         .list_pull_request_sources(None)
         .unwrap()
         .remove(0);
-    assert_eq!(source.follow_up.unwrap().at, start + Duration::seconds(240));
+    assert_eq!(
+        source.follow_up.unwrap().at,
+        start + SignedDuration::from_secs(240)
+    );
 
     w.forge.set_checks(
         "org/role",
@@ -163,14 +169,14 @@ fn known_source_rechecks_only_when_settled_and_all_checks_finish() {
     );
     assert!(
         w.orchestrator
-            .tick_at(start + Duration::seconds(239))
+            .tick_at(start + SignedDuration::from_secs(239))
             .unwrap()
             .discovered
             .is_empty()
     );
     let next = w
         .orchestrator
-        .tick_at(start + Duration::seconds(240))
+        .tick_at(start + SignedDuration::from_secs(240))
         .unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
     assert_eq!(next.discovered.len(), 1);
@@ -203,7 +209,7 @@ fn no_ci_queues_at_the_settle_deadline() {
         "renovate/no-ci",
         artidezi_forge::ChecksState::Absent,
     );
-    let start = Utc::now();
+    let start = Timestamp::now();
     assert!(
         w.orchestrator
             .scan_pull_requests_at(Some("roles"), true, start)
@@ -213,7 +219,7 @@ fn no_ci_queues_at_the_settle_deadline() {
     );
     let next = w
         .orchestrator
-        .tick_at(start + Duration::seconds(120))
+        .tick_at(start + SignedDuration::from_secs(120))
         .unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
     assert_eq!(next.discovered.len(), 1);
@@ -240,7 +246,7 @@ fn direct_follow_up_restarts_settling_when_the_head_moves() {
         "renovate/moving-head",
         artidezi_forge::ChecksState::Absent,
     );
-    let start = Utc::now();
+    let start = Timestamp::now();
     assert!(
         w.orchestrator
             .scan_pull_requests_at(Some("roles"), true, start)
@@ -252,7 +258,7 @@ fn direct_follow_up_restarts_settling_when_the_head_moves() {
     assert_ne!(first.head_commit, newest);
     assert!(
         w.orchestrator
-            .tick_at(start + Duration::seconds(120))
+            .tick_at(start + SignedDuration::from_secs(120))
             .unwrap()
             .discovered
             .is_empty()
@@ -264,10 +270,13 @@ fn direct_follow_up_restarts_settling_when_the_head_moves() {
         .unwrap()
         .remove(0);
     assert_eq!(source.observed_head, newest.0);
-    assert_eq!(source.follow_up.unwrap().at, start + Duration::seconds(240));
+    assert_eq!(
+        source.follow_up.unwrap().at,
+        start + SignedDuration::from_secs(240)
+    );
     let next = w
         .orchestrator
-        .tick_at(start + Duration::seconds(240))
+        .tick_at(start + SignedDuration::from_secs(240))
         .unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
     assert_eq!(next.discovered.len(), 1);
@@ -770,7 +779,7 @@ fn source_closure_stops_queued_work_and_timing_is_persistent() {
         .unwrap()
         .settle_seconds = 10;
     let pr = open(&w, "renovate[bot]", "renovate/update");
-    let now = Utc::now();
+    let now = Timestamp::now();
     assert!(
         w.orchestrator
             .scan_pull_requests_at(None, false, now)
@@ -780,14 +789,14 @@ fn source_closure_stops_queued_work_and_timing_is_persistent() {
     );
     assert!(
         w.orchestrator
-            .scan_pull_requests_at(None, false, now + Duration::seconds(30))
+            .scan_pull_requests_at(None, false, now + SignedDuration::from_secs(30))
             .unwrap()
             .queued
             .is_empty()
     );
     let tasks = w
         .orchestrator
-        .scan_pull_requests_at(None, false, now + Duration::seconds(61))
+        .scan_pull_requests_at(None, false, now + SignedDuration::from_secs(61))
         .unwrap()
         .queued;
     assert_eq!(tasks.len(), 1);
@@ -801,7 +810,7 @@ fn source_closure_stops_queued_work_and_timing_is_persistent() {
     );
     assert!(
         w.orchestrator
-            .lease("personal", "w", Duration::minutes(5))
+            .lease("personal", "w", SignedDuration::from_mins(5))
             .unwrap()
             .is_none()
     );
@@ -816,7 +825,7 @@ fn source_merge_cancels_leased_work_even_when_evaluations_are_paused() {
         let task = scan(&mut w).remove(0);
         let work = w
             .orchestrator
-            .lease("personal", "worker", Duration::minutes(5))
+            .lease("personal", "worker", SignedDuration::from_mins(5))
             .unwrap()
             .unwrap();
         if paused {
@@ -892,7 +901,7 @@ fn explicit_pause_stops_queued_work_and_blocks_new_heads_until_resume() {
     );
     assert!(
         w.orchestrator
-            .lease("personal", "worker", Duration::minutes(1))
+            .lease("personal", "worker", SignedDuration::from_mins(1))
             .unwrap()
             .is_none()
     );
@@ -1030,12 +1039,12 @@ fn retention_expires_pr_bundle_edges_in_jobs_and_frozen_source_policies() {
     w.orchestrator.close_task(&task_id, "test").unwrap();
     assert!(
         w.orchestrator
-            .cleanup_artifacts_at(Utc::now(), false)
+            .cleanup_artifacts_at(Timestamp::now(), false)
             .unwrap()
             .candidates
             .is_empty()
     );
-    let later = Utc::now() + Duration::days(2);
+    let later = Timestamp::now() + SignedDuration::from_hours(24 * 2);
     let preview = w.orchestrator.cleanup_artifacts_at(later, false).unwrap();
     assert!(
         preview

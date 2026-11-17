@@ -5,6 +5,7 @@
 //! Worker-facing routes.
 
 use artidezi_contract::common::ArtifactRef;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::wire::*;
 use artidezi_orchestrator::ingest::job_artifacts;
 use artidezi_store::model::AttemptState;
@@ -14,7 +15,6 @@ use axum::extract::{Path, State};
 use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use chrono::Duration as ChronoDuration;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::path::{Path as FsPath, PathBuf};
@@ -23,8 +23,8 @@ use tokio::io::AsyncWriteExt;
 use crate::auth::{require_worker, worker_of};
 use crate::{ApiError, SharedState, WorkerToken, with_orchestrator, with_state};
 
-fn chrono_ttl(state: &SharedState) -> ChronoDuration {
-    ChronoDuration::seconds(state.lease_ttl.as_secs() as i64)
+fn lease_ttl(state: &SharedState) -> SignedDuration {
+    SignedDuration::from_secs(state.lease_ttl.as_secs() as i64)
 }
 
 const MAX_WORKER_TAGS: usize = 64;
@@ -45,7 +45,7 @@ pub async fn status(
             &request.worker_pool,
             &request.worker_id,
             Some(request.quarantined),
-            chrono::Utc::now(),
+            Timestamp::now(),
         )?;
         Ok(())
     })
@@ -82,7 +82,7 @@ pub async fn lease(
             "tags must be at most 64 plain identifiers",
         ));
     }
-    let ttl = chrono_ttl(&state);
+    let ttl = lease_ttl(&state);
     let ttl_seconds = state.lease_ttl.as_secs();
     let advertised = request.harnesses.clone();
     let leased = with_state(&state, move |o| {
@@ -91,7 +91,7 @@ pub async fn lease(
             &request.worker_id,
             &request.harnesses,
             &request.tags,
-            chrono::Utc::now(),
+            Timestamp::now(),
         )?;
         let Some(work) = o.lease_compatible(
             &request.worker_pool,
@@ -142,7 +142,7 @@ fn authorize_attempt(
             format!("attempt is {}", attempt.state.as_str()),
         ));
     }
-    o.require_live_lease(&attempt, chrono::Utc::now())
+    o.require_live_lease(&attempt, Timestamp::now())
         .map_err(|error| match error {
             artidezi_orchestrator::OrchestratorError::Store(
                 artidezi_store::StoreError::NotFound {
@@ -170,7 +170,7 @@ pub async fn heartbeat(
     Json(request): Json<HeartbeatRequest>,
 ) -> Result<StatusCode, ApiError> {
     let worker = require_worker(&state, &headers, None, &request.worker_id)?.clone();
-    let ttl = chrono_ttl(&state);
+    let ttl = lease_ttl(&state);
     with_state(&state, move |o| {
         authorize_attempt(o, &attempt_id, &worker)?;
         o.heartbeat(&attempt_id, &request.worker_id, ttl)
@@ -289,7 +289,7 @@ pub async fn upload(
             &attempt_id,
             &artifact,
             max_attempt_upload_bytes,
-            chrono::Utc::now(),
+            Timestamp::now(),
         )?;
         if !pinned {
             return Err(too_large(format!(

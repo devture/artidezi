@@ -4,10 +4,10 @@
 //! Fixed-origin HTTP, bounded conditional GETs and rate-limit handling. Typed adapter methods
 //! own mutation endpoints; mutations are never automatically retried.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Duration, Utc};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -24,7 +24,7 @@ pub(super) struct Http {
     api: String,
     agent: ureq::Agent,
     cache: Mutex<BTreeMap<String, Cached>>,
-    backoff: Mutex<Option<DateTime<Utc>>>,
+    backoff: Mutex<Option<Timestamp>>,
 }
 
 impl Http {
@@ -127,7 +127,7 @@ impl Http {
 
     fn ready(&self) -> Result<()> {
         if let Some(retry_at) = *self.backoff.lock().unwrap()
-            && retry_at > Utc::now()
+            && retry_at > Timestamp::now()
         {
             return Err(ForgeError::RetryAfter { retry_at });
         }
@@ -138,7 +138,7 @@ impl Http {
         self.cache.lock().unwrap().clear();
     }
 
-    pub fn retry_after(&self) -> Option<DateTime<Utc>> {
+    pub fn retry_after(&self) -> Option<Timestamp> {
         *self.backoff.lock().unwrap()
     }
 
@@ -263,19 +263,17 @@ impl Http {
             .get("x-ratelimit-remaining")
             .and_then(|h| h.to_str().ok());
         if matches!(status, 403 | 429) || remaining == Some("0") {
-            let now = Utc::now();
+            let now = Timestamp::now();
             let seconds = retry_after
                 .and_then(|v| v.parse::<i64>().ok())
                 .filter(|s| *s >= 0);
-            let retry = seconds
-                .and_then(Duration::try_seconds)
-                .and_then(|d| now.checked_add_signed(d));
+            let retry = seconds.and_then(|s| now.checked_add(SignedDuration::from_secs(s)));
             let reset = headers
                 .get("x-ratelimit-reset")
                 .and_then(|h| h.to_str().ok())
                 .and_then(|v| v.parse::<i64>().ok())
-                .and_then(|s| DateTime::from_timestamp(s, 0));
-            let retry_at = [Some(now + Duration::seconds(60)), retry, reset]
+                .and_then(Timestamp::from_unix_seconds);
+            let retry_at = [Some(now + SignedDuration::from_secs(60)), retry, reset]
                 .into_iter()
                 .flatten()
                 .max()

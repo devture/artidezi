@@ -9,6 +9,7 @@ use artidezi_config::model::{
     ForgeProvider, GithubApp, PullRequestAction, PullRequestDiscovery, PullRequestHandler,
 };
 use artidezi_contract::common::CommitSha;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::github::{
     GithubForge,
     fixture::{Fixture, Reply, State},
@@ -105,7 +106,7 @@ impl ForgeAdapter for LocalGit {
     ) -> artidezi_forge::Result<artidezi_forge::MergeRequestReview> {
         self.github.create_approval_review(r, n, h, b)
     }
-    fn retry_after(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    fn retry_after(&self) -> Option<Timestamp> {
         self.github.retry_after()
     }
     fn clone_url(&self, remote: &str) -> String {
@@ -1017,7 +1018,7 @@ fn reopened_new_head_renews_a_resolved_lifecycle_and_preserves_history() {
             .unwrap()
             .settle_seconds = 10;
         reopen(&mut w, &f);
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         let report = w
             .orchestrator
             .scan_pull_requests_at(Some("roles"), true, now)
@@ -1035,11 +1036,14 @@ fn reopened_new_head_renews_a_resolved_lifecycle_and_preserves_history() {
         assert_eq!(fresh.last_task_id, None);
         assert_eq!(fresh.observed_head, newer.0);
         assert_eq!(fresh.head_observed_at, now);
-        assert_eq!(fresh.follow_up.unwrap().at, now + Duration::seconds(10));
+        assert_eq!(
+            fresh.follow_up.unwrap().at,
+            now + SignedDuration::from_secs(10)
+        );
 
         let report = w
             .orchestrator
-            .scan_pull_requests_at(Some("roles"), true, now + Duration::seconds(10))
+            .scan_pull_requests_at(Some("roles"), true, now + SignedDuration::from_secs(10))
             .unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(report.queued.len(), 1);
@@ -1164,7 +1168,7 @@ fn reopened_new_head_keeps_a_nonterminal_delivery_task_linked() {
     assert!(scan(&mut w).is_empty());
     assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
     w.orchestrator
-        .tick_at(chrono::Utc::now() + chrono::Duration::seconds(601))
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     let held = w
@@ -1585,7 +1589,7 @@ fn checks_appearing_after_a_checkless_approval_do_not_orphan_it() {
     f.state.lock().unwrap().conclusion = "success".into();
     reopen(&mut w, &f);
     w.orchestrator
-        .tick_at(chrono::Utc::now() + chrono::Duration::seconds(601))
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::Done);
     let s = f.state.lock().unwrap();

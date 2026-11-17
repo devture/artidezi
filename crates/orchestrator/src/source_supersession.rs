@@ -5,13 +5,13 @@
 //! Equivalence never authorizes publication or replays a result against a different source head.
 
 use artidezi_config::ResolvedProjectPolicy;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::{
     common::{CommitSha, Outcome},
     result::AgentResult,
 };
 use artidezi_forge::{ExpectedProposal, MergeRequestInfo, MergeRequestState as RemoteState};
 use artidezi_store::model::*;
-use chrono::{Duration, Utc};
 
 use crate::{Orchestrator, OrchestratorError, Result};
 
@@ -381,7 +381,7 @@ impl Orchestrator {
             }
             if mr.state != MergeRequestState::Closed {
                 mr.state = MergeRequestState::Closed;
-                mr.updated_at = Utc::now();
+                mr.updated_at = Timestamp::now();
                 self.db.upsert_merge_request(&mr)?;
                 self.db.record_event(
                     Some(&task.id),
@@ -391,7 +391,7 @@ impl Orchestrator {
                     serde_json::json!({"repository":mr.repository_id,"number":mr.number,"url":mr.url,"head":mr.head_commit,"source_head":current.head_commit}),
                 )?;
             }
-            self.cleanup_proposal_branch(task, Some(&attempt.id), &policy, &mr, Utc::now());
+            self.cleanup_proposal_branch(task, Some(&attempt.id), &policy, &mr, Timestamp::now());
         }
         Ok(Some((
             attempt.id,
@@ -415,7 +415,7 @@ impl Orchestrator {
             .pull_requests
             .as_ref()
             .expect("checked authority");
-        let now = Utc::now();
+        let now = Timestamp::now();
         if tracked.observed_head != actual.0 {
             tracked.observed_head = actual.0.clone();
             tracked.head_observed_at = now;
@@ -430,7 +430,7 @@ impl Orchestrator {
                 "Source head changed before delivery; waiting for a fresh evaluation".into();
             tracked.follow_up = Some(PullRequestFollowUp {
                 at: (tracked.head_observed_at
-                    + Duration::seconds(i64::from(discovery.settle_seconds)))
+                    + SignedDuration::from_secs(i64::from(discovery.settle_seconds)))
                 .max(now),
                 reason: PullRequestFollowUpReason::Settling,
             });

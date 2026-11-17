@@ -424,7 +424,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> (Task, TrackedPullRequest) {
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         (
             Task {
                 id: "tsk_example".into(),

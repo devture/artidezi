@@ -4,6 +4,7 @@
 
 //! Local state access without the serialized Git/forge operation lock.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +14,6 @@ use artidezi_contract::Job;
 use artidezi_contract::wire::AdvertisedHarness;
 use artidezi_store::model::{Attempt, AttemptState, Lease};
 use artidezi_store::{ArtifactStore, Db, new_id};
-use chrono::{DateTime, Duration, Utc};
 
 use crate::ingest::{LeasedWork, PreviousFiles};
 use crate::{Orchestrator, OrchestratorError, Result};
@@ -43,7 +43,7 @@ impl Orchestrator {
 
 impl StateAccess {
     /// Local-only recovery must not wait for the forge/preparation operation gate.
-    pub fn recover_expired_at(&mut self, now: DateTime<Utc>) -> Result<Vec<String>> {
+    pub fn recover_expired_at(&mut self, now: Timestamp) -> Result<Vec<String>> {
         let lost = self.db.expire_leases(now)?;
         for attempt in self.db.pending_lost_attempts()? {
             let max_retries = self
@@ -81,7 +81,7 @@ impl StateAccess {
         Ok(lost)
     }
 
-    fn replacement_attempt(&self, attempt: &Attempt, now: DateTime<Utc>) -> Result<Attempt> {
+    fn replacement_attempt(&self, attempt: &Attempt, now: Timestamp) -> Result<Attempt> {
         let mut job = self.load_job(attempt)?;
         let id = new_id("att");
         job.schema_version = artidezi_contract::job::JOB_SCHEMA_VERSION;
@@ -116,7 +116,7 @@ impl StateAccess {
     }
 
     /// Checks expiry even before the maintenance timer has marked an attempt lost.
-    pub fn require_live_lease(&self, attempt: &Attempt, now: DateTime<Utc>) -> Result<()> {
+    pub fn require_live_lease(&self, attempt: &Attempt, now: Timestamp) -> Result<()> {
         let lease = self.db.get_lease(&attempt.id)?;
         let job = self.load_job(attempt)?;
         if !lease.is_some_and(|lease| {
@@ -135,11 +135,11 @@ impl StateAccess {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
+        ttl: SignedDuration,
     ) -> Result<Option<LeasedWork>> {
         let leased = self
             .db
-            .lease_next_attempt(worker_pool, worker_id, ttl, Utc::now())?;
+            .lease_next_attempt(worker_pool, worker_id, ttl, Timestamp::now())?;
         self.prepare_lease(leased, worker_id, ttl)
     }
 
@@ -148,7 +148,7 @@ impl StateAccess {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
+        ttl: SignedDuration,
         harnesses: &[AdvertisedHarness],
         tags: &[String],
     ) -> Result<Option<LeasedWork>> {
@@ -157,7 +157,7 @@ impl StateAccess {
             worker_pool,
             worker_id,
             ttl,
-            Utc::now(),
+            Timestamp::now(),
             |attempt| {
                 artifacts.get_json::<Job>(&attempt.job).is_ok_and(|job| {
                     job.agent_profile.runs_on(harnesses) && job.worker_requirements.met_by(tags)
@@ -171,7 +171,7 @@ impl StateAccess {
         &mut self,
         leased: Option<(Attempt, Lease)>,
         worker_id: &str,
-        ttl: Duration,
+        ttl: SignedDuration,
     ) -> Result<Option<LeasedWork>> {
         let Some((attempt, lease)) = leased else {
             return Ok(None);
@@ -183,7 +183,7 @@ impl StateAccess {
             &attempt.id,
             worker_id,
             ttl,
-            Utc::now(),
+            Timestamp::now(),
             execution_deadline(&job, lease.leased_at),
         )?;
         let task_document = self.artifacts.get(&job.task_document)?;
@@ -227,8 +227,13 @@ impl StateAccess {
         }))
     }
 
-    pub fn heartbeat(&mut self, attempt_id: &str, worker_id: &str, ttl: Duration) -> Result<()> {
-        self.heartbeat_at(attempt_id, worker_id, ttl, Utc::now())
+    pub fn heartbeat(
+        &mut self,
+        attempt_id: &str,
+        worker_id: &str,
+        ttl: SignedDuration,
+    ) -> Result<()> {
+        self.heartbeat_at(attempt_id, worker_id, ttl, Timestamp::now())
     }
 
     /// Uses controller time and frozen job limits, never a worker-supplied extension budget.
@@ -236,8 +241,8 @@ impl StateAccess {
         &mut self,
         attempt_id: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
     ) -> Result<()> {
         let attempt = self.db.get_attempt(attempt_id)?;
         let job = self.load_job(&attempt)?;
@@ -262,7 +267,7 @@ impl StateAccess {
 // Harness wall time excludes setup and verification. Allow every configured recipe's full
 // budget and termination grace, plus 30 minutes for transfer/preparation/collection overhead.
 // This is an independent controller ceiling, including for older or unhealthy workers.
-fn execution_deadline(job: &Job, leased_at: DateTime<Utc>) -> DateTime<Utc> {
+fn execution_deadline(job: &Job, leased_at: Timestamp) -> Timestamp {
     let seconds = job
         .repositories
         .iter()
@@ -275,8 +280,6 @@ fn execution_deadline(job: &Job, leased_at: DateTime<Utc>) -> DateTime<Utc> {
                     .saturating_add(15)
             },
         );
-    let duration = Duration::try_seconds(i64::try_from(seconds).unwrap_or(i64::MAX));
-    duration
-        .and_then(|duration| leased_at.checked_add_signed(duration))
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+    let duration = SignedDuration::from_secs(i64::try_from(seconds).unwrap_or(i64::MAX));
+    leased_at.checked_add(duration).unwrap_or(Timestamp::MAX)
 }

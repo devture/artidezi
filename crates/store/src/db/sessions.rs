@@ -17,11 +17,11 @@ impl ConnectionDb {
         &self,
         token_digest: Option<&str>,
         scope: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<UiSession>> {
         self.conn.execute(
             "DELETE FROM ui_sessions WHERE expires_at <= ?1 OR credential_scope != ?2",
-            params![now.timestamp(), scope],
+            params![now.unix_seconds(), scope],
         )?;
         Ok(self
             .conn
@@ -46,9 +46,9 @@ impl ConnectionDb {
         token_digest: &str,
         session: &UiSession,
         scope: &str,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
         replaced_digest: Option<&str>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let tx = self.conn.transaction()?;
         if let Some(expected) = session.verified_revision {
@@ -65,14 +65,14 @@ impl ConnectionDb {
         }
         tx.execute(
             "DELETE FROM ui_sessions WHERE expires_at <= ?1 OR credential_scope != ?2 OR token_digest = ?3",
-            params![now.timestamp(), scope, replaced_digest],
+            params![now.unix_seconds(), scope, replaced_digest],
         )?;
         let count: u32 = tx.query_row("SELECT COUNT(*) FROM ui_sessions", [], |r| r.get(0))?;
         let available = count < 128;
         if available {
             tx.execute(
                 "INSERT INTO ui_sessions (token_digest, csrf, principal_id, credential_scope, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![token_digest, session.csrf, session.principal_id, scope, expires_at.timestamp()],
+                params![token_digest, session.csrf, session.principal_id, scope, expires_at.unix_seconds()],
             )?;
         }
         tx.commit()?;
@@ -105,8 +105,8 @@ mod tests {
     fn sessions_survive_reopening_but_not_expiry_rotation_or_logout() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.sqlite");
-        let now = Utc::now();
-        let expires = now + Duration::days(30);
+        let now = Timestamp::now();
+        let expires = now + SignedDuration::from_hours(24 * 30);
         let mut db = Db::open(&path).unwrap();
         assert!(
             db.save_ui_session(
@@ -122,9 +122,13 @@ mod tests {
         drop(db);
         let mut db = Db::open(&path).unwrap();
         assert_eq!(
-            db.ui_session_csrf(Some("digest"), "scope", now + Duration::days(20))
-                .unwrap()
-                .map(|session| (session.csrf, session.principal_id)),
+            db.ui_session_csrf(
+                Some("digest"),
+                "scope",
+                now + SignedDuration::from_hours(24 * 20)
+            )
+            .unwrap()
+            .map(|session| (session.csrf, session.principal_id)),
             Some(("csrf".into(), Some("alice".into())))
         );
         assert_eq!(
@@ -168,8 +172,8 @@ mod tests {
     #[test]
     fn session_limit_allows_replacement_and_reclaims_expired_entries() {
         let mut db = Db::open_in_memory().unwrap();
-        let now = Utc::now();
-        let expires = now + Duration::days(30);
+        let now = Timestamp::now();
+        let expires = now + SignedDuration::from_hours(24 * 30);
         for i in 0..128 {
             assert!(
                 db.save_ui_session(
@@ -211,7 +215,7 @@ mod tests {
                 "fresh",
                 &session("csrf", None),
                 "scope",
-                expires + Duration::days(30),
+                expires + SignedDuration::from_hours(24 * 30),
                 None,
                 expires,
             )

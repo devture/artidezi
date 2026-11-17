@@ -5,6 +5,7 @@
 //! standalone inspection; `GithubForge` provides the scheduler adapter and scoped Git credentials.
 
 use crate::{ForgeError, Result};
+use artidezi_contract::time::Timestamp;
 use std::sync::Arc;
 
 mod app;
@@ -327,7 +328,7 @@ impl GithubReader {
         }
         Ok(Inspection {
             schema_version: 1,
-            observed_at: chrono::Utc::now().to_rfc3339(),
+            observed_at: Timestamp::now().to_rfc3339(),
             repository,
             source,
             source_url: format!("https://github.com/{remote}/pull/{number}"),

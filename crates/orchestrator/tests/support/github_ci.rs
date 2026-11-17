@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use chrono::{Duration, Utc};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 
 #[test]
 fn checks_restarted_after_approval_do_not_duplicate_reviews_or_lose_external_merges() {
@@ -39,7 +39,7 @@ fn checks_restarted_after_approval_do_not_duplicate_reviews_or_lose_external_mer
         }
         reopen(&mut w, &f);
         w.orchestrator
-            .tick_at(Utc::now() + Duration::seconds(601))
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
             .unwrap();
         assert_eq!(task_state(&w, &id), TaskState::Done);
         if external_merge {
@@ -91,12 +91,12 @@ fn wait(merge: bool, intake_checks: bool) -> (World, Fixture, String) {
 fn pending_ci_resumes_approval_or_merge_once_without_another_worker_across_restarts() {
     for (merge, intake_checks) in [(false, false), (true, false), (true, true)] {
         let (mut w, f, id) = wait(merge, intake_checks);
-        let now = Utc::now();
+        let now = Timestamp::now();
         let original = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
         assert!(scan(&mut w).is_empty());
         assert!(
             w.orchestrator
-                .lease("personal", "unused", Duration::minutes(1))
+                .lease("personal", "unused", SignedDuration::from_mins(1))
                 .unwrap()
                 .is_none()
         );
@@ -108,7 +108,7 @@ fn pending_ci_resumes_approval_or_merge_once_without_another_worker_across_resta
         assert_eq!(f.state.lock().unwrap().requests.len(), count, "not due yet");
         let report = w
             .orchestrator
-            .tick_at(now + Duration::seconds(601))
+            .tick_at(now + SignedDuration::from_secs(601))
             .unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
@@ -118,7 +118,7 @@ fn pending_ci_resumes_approval_or_merge_once_without_another_worker_across_resta
         reopen(&mut w, &f);
         let count = f.state.lock().unwrap().requests.len();
         w.orchestrator
-            .tick_at(now + Duration::seconds(602))
+            .tick_at(now + SignedDuration::from_secs(602))
             .unwrap();
         assert_eq!(
             f.state.lock().unwrap().requests.len(),
@@ -127,7 +127,7 @@ fn pending_ci_resumes_approval_or_merge_once_without_another_worker_across_resta
         );
         let report = w
             .orchestrator
-            .tick_at(now + Duration::seconds(1202))
+            .tick_at(now + SignedDuration::from_secs(1202))
             .unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(task_state(&w, &id), TaskState::Done);
@@ -139,7 +139,7 @@ fn pending_ci_resumes_approval_or_merge_once_without_another_worker_across_resta
         );
         reopen(&mut w, &f);
         w.orchestrator
-            .tick_at(now + Duration::seconds(1803))
+            .tick_at(now + SignedDuration::from_secs(1803))
             .unwrap();
         let s = f.state.lock().unwrap();
         assert_eq!(s.reviews.len(), 1);
@@ -234,7 +234,7 @@ fn waiting_never_bypasses_failures_changed_inputs_policy_or_human_intervention()
             }
             _ => unreachable!(),
         }
-        let now = Utc::now() + Duration::seconds(601);
+        let now = Timestamp::now() + SignedDuration::from_secs(601);
         w.orchestrator.tick_at(now).unwrap();
         assert_eq!(
             task_state(&w, &id),
@@ -250,7 +250,7 @@ fn waiting_never_bypasses_failures_changed_inputs_policy_or_human_intervention()
         f.state.lock().unwrap().conclusion = "success".into();
         // Resolving the external condition does not silently release a human hold.
         w.orchestrator
-            .tick_at(now + Duration::seconds(601))
+            .tick_at(now + SignedDuration::from_secs(601))
             .unwrap();
         assert_eq!(w.orchestrator.db.list_attempts(&id).unwrap().len(), 1);
         let s = f.state.lock().unwrap();
@@ -270,12 +270,12 @@ fn waiting_respects_backoff_and_lost_write_responses_still_need_explicit_recover
     let (mut w, f, id) = wait(true, false);
     w.orchestrator
         .db
-        .defer_forge("github", Utc::now() + Duration::hours(1))
+        .defer_forge("github", Timestamp::now() + SignedDuration::from_hours(1))
         .unwrap();
     reopen(&mut w, &f);
     let count = f.state.lock().unwrap().requests.len();
     w.orchestrator
-        .tick_at(Utc::now() + Duration::seconds(601))
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
     assert_eq!(f.state.lock().unwrap().requests.len(), count);
     assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
@@ -286,12 +286,12 @@ fn waiting_respects_backoff_and_lost_write_responses_still_need_explicit_recover
         s.conclusion = "success".into();
         s.lose_review_response = true;
     }
-    let now = Utc::now() + Duration::seconds(601);
+    let now = Timestamp::now() + SignedDuration::from_secs(601);
     w.orchestrator.tick_at(now).unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     reopen(&mut w, &f);
     w.orchestrator
-        .tick_at(now + Duration::seconds(601))
+        .tick_at(now + SignedDuration::from_secs(601))
         .unwrap();
     assert!(!f.state.lock().unwrap().merged);
     assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
@@ -332,7 +332,7 @@ fn ordinary_publication_holds_and_nonqualifying_results_are_not_automatic_waits(
         );
         f.state.lock().unwrap().conclusion = "success".into();
         w.orchestrator
-            .tick_at(Utc::now() + Duration::seconds(601))
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
             .unwrap();
         assert!(!f.state.lock().unwrap().merged, "{reason}");
         assert_eq!(w.orchestrator.db.list_attempts(&id).unwrap().len(), 1);
@@ -383,7 +383,7 @@ fn failed_checks_hold_until_the_same_head_turns_green() {
                 (w, f, id)
             }
         };
-        let now = Utc::now() + Duration::seconds(601);
+        let now = Timestamp::now() + SignedDuration::from_secs(601);
         if stage == "waiting" {
             w.orchestrator.tick_at(now).unwrap();
         }
@@ -402,7 +402,7 @@ fn failed_checks_hold_until_the_same_head_turns_green() {
         reopen(&mut w, &f);
         let before = writes(&f);
         w.orchestrator
-            .tick_at(now + Duration::seconds(601))
+            .tick_at(now + SignedDuration::from_secs(601))
             .unwrap();
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{stage}");
         assert_eq!(writes(&f), before, "{stage}");
@@ -411,7 +411,7 @@ fn failed_checks_hold_until_the_same_head_turns_green() {
         f.state.lock().unwrap().conclusion = "success".into();
         let report = w
             .orchestrator
-            .tick_at(now + Duration::seconds(1202))
+            .tick_at(now + SignedDuration::from_secs(1202))
             .unwrap();
         assert!(report.errors.is_empty(), "{stage}: {:?}", report.errors);
         assert_eq!(task_state(&w, &id), TaskState::Done, "{stage}");
@@ -455,7 +455,7 @@ fn failed_checks_hold_reassesses_a_new_head_within_the_budget() {
         // The settled new head is retired and queued for a fresh assessment in one pass.
         let report = w
             .orchestrator
-            .tick_at(Utc::now() + Duration::seconds(601))
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
             .unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert_eq!(task_state(&w, &id), TaskState::Closed, "{max_runs}");
@@ -502,7 +502,7 @@ fn failed_checks_recovery_respects_explicit_pauses_and_new_objections() {
         f.state.lock().unwrap().conclusion = "failure".into();
         w.work(&safe_result(&w, Some("low"), true));
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-        let now = Utc::now() + Duration::seconds(601);
+        let now = Timestamp::now() + SignedDuration::from_secs(601);
         match later {
             "pause" => {
                 let tracking = held_source(&w).id;
@@ -524,7 +524,7 @@ fn failed_checks_recovery_respects_explicit_pauses_and_new_objections() {
         for step in 1..=3 {
             reopen(&mut w, &f);
             w.orchestrator
-                .tick_at(now + Duration::seconds(601 * step))
+                .tick_at(now + SignedDuration::from_secs(601 * step))
                 .unwrap();
         }
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{later}");
@@ -559,11 +559,11 @@ fn failed_checks_after_an_unconfirmed_approval_stay_with_a_person() {
 
     move_source_head(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
-    let now = Utc::now();
+    let now = Timestamp::now();
     for step in 1..=3 {
         reopen(&mut w, &f);
         w.orchestrator
-            .tick_at(now + Duration::seconds(601 * step))
+            .tick_at(now + SignedDuration::from_secs(601 * step))
             .unwrap();
     }
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
@@ -583,7 +583,7 @@ fn repeated_failed_checks_cycles_on_one_task_deliver_once() {
     f.state.lock().unwrap().conclusion = "failure".into();
     w.work(&safe_result(&w, Some("low"), true));
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    let now = Utc::now();
+    let now = Timestamp::now();
     // Green again: the retry posts the approval, then checks fail before the merge.
     {
         let mut s = f.state.lock().unwrap();
@@ -591,7 +591,7 @@ fn repeated_failed_checks_cycles_on_one_task_deliver_once() {
         s.fail_on_approval = true;
     }
     w.orchestrator
-        .tick_at(now + Duration::seconds(601))
+        .tick_at(now + SignedDuration::from_secs(601))
         .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     assert!(
@@ -607,7 +607,7 @@ fn repeated_failed_checks_cycles_on_one_task_deliver_once() {
     // Still red on the next check, then green.
     reopen(&mut w, &f);
     w.orchestrator
-        .tick_at(now + Duration::seconds(1202))
+        .tick_at(now + SignedDuration::from_secs(1202))
         .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     {
@@ -618,7 +618,7 @@ fn repeated_failed_checks_cycles_on_one_task_deliver_once() {
     reopen(&mut w, &f);
     let report = w
         .orchestrator
-        .tick_at(now + Duration::seconds(1803))
+        .tick_at(now + SignedDuration::from_secs(1803))
         .unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(task_state(&w, &id), TaskState::Done);
@@ -657,11 +657,11 @@ fn failed_checks_after_an_unconfirmed_merge_stay_with_a_person() {
     assert!(held_source(&w).status.contains("unconfirmed"));
     move_source_head(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
-    let now = Utc::now();
+    let now = Timestamp::now();
     for step in 1..=3 {
         reopen(&mut w, &f);
         w.orchestrator
-            .tick_at(now + Duration::seconds(601 * step))
+            .tick_at(now + SignedDuration::from_secs(601 * step))
             .unwrap();
     }
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);

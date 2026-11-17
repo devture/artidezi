@@ -6,7 +6,7 @@
 //! not the job name, selects the job, because several workflows may share a job name. Statuses
 //! from other CI systems are skipped. Missing optional evidence never changes the CI gate.
 
-use chrono::Utc;
+use artidezi_contract::time::Timestamp;
 use serde::Deserialize;
 
 use super::ForgejoForge;
@@ -221,7 +221,7 @@ pub(super) fn collect(
             result.truncated = truncated;
             result.excerpt = Some(excerpt);
             result.outcome = CiLogOutcome::Available;
-            result.captured_at = Utc::now();
+            result.captured_at = Timestamp::now();
             result
         })
         .collect()

@@ -6,7 +6,7 @@
 
 use artidezi_config::model::DeliveryMode;
 use artidezi_contract::common::{ArtifactRef, Outcome};
-use chrono::{DateTime, Utc};
+use artidezi_contract::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ pub struct TrackedPullRequest {
     pub closed: bool,
     pub handler_id: String,
     pub observed_head: String,
-    pub head_observed_at: DateTime<Utc>,
+    pub head_observed_at: Timestamp,
     pub last_task_id: Option<String>,
     pub runs: u32,
     pub paused: bool,
@@ -49,7 +49,7 @@ pub struct TrackedPullRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PullRequestFollowUp {
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub reason: PullRequestFollowUpReason,
 }
 
@@ -168,8 +168,8 @@ pub struct Task {
     pub number: i64,
     pub project: String,
     pub kind: TaskKind,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
     /// Authenticated actor that created the task (a UI user or the poller).
     pub created_by: String,
     /// Untrusted free-form instructions or the discovered merge-request description.
@@ -197,15 +197,15 @@ pub struct Attempt {
     pub task_id: String,
     pub number: u32,
     pub state: AttemptState,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
     pub worker_pool: String,
     pub job: ArtifactRef,
     /// Authenticated human feedback that triggered this revision, if any.
     pub human_feedback: Option<String>,
     /// Controller backoff; independent of the immutable job and a worker's lease.
     #[serde(default)]
-    pub not_before: Option<DateTime<Utc>>,
+    pub not_before: Option<Timestamp>,
     pub attempt_record: Option<ArtifactRef>,
     pub result: Option<ArtifactRef>,
     pub outcome: Option<Outcome>,
@@ -217,8 +217,8 @@ pub struct Lease {
     pub attempt_id: String,
     pub worker_pool: String,
     pub worker_id: String,
-    pub leased_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub leased_at: Timestamp,
+    pub expires_at: Timestamp,
 }
 
 /// Supervisor observations and operator scheduling controls, not independent attestation.
@@ -226,15 +226,15 @@ pub struct Lease {
 pub struct Worker {
     pub worker_pool: String,
     pub worker_id: String,
-    pub last_seen: DateTime<Utc>,
+    pub last_seen: Timestamp,
     pub quarantined: bool,
     pub drained: bool,
     pub harnesses: Vec<artidezi_contract::wire::AdvertisedHarness>,
     pub tags: Vec<String>,
-    pub cooldown_until: Option<DateTime<Utc>>,
+    pub cooldown_until: Option<Timestamp>,
     pub attempt_id: Option<String>,
     pub task_number: Option<i64>,
-    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub lease_expires_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,14 +267,14 @@ pub struct PublishedMergeRequest {
     /// Head of the source branch as ArtiDezi last wrote it; the lease for rewrites.
     pub head_commit: String,
     pub state: MergeRequestState,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 /// Append-only audit event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub id: i64,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub task_id: Option<String>,
     pub attempt_id: Option<String>,
     pub actor: String,

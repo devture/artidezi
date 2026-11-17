@@ -4,6 +4,7 @@
 
 use super::*;
 use artidezi_contract::common::CommitSha;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::*;
 use artidezi_git::cache::HttpsCredentials;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -494,7 +495,7 @@ async fn lost_lease_recovery_and_replacement_dispatch_do_not_wait_for_slow_prepa
         )
     });
     w.gate.wait_until_blocked().await;
-    let now = chrono::Utc::now() + chrono::Duration::seconds(61);
+    let now = Timestamp::now() + SignedDuration::from_secs(61);
     let lost = tokio::time::timeout(
         Duration::from_secs(2),
         artidezi_server::with_state(&w.state, move |o| Ok(o.recover_expired_at(now)?)),

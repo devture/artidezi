@@ -12,6 +12,7 @@ pub mod fake;
 pub mod forgejo;
 pub mod github;
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 
 use artidezi_contract::common::CommitSha;
@@ -22,9 +23,7 @@ pub enum ForgeError {
     #[error("GitHub credential was rejected or expired; verify the App installation and key")]
     AuthenticationRejected,
     #[error("GitHub permission/rate limit: retry after {retry_at}")]
-    RetryAfter {
-        retry_at: chrono::DateTime<chrono::Utc>,
-    },
+    RetryAfter { retry_at: Timestamp },
     #[error("{entity} {id} not found")]
     NotFound { entity: &'static str, id: String },
     #[error("head moved: expected {expected}, found {actual}")]
@@ -87,7 +86,7 @@ pub struct CiJobLog {
     pub run_id: Option<u64>,
     pub run_attempt: Option<u64>,
     pub outcome: CiLogOutcome,
-    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub captured_at: Timestamp,
     pub raw_bytes: u64,
     pub sanitized_bytes: u64,
     pub truncated: bool,
@@ -313,7 +312,7 @@ pub trait ForgeAdapter: Send + Sync {
                 run_id: None,
                 run_attempt: None,
                 outcome: CiLogOutcome::UnsupportedProvider,
-                captured_at: chrono::Utc::now(),
+                captured_at: Timestamp::now(),
                 raw_bytes: 0,
                 sanitized_bytes: 0,
                 truncated: false,
@@ -376,7 +375,7 @@ pub trait ForgeAdapter: Send + Sync {
         Err(ForgeError::Other("comment reviews are unsupported".into()))
     }
     /// Server-advised backoff, persisted by the discovery controller across restarts.
-    fn retry_after(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    fn retry_after(&self) -> Option<Timestamp> {
         None
     }
     /// URL the orchestrator's git cache fetches from and pushes to.

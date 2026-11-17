@@ -11,10 +11,10 @@
 //! retry delivery through every publication gate, and a new head retires into discovery.
 
 use artidezi_config::{ResolvedProjectPolicy, model::SafeVerdictAction};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::{attempt::AttemptRecord, common::Outcome, result::AgentResult};
 use artidezi_forge::{ChecksState, MergeRequestState as RemoteState};
 use artidezi_store::model::*;
-use chrono::{DateTime, Duration, Utc};
 
 use crate::{
     Orchestrator, OrchestratorError, Result,
@@ -25,27 +25,23 @@ impl Orchestrator {
     /// Marks the `task.needs_human` events that [`Self::recheck_failed_source_checks`] may release.
     const FAILED_CHECKS_HOLD: &str = "failed_checks";
 
-    fn source_ci_interval(&self, _task: &Task) -> Duration {
+    fn source_ci_interval(&self, _task: &Task) -> SignedDuration {
         // Delivery checks have their own cadence, independent of repository-wide discovery.
-        Duration::seconds(FOLLOW_UP_INTERVAL_SECONDS)
+        SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS)
     }
 
     pub(crate) fn wait_for_source_ci(&mut self, task: &Task) -> Result<()> {
         let source = source_of(task)?
             .ok_or_else(|| OrchestratorError::Invalid("missing source identity".into()))?;
         self.db
-            .wait_for_source_ci(&task.id, Utc::now() + self.source_ci_interval(task))?;
+            .wait_for_source_ci(&task.id, Timestamp::now() + self.source_ci_interval(task))?;
         let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
         tracked.status = "Waiting for CI; delivery will continue automatically".into();
         self.db.save_pull_request_source(&tracked)?;
         Ok(())
     }
 
-    pub(crate) fn resume_source_ci(
-        &mut self,
-        task: &Task,
-        now: DateTime<Utc>,
-    ) -> Result<TaskState> {
+    pub(crate) fn resume_source_ci(&mut self, task: &Task, now: Timestamp) -> Result<TaskState> {
         if task.state != TaskState::WaitingForCi
             || !self
                 .db
@@ -173,7 +169,7 @@ impl Orchestrator {
             &attempt.id,
             "orchestrator",
             serde_json::json!({"reason": reason, "recheck": Self::FAILED_CHECKS_HOLD, "head": head}),
-            Utc::now() + self.source_ci_interval(task),
+            Timestamp::now() + self.source_ci_interval(task),
         )?;
         Ok(())
     }
@@ -183,7 +179,7 @@ impl Orchestrator {
     pub(crate) fn recheck_failed_source_checks(
         &mut self,
         task: &Task,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<TaskState> {
         if task.state != TaskState::NeedsHuman {
             return Ok(task.state);

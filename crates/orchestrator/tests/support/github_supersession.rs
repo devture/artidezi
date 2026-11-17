@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use chrono::{Duration, Utc};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 
 /// Advance an unrelated target file, then replay the source's exact change on that target.
 pub(super) fn rebase_source(w: &World, f: &Fixture) -> (CommitSha, CommitSha) {
@@ -73,7 +73,10 @@ fn source_rebased_before_publication_gets_a_fresh_assessment_after_settling() {
         );
         assert_eq!(tracked.observed_head, new_head.0);
         let deadline = tracked.follow_up.unwrap().at;
-        assert_eq!(deadline, tracked.head_observed_at + Duration::seconds(10));
+        assert_eq!(
+            deadline,
+            tracked.head_observed_at + SignedDuration::from_secs(10)
+        );
         assert!(
             w.orchestrator
                 .db
@@ -86,7 +89,11 @@ fn source_rebased_before_publication_gets_a_fresh_assessment_after_settling() {
         reopen(&mut w, &f);
         assert!(
             w.orchestrator
-                .scan_pull_requests_at(Some("roles"), true, deadline - Duration::milliseconds(1))
+                .scan_pull_requests_at(
+                    Some("roles"),
+                    true,
+                    deadline - SignedDuration::from_millis(1)
+                )
                 .unwrap()
                 .queued
                 .is_empty()
@@ -204,7 +211,7 @@ fn unpublished_ci_wait_reconciles_a_new_head_before_queuing_fresh_work() {
     reopen(&mut w, &f);
     let report = w
         .orchestrator
-        .tick_at(Utc::now() + Duration::seconds(601))
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(task_state(&w, &id), TaskState::Closed);
@@ -235,7 +242,7 @@ fn rebases_after_an_approval_still_require_explicit_recovery() {
     move_source_head(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
     w.orchestrator
-        .tick_at(Utc::now() + Duration::seconds(601))
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     assert!(w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].paused);
@@ -359,7 +366,7 @@ fn old_controller_stale_hold_is_adopted_automatically_without_remote_effects() {
         )
         .unwrap();
     w.orchestrator.db.record_event(Some(&id),Some(&attempt.id),"orchestrator","task.needs_human",json!({"reason":"publication retry withheld: source head changed from old to new; a fresh evaluation is required"})).unwrap();
-    let report = w.orchestrator.tick_at(Utc::now()).unwrap();
+    let report = w.orchestrator.tick_at(Timestamp::now()).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(task_state(&w, &id), TaskState::Closed);
     no_publication(&f);
@@ -435,7 +442,7 @@ exit 1"#);
             .transient_failure_retries = 2;
         let report = w
             .orchestrator
-            .tick_at(Utc::now() + Duration::seconds(1))
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(1))
             .unwrap();
         assert!(report.errors.is_empty(), "{case}: {:?}", report.errors);
         assert_eq!(
@@ -510,7 +517,7 @@ fn new_transient_failures_respect_operator_pause_and_newer_source_inputs() {
                 .remove(0);
             if changed {
                 tracked.observed_head = move_source_head(&w, &f).0;
-                tracked.head_observed_at = Utc::now();
+                tracked.head_observed_at = Timestamp::now();
             }
             tracked.paused = paused;
             let db = w.orchestrator.db.clone();

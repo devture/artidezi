@@ -6,6 +6,7 @@
 //! request for human attention. Repository code is never executed here: commits are re-created
 //! from trees in the bare cache and the forge is re-checked before every push and merge.
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
@@ -20,7 +21,6 @@ use artidezi_forge::{
 };
 use artidezi_git::publish::{recreate, recreate_rebased};
 use artidezi_store::model::*;
-use chrono::Utc;
 use git2::Oid;
 
 use crate::source_publish::{inline_code, limited, plain_note};
@@ -643,7 +643,7 @@ impl Orchestrator {
             source_branch: branch,
             head_commit: new_head.0.clone(),
             state: MergeRequestState::Open,
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
         })?;
         self.db.record_event(
             Some(&task.id),
@@ -740,7 +740,7 @@ impl Orchestrator {
     pub fn reconcile_task(&mut self, task_id: &str) -> Result<TaskState> {
         let task = self.db.get_task(task_id)?;
         if task.state == TaskState::WaitingForCi {
-            return self.resume_source_ci(&task, Utc::now());
+            return self.resume_source_ci(&task, Timestamp::now());
         }
         if task.state != TaskState::AwaitingReview {
             return Ok(task.state);
@@ -786,7 +786,7 @@ impl Orchestrator {
                 ForgeMrState::Merged => {
                     if mr.state != MergeRequestState::Merged {
                         mr.state = MergeRequestState::Merged;
-                        mr.updated_at = Utc::now();
+                        mr.updated_at = Timestamp::now();
                         self.db.upsert_merge_request(&mr)?;
                     }
                     self.cleanup_proposal_branch(
@@ -794,7 +794,7 @@ impl Orchestrator {
                         Some(&attempt.id),
                         &policy,
                         &mr,
-                        Utc::now(),
+                        Timestamp::now(),
                     );
                     // Runs on every pass until recorded, so a failed tag is retried.
                     if let (Some(result), Some(collection)) =
@@ -819,7 +819,7 @@ impl Orchestrator {
                 }
                 ForgeMrState::Closed => {
                     mr.state = MergeRequestState::Closed;
-                    mr.updated_at = Utc::now();
+                    mr.updated_at = Timestamp::now();
                     self.db.upsert_merge_request(&mr)?;
                     self.db
                         .set_task_state(task_id, TaskState::Closed, "forge")?;
@@ -840,7 +840,7 @@ impl Orchestrator {
                         MergeMethod::Rebase,
                     )?;
                     mr.state = MergeRequestState::Merged;
-                    mr.updated_at = Utc::now();
+                    mr.updated_at = Timestamp::now();
                     self.db.upsert_merge_request(&mr)?;
                     self.db.record_event(
                         Some(task_id),
@@ -854,7 +854,7 @@ impl Orchestrator {
                         Some(&attempt.id),
                         &policy,
                         &mr,
-                        Utc::now(),
+                        Timestamp::now(),
                     );
                     if let (Some(result), Some(collection)) =
                         (&result, collection_for(&mr.repository_id))

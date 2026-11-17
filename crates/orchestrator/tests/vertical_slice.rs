@@ -6,6 +6,7 @@
 //! fake harness → ingestion and validation → publication to the fake forge → revision → automerge
 //! and direct push. No model, no network, no real forge.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -19,7 +20,6 @@ use artidezi_harness::fake::FakeHarness;
 use artidezi_orchestrator::Orchestrator;
 use artidezi_store::model::*;
 use artidezi_worker::{AttemptInputs, PreviousInputs, WorkerConfig, run_attempt};
-use chrono::Duration;
 use git2::{Oid, Repository};
 
 #[path = "support/discovery.rs"]
@@ -49,10 +49,10 @@ fn lost_execution_reuses_frozen_inputs_and_recovers_without_forge_access() {
         .unwrap();
     let original = w
         .orchestrator
-        .lease("personal", "lost-worker", Duration::seconds(120))
+        .lease("personal", "lost-worker", SignedDuration::from_secs(120))
         .unwrap()
         .unwrap();
-    let now = chrono::Utc::now() + Duration::seconds(121);
+    let now = Timestamp::now() + SignedDuration::from_secs(121);
     let mut access = w.orchestrator.state_access();
     assert_eq!(
         access.recover_expired_at(now).unwrap(),
@@ -240,7 +240,7 @@ impl World {
     ) -> AttemptState {
         let leased = self
             .orchestrator
-            .lease("personal", "w1", Duration::minutes(5))
+            .lease("personal", "w1", SignedDuration::from_mins(5))
             .unwrap()
             .expect("queued attempt");
         let previous = leased.previous.as_ref().map(|p| PreviousInputs {
@@ -308,7 +308,7 @@ fn heartbeating_worker_cannot_hold_an_attempt_beyond_its_frozen_execution_budget
         .unwrap();
     let work = w
         .orchestrator
-        .lease("personal", "worker", Duration::minutes(5))
+        .lease("personal", "worker", SignedDuration::from_mins(5))
         .unwrap()
         .unwrap();
     let lease = w
@@ -318,7 +318,7 @@ fn heartbeating_worker_cannot_hold_an_attempt_beyond_its_frozen_execution_budget
         .unwrap()
         .unwrap();
     // 60s harness + 10s verification + 15s termination grace per command + 30m overhead.
-    let deadline = lease.leased_at + Duration::seconds(1900);
+    let deadline = lease.leased_at + SignedDuration::from_secs(1900);
     // A later configuration change cannot extend this already-frozen attempt.
     w.orchestrator
         .config
@@ -333,8 +333,8 @@ fn heartbeating_worker_cannot_hold_an_attempt_beyond_its_frozen_execution_budget
             .heartbeat_at(
                 &work.attempt.id,
                 "worker",
-                Duration::minutes(5),
-                lease.leased_at + Duration::seconds(seconds),
+                SignedDuration::from_mins(5),
+                lease.leased_at + SignedDuration::from_secs(seconds),
             )
             .unwrap();
     }
@@ -350,7 +350,12 @@ fn heartbeating_worker_cannot_hold_an_attempt_beyond_its_frozen_execution_budget
     assert!(
         w.orchestrator
             .state_access()
-            .heartbeat_at(&work.attempt.id, "worker", Duration::minutes(5), deadline,)
+            .heartbeat_at(
+                &work.attempt.id,
+                "worker",
+                SignedDuration::from_mins(5),
+                deadline,
+            )
             .is_err()
     );
     assert!(
@@ -361,7 +366,7 @@ fn heartbeating_worker_cannot_hold_an_attempt_beyond_its_frozen_execution_budget
     );
     let report = w
         .orchestrator
-        .tick_at(deadline + Duration::seconds(1))
+        .tick_at(deadline + SignedDuration::from_secs(1))
         .unwrap();
     assert_eq!(report.lost_attempts, [work.attempt.id]);
     assert_eq!(
@@ -405,7 +410,7 @@ fn retention_preserves_shared_live_inputs_then_expires_closed_task_inputs_idempo
         active_job.repositories[0].snapshot_bundle
     );
     w.orchestrator.close_task(&closed.id, "test").unwrap();
-    let later = chrono::Utc::now() + Duration::days(2);
+    let later = Timestamp::now() + SignedDuration::from_hours(24 * 2);
     assert_eq!(
         w.orchestrator
             .cleanup_artifacts_at(later, true)
@@ -421,7 +426,7 @@ fn retention_preserves_shared_live_inputs_then_expires_closed_task_inputs_idempo
     w.orchestrator.close_task(&active.id, "test").unwrap();
     assert_eq!(
         w.orchestrator
-            .cleanup_artifacts_at(chrono::Utc::now(), false)
+            .cleanup_artifacts_at(Timestamp::now(), false)
             .unwrap()
             .reclaimable_bytes,
         0
@@ -471,7 +476,7 @@ fn retention_preserves_shared_live_inputs_then_expires_closed_task_inputs_idempo
         .completed_task_bundle_retention_seconds = 86400 * 30;
     assert_eq!(
         w.orchestrator
-            .cleanup_artifacts_at(chrono::Utc::now(), true)
+            .cleanup_artifacts_at(Timestamp::now(), true)
             .unwrap()
             .removed_bytes,
         0
@@ -483,7 +488,7 @@ fn retention_preserves_shared_live_inputs_then_expires_closed_task_inputs_idempo
         .unwrap();
     assert!(
         w.orchestrator
-            .lease("personal", "worker", Duration::minutes(5))
+            .lease("personal", "worker", SignedDuration::from_mins(5))
             .unwrap()
             .is_some()
     );
@@ -516,7 +521,7 @@ fn retention_keeps_open_proposals_and_unpublished_worker_evidence() {
     let script = w.script("agent.sh", &proposal_script(true));
     assert_eq!(w.work(&script), AttemptState::Valid);
     w.orchestrator.close_task(&task.id, "test").unwrap();
-    let later = chrono::Utc::now() + Duration::days(2);
+    let later = Timestamp::now() + SignedDuration::from_hours(24 * 2);
     let old_api = w.orchestrator.config.forges["fake"].api_base_url.clone();
     w.orchestrator
         .config
@@ -610,7 +615,7 @@ fn retention_protects_inflight_and_recent_deduplicated_uploads_and_fails_closed(
     let attempt = w.orchestrator.db.latest_attempt(&task.id).unwrap().unwrap();
     let upload = w.orchestrator.artifacts.put(b"unaccepted upload").unwrap();
     let orphan = w.orchestrator.artifacts.put(b"unused file").unwrap();
-    let recent = chrono::Utc::now() + Duration::days(2);
+    let recent = Timestamp::now() + SignedDuration::from_hours(24 * 2);
     w.orchestrator
         .db
         .pin_artifact_upload(&attempt.id, &upload, recent)
@@ -624,7 +629,7 @@ fn retention_protects_inflight_and_recent_deduplicated_uploads_and_fails_closed(
     assert!(w.orchestrator.artifacts.contains(&upload));
     assert!(!w.orchestrator.artifacts.contains(&orphan));
     w.orchestrator
-        .cleanup_artifacts_at(recent + Duration::days(2), true)
+        .cleanup_artifacts_at(recent + SignedDuration::from_hours(24 * 2), true)
         .unwrap();
     assert!(!w.orchestrator.artifacts.contains(&upload));
     let task = w
@@ -652,7 +657,7 @@ fn retention_protects_inflight_and_recent_deduplicated_uploads_and_fails_closed(
     .unwrap();
     assert!(
         w.orchestrator
-            .cleanup_artifacts_at(recent + Duration::days(4), true)
+            .cleanup_artifacts_at(recent + SignedDuration::from_hours(24 * 4), true)
             .is_err()
     );
     assert!(w.orchestrator.artifacts.contains(&extra));
@@ -821,7 +826,7 @@ fn ticks_keep_an_hourly_database_snapshot_for_file_backups() {
         .root
         .join("data")
         .join(artidezi_orchestrator::SNAPSHOT_PATH);
-    let start = chrono::Utc::now();
+    let start = Timestamp::now();
     let task = w
         .orchestrator
         .create_manual_task("roles", "Do the thing.", "slavi", &TaskSelection::default())
@@ -846,11 +851,11 @@ fn ticks_keep_an_hourly_database_snapshot_for_file_backups() {
         )
         .unwrap();
     w.orchestrator
-        .tick_at(start + Duration::minutes(59))
+        .tick_at(start + SignedDuration::from_mins(59))
         .unwrap();
     assert!(!in_snapshot(&later.id));
     w.orchestrator
-        .tick_at(start + Duration::minutes(60))
+        .tick_at(start + SignedDuration::from_mins(60))
         .unwrap();
     assert!(in_snapshot(&later.id));
 }
@@ -865,7 +870,12 @@ fn attempt_left_uploaded_by_a_crash_is_rejected_on_the_next_tick() {
     let attempt = w
         .orchestrator
         .db
-        .lease_next_attempt("personal", "w1", Duration::hours(1), chrono::Utc::now())
+        .lease_next_attempt(
+            "personal",
+            "w1",
+            SignedDuration::from_hours(1),
+            Timestamp::now(),
+        )
         .unwrap()
         .unwrap()
         .0;
@@ -1391,12 +1401,12 @@ fn revision_after_lost_worker_keeps_feedback_without_previous_artifacts() {
         .unwrap();
     let leased = w
         .orchestrator
-        .lease("personal", "lost-worker", Duration::minutes(5))
+        .lease("personal", "lost-worker", SignedDuration::from_mins(5))
         .unwrap()
         .unwrap();
     w.orchestrator
         .db
-        .expire_leases(chrono::Utc::now() + Duration::minutes(10))
+        .expire_leases(Timestamp::now() + SignedDuration::from_mins(10))
         .unwrap();
     assert_eq!(
         w.orchestrator
@@ -1825,14 +1835,14 @@ fn retention_collects_pr_inputs_protects_audit_references_and_runs_on_schedule()
     w.orchestrator.close_task(&task.id, "test").unwrap();
     assert!(
         w.orchestrator
-            .tick_at(chrono::Utc::now())
+            .tick_at(Timestamp::now())
             .unwrap()
             .artifact_cleanup
             .is_none()
     );
     let report = w
         .orchestrator
-        .tick_at(chrono::Utc::now() + Duration::days(2))
+        .tick_at(Timestamp::now() + SignedDuration::from_hours(24 * 2))
         .unwrap();
     assert!(report.artifact_cleanup.unwrap().removed_bytes > 0);
     assert!(!w.orchestrator.artifacts.contains(&input));
@@ -1861,7 +1871,7 @@ fn retention_preserves_malformed_model_results_without_blocking_cleanup() {
     w.orchestrator.close_task(&task.id, "test").unwrap();
     let report = w
         .orchestrator
-        .cleanup_artifacts_at(chrono::Utc::now() + Duration::days(2), true)
+        .cleanup_artifacts_at(Timestamp::now() + SignedDuration::from_hours(24 * 2), true)
         .unwrap();
     assert!(report.removed_bytes > 0);
     assert_eq!(w.orchestrator.artifacts.get(&result).unwrap(), original);
@@ -1934,7 +1944,7 @@ exit 1"#);
         let latest = w.orchestrator.db.latest_attempt(&task.id).unwrap().unwrap();
         assert_eq!(latest.number, 2);
         assert_eq!(latest.state, AttemptState::Queued);
-        assert!(latest.not_before.unwrap() > chrono::Utc::now());
+        assert!(latest.not_before.unwrap() > Timestamp::now());
         assert_eq!(
             w.orchestrator.db.get_task(&task.id).unwrap().state,
             TaskState::Working

@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use artidezi_contract::common::{ArtifactRef, Outcome};
-use chrono::{DateTime, Duration, Utc};
 
 use crate::Result;
 use crate::model::*;
@@ -50,7 +50,7 @@ impl Db {
         failed: &str,
         replacement: &Attempt,
         max_retries: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         self.connection()
             .recover_transient_attempt(failed, replacement, max_retries, now)
@@ -60,7 +60,7 @@ impl Db {
         pool: &str,
         id: &str,
         quarantined: Option<bool>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.connection().observe_worker(pool, id, quarantined, now)
     }
@@ -71,7 +71,7 @@ impl Db {
         id: &str,
         harnesses: &[artidezi_contract::wire::AdvertisedHarness],
         tags: &[String],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.connection()
             .record_worker_offer(pool, id, harnesses, tags, now)
@@ -105,7 +105,7 @@ impl Db {
         self.connection().task_inputs_expired(task_id)
     }
 
-    pub fn expire_task_inputs(&self, task_id: &str, now: DateTime<Utc>) -> Result<()> {
+    pub fn expire_task_inputs(&self, task_id: &str, now: Timestamp) -> Result<()> {
         self.connection().expire_task_inputs(task_id, now)
     }
     pub fn retention_metadata(&self) -> Result<Vec<serde_json::Value>> {
@@ -116,7 +116,7 @@ impl Db {
         &self,
         attempt_id: &str,
         artifact: &ArtifactRef,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.connection()
             .pin_artifact_upload(attempt_id, artifact, now)
@@ -127,13 +127,13 @@ impl Db {
         attempt_id: &str,
         artifact: &ArtifactRef,
         max_bytes: u64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         self.connection()
             .pin_artifact_upload_within(attempt_id, artifact, max_bytes, now)
     }
 
-    pub fn artifact_uploads(&self) -> Result<Vec<(String, ArtifactRef, DateTime<Utc>)>> {
+    pub fn artifact_uploads(&self) -> Result<Vec<(String, ArtifactRef, Timestamp)>> {
         self.connection().artifact_uploads()
     }
 
@@ -144,7 +144,7 @@ impl Db {
     pub fn record_artifact_deletion(
         &self,
         artifact: &ArtifactRef,
-        now: DateTime<Utc>,
+        now: Timestamp,
         reason: &str,
     ) -> Result<()> {
         self.connection()
@@ -213,11 +213,11 @@ impl Db {
             .insert_discovery_task(task, attempt, source)
     }
 
-    pub fn defer_forge(&self, forge: &str, retry_after: DateTime<Utc>) -> Result<()> {
+    pub fn defer_forge(&self, forge: &str, retry_after: Timestamp) -> Result<()> {
         self.connection().defer_forge(forge, retry_after)
     }
 
-    pub fn forge_retry_after(&self, forge: &str) -> Result<Option<DateTime<Utc>>> {
+    pub fn forge_retry_after(&self, forge: &str) -> Result<Option<Timestamp>> {
         self.connection().forge_retry_after(forge)
     }
 
@@ -225,7 +225,7 @@ impl Db {
         &mut self,
         project: &str,
         interval_seconds: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
         force: bool,
     ) -> Result<bool> {
         self.connection()
@@ -256,19 +256,15 @@ impl Db {
         self.connection().insert_attempt(attempt)
     }
 
-    pub fn wait_for_source_ci(
-        &mut self,
-        task_id: &str,
-        next_check_at: DateTime<Utc>,
-    ) -> Result<()> {
+    pub fn wait_for_source_ci(&mut self, task_id: &str, next_check_at: Timestamp) -> Result<()> {
         self.connection().wait_for_source_ci(task_id, next_check_at)
     }
 
     pub fn claim_source_ci_check(
         &mut self,
         task_id: &str,
-        now: DateTime<Utc>,
-        next_check_at: DateTime<Utc>,
+        now: Timestamp,
+        next_check_at: Timestamp,
     ) -> Result<bool> {
         self.connection()
             .claim_source_ci_check(task_id, now, next_check_at)
@@ -280,7 +276,7 @@ impl Db {
         attempt_id: &str,
         actor: &str,
         hold: serde_json::Value,
-        next_check_at: DateTime<Utc>,
+        next_check_at: Timestamp,
     ) -> Result<()> {
         self.connection()
             .hold_for_source_check(task_id, attempt_id, actor, hold, next_check_at)
@@ -289,8 +285,8 @@ impl Db {
     pub fn claim_held_source_check(
         &mut self,
         task_id: &str,
-        now: DateTime<Utc>,
-        next_check_at: DateTime<Utc>,
+        now: Timestamp,
+        next_check_at: Timestamp,
     ) -> Result<bool> {
         self.connection()
             .claim_held_source_check(task_id, now, next_check_at)
@@ -317,8 +313,8 @@ impl Db {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
         accepts: impl Fn(&Attempt) -> bool,
     ) -> Result<Option<(Attempt, Lease)>> {
         self.connection()
@@ -329,8 +325,8 @@ impl Db {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
     ) -> Result<Option<(Attempt, Lease)>> {
         self.connection()
             .lease_next_attempt(worker_pool, worker_id, ttl, now)
@@ -344,8 +340,8 @@ impl Db {
         &mut self,
         attempt_id: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
     ) -> Result<Lease> {
         self.connection().heartbeat(attempt_id, worker_id, ttl, now)
     }
@@ -355,15 +351,15 @@ impl Db {
         &mut self,
         attempt_id: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
-        deadline: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
+        deadline: Timestamp,
     ) -> Result<Lease> {
         self.connection()
             .heartbeat_until(attempt_id, worker_id, ttl, now, deadline)
     }
 
-    pub fn expire_leases(&mut self, now: DateTime<Utc>) -> Result<Vec<String>> {
+    pub fn expire_leases(&mut self, now: Timestamp) -> Result<Vec<String>> {
         self.connection().expire_leases(now)
     }
 
@@ -402,7 +398,7 @@ impl Db {
 
     pub fn due_branch_cleanups(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
     ) -> Result<Vec<PublishedMergeRequest>> {
         self.connection().due_branch_cleanups(now, limit)
@@ -411,7 +407,7 @@ impl Db {
     pub fn begin_branch_cleanup(
         &self,
         mr: &PublishedMergeRequest,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<(PublishedMergeRequest, u32)>> {
         self.connection().begin_branch_cleanup(mr, now)
     }
@@ -452,7 +448,7 @@ impl Db {
         &self,
         token_digest: Option<&str>,
         scope: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<UiSession>> {
         self.connection().ui_session_csrf(token_digest, scope, now)
     }
@@ -462,9 +458,9 @@ impl Db {
         token_digest: &str,
         session: &UiSession,
         scope: &str,
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
         replaced_digest: Option<&str>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         self.connection().save_ui_session(
             token_digest,

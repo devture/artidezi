@@ -14,6 +14,8 @@ mod diff;
 mod markdown;
 
 use super::*;
+use artidezi_contract::time::Timestamp;
+use jiff::tz::TimeZone;
 use std::fmt::Write;
 
 fn e(value: &str) -> String {
@@ -381,10 +383,26 @@ fn delivery_icon(value: DeliveryMode) -> &'static str {
     }
 }
 
-fn time(at: &chrono::DateTime<chrono::Utc>, timezone: &str) -> String {
-    let zone = timezone.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC);
-    let local = at.with_timezone(&zone);
-    let elapsed = (chrono::Utc::now() - *at).num_seconds();
+/// The time zone database compiled into the binary, so the accepted names and the dropdown do not
+/// depend on the host's (possibly older or missing) tzdata.
+fn time_zones() -> &'static jiff::tz::TimeZoneDatabase {
+    static DB: std::sync::LazyLock<jiff::tz::TimeZoneDatabase> =
+        std::sync::LazyLock::new(jiff::tz::TimeZoneDatabase::bundled);
+    &DB
+}
+
+/// Looks up an IANA time zone by its exact (case-sensitive) name, such as `Europe/Berlin` or `UTC`.
+pub(super) fn time_zone(name: &str) -> Option<TimeZone> {
+    time_zones()
+        .get(name)
+        .ok()
+        .filter(|zone| zone.iana_name() == Some(name))
+}
+
+fn time(at: &Timestamp, timezone: &str) -> String {
+    let zone = time_zone(timezone).unwrap_or(TimeZone::UTC);
+    let local = at.as_jiff().to_zoned_datetime(zone);
+    let elapsed = (Timestamp::now() - *at).as_secs();
     let label = if elapsed < -60 {
         format!("in {} min", (-elapsed + 59) / 60)
     } else if elapsed < 60 {
@@ -398,14 +416,14 @@ fn time(at: &chrono::DateTime<chrono::Utc>, timezone: &str) -> String {
         let days = elapsed / 86_400;
         format!("{days} day{} ago", if days == 1 { "" } else { "s" })
     } else {
-        local.format("%b %-d, %H:%M %Z").to_string()
+        local.strftime("%b %-d, %H:%M %Z").to_string()
     };
     format!(
         r#"<time datetime="{}" title="{}" data-relative-time>{}</time>"#,
         at.to_rfc3339(),
         e(&format!(
             "{} ({timezone})",
-            local.format("%Y-%m-%d %H:%M:%S %Z UTC%:z")
+            local.strftime("%Y-%m-%d %H:%M:%S %Z UTC%:z")
         )),
         e(&label)
     )
@@ -510,13 +528,13 @@ pub(super) fn account(
         })
         .unwrap_or_default();
     let mut timezone_options = String::new();
-    for zone in std::iter::once(chrono_tz::UTC).chain(
-        chrono_tz::TZ_VARIANTS
-            .iter()
-            .copied()
-            .filter(|zone| *zone != chrono_tz::UTC),
-    ) {
-        let name = zone.to_string();
+    let mut zones: Vec<String> = time_zones()
+        .available()
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| name != "UTC")
+        .collect();
+    zones.sort_unstable();
+    for name in std::iter::once("UTC".to_owned()).chain(zones) {
         write!(
             timezone_options,
             r#"<option value="{}" {}>{}</option>"#,
@@ -1350,9 +1368,9 @@ pub(super) fn workers(
     body.push_str("</div>");
     if token.access.is_admin() {
         body.push_str(r#"<h2>Individual workers</h2><p class="muted">Last contact reflects supervisor requests. It does not prove that a running command is making progress. Refresh this page for current status.</p><div class="project-list">"#);
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         for worker in workers {
-            let offline = (now - worker.last_seen).num_seconds() > lease_ttl_seconds as i64;
+            let offline = (now - worker.last_seen).as_secs() > lease_ttl_seconds as i64;
             let cooling = worker.cooldown_until.is_some_and(|until| until > now);
             let (label, tone) = if worker.quarantined {
                 ("Quarantined", "failed")
@@ -1579,7 +1597,7 @@ fn compact_tokens(count: u64) -> String {
 
 fn execution_facts(record: &AttemptRecord) -> String {
     let seconds = (record.harness.finished_at - record.harness.started_at)
-        .num_seconds()
+        .as_secs()
         .max(0);
     let duration = if seconds >= 60 {
         format!("{}m {}s", seconds / 60, seconds % 60)
@@ -1856,4 +1874,48 @@ pub(super) fn patch(artifact: &TextArtifact, token: &Session) -> String {
         &task_breadcrumb(task, Some(&artifact.entry.name), Some(&artifact.attempt)),
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_zones_need_exact_iana_names() {
+        for name in [
+            "UTC",
+            "Europe/Sofia",
+            "America/New_York",
+            "US/Eastern",
+            "Etc/GMT+5",
+        ] {
+            assert!(time_zone(name).is_some(), "{name}");
+        }
+        for name in [
+            "",
+            "utc",
+            "europe/sofia",
+            "Mars/Olympus",
+            "+02:00",
+            "EST5EDT,M3.2.0,M11.1.0",
+        ] {
+            assert!(time_zone(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn absolute_times_render_in_the_chosen_zone() {
+        let at: Timestamp = "2020-07-14T10:05:00Z".parse().unwrap();
+        let html = time(&at, "Europe/Sofia");
+        assert!(
+            html.contains(r#"datetime="2020-07-14T10:05:00+00:00""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("2020-07-14 13:05:00 EEST UTC+03:00 (Europe/Sofia)"),
+            "{html}"
+        );
+        assert!(html.contains(">Jul 14, 13:05 EEST</time>"), "{html}");
+        assert!(time(&at, "nowhere").contains(">Jul 14, 10:05 UTC</time>"));
+    }
 }

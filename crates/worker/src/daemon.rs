@@ -4,6 +4,7 @@
 
 //! The standalone worker loop: lease, fetch inputs, run the attempt, upload, report, clean up.
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -151,7 +152,7 @@ impl Daemon {
         self.quarantined.store(true, Ordering::Relaxed);
         let path = self.quarantine_path();
         let record = serde_json::json!({
-            "at": chrono::Utc::now(),
+            "at": Timestamp::now(),
             "attempt_id": attempt_id,
             "worker_id": self.config.worker.worker_id,
             "reason": error.to_string(),

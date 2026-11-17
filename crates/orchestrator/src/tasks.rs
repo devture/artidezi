@@ -4,6 +4,7 @@
 
 //! Task creation, revisions and job building.
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 
 use artidezi_config::ResolvedProjectPolicy;
@@ -18,7 +19,6 @@ use artidezi_forge::MergeRequestState as ForgeMergeRequestState;
 use artidezi_git::bundle;
 use artidezi_store::model::*;
 use artidezi_store::new_id;
-use chrono::Utc;
 use git2::Oid;
 
 use crate::prompt::{self, PROMPT_TEMPLATE_VERSION, PreviousAttemptSummary};
@@ -139,7 +139,7 @@ impl Orchestrator {
         if policy.effects.publish_adaptation_merge_requests {
             self.require_policy_writes(&policy)?;
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut task = Task {
             id: new_id("tsk"),
             number: 0,
@@ -453,7 +453,7 @@ impl Orchestrator {
         }
         let job_artifact = self.artifacts.put_json(&job)?;
 
-        let now = Utc::now();
+        let now = Timestamp::now();
         let attempt = Attempt {
             id: attempt_id,
             task_id: task.id.clone(),

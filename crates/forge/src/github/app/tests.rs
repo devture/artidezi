@@ -4,6 +4,7 @@
 use super::*;
 use crate::CiLogOutcome;
 use crate::github::fixture::{Fixture, Reply, permissions};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 
 fn fixture() -> Fixture {
     Fixture::new(&"b".repeat(40), &"a".repeat(40))
@@ -299,7 +300,7 @@ fn expires_tokens_before_the_deadline_and_recovers_from_revocation_without_ambie
         .unwrap()
         .get_mut("org/app")
         .unwrap()
-        .expires_at = Utc::now() + Duration::seconds(60);
+        .expires_at = Timestamp::now() + SignedDuration::from_secs(60);
     forge.verify_installation().unwrap();
     assert_eq!(fixture.state.lock().unwrap().issued, 2);
     fixture.state.lock().unwrap().overrides.insert(
@@ -320,7 +321,7 @@ fn expires_tokens_before_the_deadline_and_recovers_from_revocation_without_ambie
 #[test]
 fn wrong_app_installation_permissions_and_token_scope_are_rejected() {
     let good_installation = json!({"id":42,"app_id":17,"account":{"login":"org"},"repository_selection":"selected","permissions":permissions(),"suspended_at":null});
-    let good_token = json!({"token":"fixture-installation-token-bad","expires_at":(Utc::now()+Duration::hours(1)).to_rfc3339(),"permissions":permissions(),"repositories":[{"full_name":"org/app"}]});
+    let good_token = json!({"token":"fixture-installation-token-bad","expires_at":(Timestamp::now()+SignedDuration::from_hours(1)).to_rfc3339(),"permissions":permissions(),"repositories":[{"full_name":"org/app"}]});
     let mut cases = vec![];
     for (field, value) in [
         ("app_id", json!(99)),
@@ -340,7 +341,7 @@ fn wrong_app_installation_permissions_and_token_scope_are_rejected() {
     cases.push(("/app/installations/42", 200, missing));
     for (field, value) in [
         ("repositories", json!([{"full_name":"org/other"}])),
-        ("expires_at", json!(Utc::now().to_rfc3339())),
+        ("expires_at", json!(Timestamp::now().to_rfc3339())),
     ] {
         let mut v = good_token.clone();
         v[field] = value;
@@ -383,7 +384,7 @@ fn all_repository_installations_still_require_single_repository_tokens() {
                 "/app/installations/42/access_tokens".into(),
                 Reply::new(201, json!({
                     "token":"fixture-installation-token-scoped",
-                    "expires_at":(Utc::now()+Duration::hours(1)).to_rfc3339(),
+                    "expires_at":(Timestamp::now()+SignedDuration::from_hours(1)).to_rfc3339(),
                     "permissions":permissions(),
                     "repositories":token_repositories.iter().map(|name|json!({"full_name":name})).collect::<Vec<_>>()
                 })),
@@ -416,7 +417,7 @@ fn backoff_stops_requests_and_redirects_never_receive_credentials() {
     for status in [429, 403, 302] {
         let fixture = fixture();
         let forge = fixture.forge();
-        let retry = (Utc::now() + Duration::minutes(10)).timestamp();
+        let retry = (Timestamp::now() + SignedDuration::from_mins(10)).unix_seconds();
         let mut reply = Reply::new(status, json!({"message":"sensitive-server-body"}));
         reply
             .headers
@@ -437,7 +438,7 @@ fn backoff_stops_requests_and_redirects_never_receive_credentials() {
         let error = forge.verify_installation().unwrap_err().to_string();
         assert!(!error.contains("sensitive-server-body"));
         if status != 302 {
-            assert!(forge.retry_after().unwrap().timestamp() >= retry);
+            assert!(forge.retry_after().unwrap().unix_seconds() >= retry);
             let count = fixture.state.lock().unwrap().requests.len();
             assert!(forge.verify_installation().is_err());
             assert_eq!(fixture.state.lock().unwrap().requests.len(), count);
@@ -725,7 +726,7 @@ fn workflow_push_uses_a_separate_single_repository_token() {
 fn dry_run_rejects_overbroad_issued_token_even_when_installation_allows_writes() {
     let fixture = fixture();
     fixture.state.lock().unwrap().publication = true;
-    fixture.state.lock().unwrap().overrides.insert("/app/installations/42/access_tokens".into(), Reply::new(201, json!({"token":"fixture-installation-token-overbroad", "expires_at":(Utc::now()+Duration::hours(1)).to_rfc3339(), "permissions":crate::github::fixture::write_permissions(),"repositories":[{"full_name":"org/app"}]})));
+    fixture.state.lock().unwrap().overrides.insert("/app/installations/42/access_tokens".into(), Reply::new(201, json!({"token":"fixture-installation-token-overbroad", "expires_at":(Timestamp::now()+SignedDuration::from_hours(1)).to_rfc3339(), "permissions":crate::github::fixture::write_permissions(),"repositories":[{"full_name":"org/app"}]})));
     assert!(fixture.forge().verify_installation().is_err());
 }
 

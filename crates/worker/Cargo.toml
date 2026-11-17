@@ -13,7 +13,6 @@ rust-version.workspace = true
 artidezi-contract.workspace = true
 artidezi-git.workspace = true
 artidezi-harness.workspace = true
-chrono.workspace = true
 git2.workspace = true
 hex.workspace = true
 nix = { version = "0.32", features = ["signal", "fs", "user"], default-features = false }

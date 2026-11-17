@@ -14,14 +14,14 @@ rust-version = "1.99"
 [workspace.dependencies]
 anyhow = "1.0"
 argon2 = "0.6.0"
-chrono = { version = "0.4", features = ["serde"] }
-chrono-tz = "0.10.4"
 clap = { version = "4.6", features = ["derive"] }
 git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
 hex = "0.4"
+# tzdb-bundle-always: time zone names keep working in images without /usr/share/zoneinfo.
+jiff = { version = "1.0", features = ["tzdb-bundle-always"] }
 regex = "1"
 rusqlite = { version = "0.43", features = ["bundled"] }
-schemars = { version = "1.2", features = ["chrono04"] }
+schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }

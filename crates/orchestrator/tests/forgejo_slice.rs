@@ -5,6 +5,7 @@
 //! The vertical slice against a real Forgejo instead of the fake forge. Runs only when the
 //! `ARTIDEZI_FORGEJO_*` variables are set (see `scripts/forgejo-test.sh`).
 
+use artidezi_contract::time::SignedDuration;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -22,7 +23,6 @@ use artidezi_harness::fake::FakeHarness;
 use artidezi_orchestrator::Orchestrator;
 use artidezi_store::model::*;
 use artidezi_worker::{AttemptInputs, WorkerConfig, run_attempt};
-use chrono::Duration;
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -99,7 +99,7 @@ fn work(
     script: &std::path::Path,
 ) -> AttemptState {
     let leased = orchestrator
-        .lease("personal", "w1", Duration::minutes(5))
+        .lease("personal", "w1", SignedDuration::from_mins(5))
         .unwrap()
         .expect("queued attempt");
     let inputs = AttemptInputs {

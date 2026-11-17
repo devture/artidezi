@@ -5,6 +5,7 @@
 //! Reachability-based expiry. Call under the controller's operation lock, using its shared store.
 //! Jobs remain immutable: only their explicitly identified frozen repository inputs can expire.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
@@ -12,7 +13,6 @@ use std::path::PathBuf;
 use artidezi_config::model::ArtifactRetention;
 use artidezi_contract::Job;
 use artidezi_contract::common::ArtifactRef;
-use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -90,13 +90,13 @@ pub fn cleanup(
     db: &mut Db,
     store: &ArtifactStore,
     policy: &ArtifactRetention,
-    now: DateTime<Utc>,
+    now: Timestamp,
     apply: bool,
 ) -> Result<CleanupReport> {
     let _guard = store.cleanup_guard();
     let completed_before =
-        now - Duration::seconds(i64::from(policy.completed_task_bundle_retention_seconds));
-    let orphan_before = now - Duration::seconds(i64::from(policy.orphan_grace_seconds));
+        now - SignedDuration::from_secs(i64::from(policy.completed_task_bundle_retention_seconds));
+    let orphan_before = now - SignedDuration::from_secs(i64::from(policy.orphan_grace_seconds));
     let mut report = CleanupReport {
         dry_run: !apply,
         ..CleanupReport::default()
@@ -266,7 +266,7 @@ pub fn cleanup(
                 continue;
             }
             let expired = expirable.contains_key(&sha256);
-            let modified: DateTime<Utc> = metadata.modified().map_err(|e| io(&path, e))?.into();
+            let modified: Timestamp = metadata.modified().map_err(|e| io(&path, e))?.into();
             if roots.contains_key(&sha256)
                 || recent_uploads.contains(&sha256)
                 || (!expired && modified > orphan_before)

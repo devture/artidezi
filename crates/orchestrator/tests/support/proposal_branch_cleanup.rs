@@ -3,8 +3,8 @@
 
 use super::*;
 use artidezi_contract::common::CommitSha;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{MergeMethod, NewMergeRequest};
-use chrono::Utc;
 use serde_json::json;
 
 fn published(w: &mut World) -> (Task, PublishedMergeRequest) {
@@ -145,7 +145,7 @@ fn manual_human_merge_cleanup_accepts_absent_branches_and_refuses_moved_ones() {
             .unwrap();
         reopen(&mut w);
         w.orchestrator
-            .tick_at(Utc::now() + Duration::minutes(5))
+            .tick_at(Timestamp::now() + SignedDuration::from_mins(5))
             .unwrap();
         assert_eq!(
             repo.refname_to_id(&branch(&mr)).unwrap(),
@@ -155,7 +155,7 @@ fn manual_human_merge_cleanup_accepts_absent_branches_and_refuses_moved_ones() {
         assert!(
             w.orchestrator
                 .db
-                .due_branch_cleanups(Utc::now() + Duration::hours(1), 16)
+                .due_branch_cleanups(Timestamp::now() + SignedDuration::from_hours(1), 16)
                 .unwrap()
                 .is_empty()
         );
@@ -179,11 +179,11 @@ fn terminal_merge_cleanup_retries_transient_git_failure_and_stops_at_its_budget(
             kinds(&w, &task, "merge_request.branch_delete_retry_scheduled"),
             1
         );
-        let later = Utc::now() + Duration::minutes(2);
+        let later = Timestamp::now() + SignedDuration::from_mins(2);
         assert!(
             w.orchestrator
                 .db
-                .due_branch_cleanups(Utc::now(), 16)
+                .due_branch_cleanups(Timestamp::now(), 16)
                 .unwrap()
                 .is_empty()
         );
@@ -193,7 +193,7 @@ fn terminal_merge_cleanup_retries_transient_git_failure_and_stops_at_its_budget(
         reopen(&mut w);
         w.orchestrator.tick_at(later).unwrap();
         w.orchestrator
-            .tick_at(later + Duration::minutes(2))
+            .tick_at(later + SignedDuration::from_mins(2))
             .unwrap();
         assert_eq!(
             w.orchestrator.db.get_task(&task.id).unwrap().state,
@@ -212,12 +212,14 @@ fn terminal_merge_cleanup_retries_transient_git_failure_and_stops_at_its_budget(
         if !recover {
             fs::remove_file(&lock).unwrap();
         }
-        w.orchestrator.tick_at(later + Duration::hours(1)).unwrap();
+        w.orchestrator
+            .tick_at(later + SignedDuration::from_hours(1))
+            .unwrap();
         assert_eq!(repo.find_reference(&branch(&mr)).is_err(), recover);
         assert!(
             w.orchestrator
                 .db
-                .due_branch_cleanups(later + Duration::hours(1), 16)
+                .due_branch_cleanups(later + SignedDuration::from_hours(1), 16)
                 .unwrap()
                 .is_empty()
         );
@@ -245,7 +247,7 @@ fn merged_cleanup_recovers_crash_boundaries_after_done_with_the_original_lease()
             .unwrap();
         let payload = json!({"repository":mr.repository_id,"forge":mr.forge,"remote":"org/role",
             "number":mr.number,"branch":mr.source_branch,"head":mr.head_commit,"state":"merged"});
-        let now = Utc::now();
+        let now = Timestamp::now();
         if boundary != "receipt" {
             w.orchestrator
                 .db
@@ -267,7 +269,7 @@ fn merged_cleanup_recovers_crash_boundaries_after_done_with_the_original_lease()
             for minutes in [2, 4] {
                 w.orchestrator
                     .db
-                    .begin_branch_cleanup(&mr, now + Duration::minutes(minutes))
+                    .begin_branch_cleanup(&mr, now + SignedDuration::from_mins(minutes))
                     .unwrap()
                     .unwrap();
             }
@@ -309,7 +311,9 @@ fn merged_cleanup_recovers_crash_boundaries_after_done_with_the_original_lease()
             w.orchestrator.db.upsert_merge_request(&changed).unwrap();
         }
         reopen(&mut w);
-        w.orchestrator.tick_at(now + Duration::minutes(6)).unwrap();
+        w.orchestrator
+            .tick_at(now + SignedDuration::from_mins(6))
+            .unwrap();
         let kept = ["terminal", "moved", "exhausted"].contains(&boundary);
         assert_eq!(
             repo.find_reference(&branch(&mr)).is_ok(),
@@ -324,7 +328,7 @@ fn merged_cleanup_recovers_crash_boundaries_after_done_with_the_original_lease()
         assert!(
             w.orchestrator
                 .db
-                .due_branch_cleanups(now + Duration::hours(1), 16)
+                .due_branch_cleanups(now + SignedDuration::from_hours(1), 16)
                 .unwrap()
                 .is_empty()
         );

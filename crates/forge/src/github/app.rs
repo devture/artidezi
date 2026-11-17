@@ -3,11 +3,11 @@
 
 //! GitHub App authentication, narrow read tokens and opt-in publication credentials.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, Duration, Utc};
 use openssl::{
     hash::MessageDigest,
     pkey::{Id, PKey, Private},
@@ -74,13 +74,13 @@ struct TokenRepository {
 #[derive(Deserialize)]
 struct TokenReply {
     token: String,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
     permissions: BTreeMap<String, String>,
     repositories: Vec<TokenRepository>,
 }
 struct Token {
     value: String,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 /// No arbitrary endpoints, personal credentials or write capability. Each token is restricted to
@@ -275,7 +275,7 @@ impl GithubForge {
     }
 
     fn jwt(&self) -> Result<String> {
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().unix_seconds();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = URL_SAFE_NO_PAD.encode(
             json!({"iss": self.identity.client_id, "iat": now - 60, "exp": now + 540}).to_string(),
@@ -320,7 +320,7 @@ impl GithubForge {
             TokenScope::WorkflowPublication => self.workflow_write_tokens.lock().unwrap(),
         };
         if let Some(token) = tokens.get(&remote)
-            && token.expires_at > Utc::now() + Duration::seconds(120)
+            && token.expires_at > Timestamp::now() + SignedDuration::from_secs(120)
         {
             return Ok(token.value.clone());
         }
@@ -410,8 +410,8 @@ impl GithubForge {
             })
             || reply.token.is_empty()
             || reply.token.chars().any(char::is_whitespace)
-            || reply.expires_at <= Utc::now() + Duration::seconds(120)
-            || reply.expires_at > Utc::now() + Duration::seconds(3900)
+            || reply.expires_at <= Timestamp::now() + SignedDuration::from_secs(120)
+            || reply.expires_at > Timestamp::now() + SignedDuration::from_secs(3900)
         {
             return Err(invalid(
                 "GitHub installation token returned unexpected repository/permission scope or expiration",
@@ -586,7 +586,7 @@ impl ForgeAdapter for GithubForge {
             token: self.scoped_token(remote, TokenScope::WorkflowPublication)?,
         }))
     }
-    fn retry_after(&self) -> Option<DateTime<Utc>> {
+    fn retry_after(&self) -> Option<Timestamp> {
         self.http.retry_after()
     }
     fn clone_url(&self, remote: &str) -> String {

@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::path::Path;
 use std::str::FromStr;
 
 use artidezi_config::model::DeliveryMode;
 use artidezi_contract::common::{ArtifactRef, Outcome};
-use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::model::*;
@@ -59,16 +59,14 @@ pub(super) struct ConnectionDb {
     conn: Connection,
 }
 
-fn ts(t: DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+fn ts(t: Timestamp) -> String {
+    t.to_rfc3339_micros()
 }
 
-fn parse_ts(s: &str) -> rusqlite::Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|t| t.with_timezone(&Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
+fn parse_ts(s: &str) -> rusqlite::Result<Timestamp> {
+    Timestamp::parse_rfc3339(s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 fn enum_to_str<T: serde::Serialize>(value: &T) -> String {
@@ -103,7 +101,7 @@ impl ConnectionDb {
         )?)
     }
 
-    pub fn expire_task_inputs(&self, task_id: &str, now: DateTime<Utc>) -> Result<()> {
+    pub fn expire_task_inputs(&self, task_id: &str, now: Timestamp) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO task_input_expirations (task_id, expired_at) VALUES (?1, ?2)",
             params![task_id, ts(now)],
@@ -123,7 +121,7 @@ impl ConnectionDb {
         &self,
         attempt_id: &str,
         artifact: &ArtifactRef,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO artifact_uploads (attempt_id, sha256, size, uploaded_at) VALUES (?1, ?2, ?3, ?4)
@@ -140,7 +138,7 @@ impl ConnectionDb {
         attempt_id: &str,
         artifact: &ArtifactRef,
         max_bytes: u64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let changed = self.conn.execute(
             "INSERT INTO artifact_uploads (attempt_id, sha256, size, uploaded_at)
@@ -159,7 +157,7 @@ impl ConnectionDb {
         Ok(changed == 1)
     }
 
-    pub fn artifact_uploads(&self) -> Result<Vec<(String, ArtifactRef, DateTime<Utc>)>> {
+    pub fn artifact_uploads(&self) -> Result<Vec<(String, ArtifactRef, Timestamp)>> {
         let mut stmt = self
             .conn
             .prepare("SELECT attempt_id, sha256, size, uploaded_at FROM artifact_uploads")?;
@@ -188,7 +186,7 @@ impl ConnectionDb {
     pub fn record_artifact_deletion(
         &self,
         artifact: &ArtifactRef,
-        now: DateTime<Utc>,
+        now: Timestamp,
         reason: &str,
     ) -> Result<()> {
         // NORMAL WAL commits may roll back after power loss. Unlinking is irreversible, so
@@ -326,7 +324,7 @@ impl ConnectionDb {
         )?;
         tx.execute(
             "UPDATE tasks SET state = ?2, updated_at = ?3 WHERE id = ?1",
-            params![task_id, TaskState::Closed.as_str(), ts(Utc::now())],
+            params![task_id, TaskState::Closed.as_str(), ts(Timestamp::now())],
         )?;
         tx.execute("DELETE FROM source_ci_waits WHERE task_id = ?1", [task_id])?;
         Self::insert_event(
@@ -357,14 +355,14 @@ impl ConnectionDb {
         Ok(())
     }
 
-    pub fn defer_forge(&self, forge: &str, retry_after: DateTime<Utc>) -> Result<()> {
+    pub fn defer_forge(&self, forge: &str, retry_after: Timestamp) -> Result<()> {
         self.conn.execute("INSERT INTO forge_backoff (forge, retry_after) VALUES (?1, ?2)
             ON CONFLICT (forge) DO UPDATE SET retry_after = MAX(forge_backoff.retry_after, excluded.retry_after)",
             params![forge, ts(retry_after)])?;
         Ok(())
     }
 
-    pub fn forge_retry_after(&self, forge: &str) -> Result<Option<DateTime<Utc>>> {
+    pub fn forge_retry_after(&self, forge: &str) -> Result<Option<Timestamp>> {
         let value: Option<String> = self
             .conn
             .query_row(
@@ -381,7 +379,7 @@ impl ConnectionDb {
         &mut self,
         project: &str,
         interval_seconds: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
         force: bool,
     ) -> Result<bool> {
         let next: Option<String> = self
@@ -406,7 +404,7 @@ impl ConnectionDb {
              ON CONFLICT (project) DO UPDATE SET next_scan_at = excluded.next_scan_at",
             params![
                 project,
-                ts(now + Duration::seconds(i64::from(interval_seconds)))
+                ts(now + SignedDuration::from_secs(i64::from(interval_seconds)))
             ],
         )?;
         Ok(true)
@@ -562,7 +560,7 @@ impl ConnectionDb {
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE tasks SET state = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, next.as_str(), ts(Utc::now())],
+            params![id, next.as_str(), ts(Timestamp::now())],
         )?;
         if next != TaskState::WaitingForCi {
             tx.execute("DELETE FROM source_ci_waits WHERE task_id = ?1", [id])?;
@@ -582,11 +580,7 @@ impl ConnectionDb {
     // ----- attempts ----------------------------------------------------------------------------
 
     /// Persist the state and its polling deadline together, including across process restarts.
-    pub fn wait_for_source_ci(
-        &mut self,
-        task_id: &str,
-        next_check_at: DateTime<Utc>,
-    ) -> Result<()> {
+    pub fn wait_for_source_ci(&mut self, task_id: &str, next_check_at: Timestamp) -> Result<()> {
         let task = self.get_task(task_id)?;
         if !task.state.can_transition_to(TaskState::WaitingForCi) {
             return Err(StoreError::InvalidTransition {
@@ -599,7 +593,7 @@ impl ConnectionDb {
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE tasks SET state = 'waiting_for_ci', updated_at = ?2 WHERE id = ?1",
-            params![task_id, ts(Utc::now())],
+            params![task_id, ts(Timestamp::now())],
         )?;
         tx.execute(
             "INSERT INTO source_ci_waits (task_id, next_check_at) VALUES (?1, ?2)
@@ -622,8 +616,8 @@ impl ConnectionDb {
     pub fn claim_source_ci_check(
         &mut self,
         task_id: &str,
-        now: DateTime<Utc>,
-        next_check_at: DateTime<Utc>,
+        now: Timestamp,
+        next_check_at: Timestamp,
     ) -> Result<bool> {
         self.claim_source_check_in(task_id, TaskState::WaitingForCi, now, next_check_at)
     }
@@ -636,7 +630,7 @@ impl ConnectionDb {
         attempt_id: &str,
         actor: &str,
         hold: serde_json::Value,
-        next_check_at: DateTime<Utc>,
+        next_check_at: Timestamp,
     ) -> Result<()> {
         let task = self.get_task(task_id)?;
         if task.state != TaskState::NeedsHuman
@@ -661,7 +655,7 @@ impl ConnectionDb {
         if task.state != TaskState::NeedsHuman {
             tx.execute(
                 "UPDATE tasks SET state = 'needs_human', updated_at = ?2 WHERE id = ?1",
-                params![task_id, ts(Utc::now())],
+                params![task_id, ts(Timestamp::now())],
             )?;
             Self::insert_event(
                 &tx,
@@ -684,8 +678,8 @@ impl ConnectionDb {
     pub fn claim_held_source_check(
         &mut self,
         task_id: &str,
-        now: DateTime<Utc>,
-        next_check_at: DateTime<Utc>,
+        now: Timestamp,
+        next_check_at: Timestamp,
     ) -> Result<bool> {
         self.claim_source_check_in(task_id, TaskState::NeedsHuman, now, next_check_at)
     }
@@ -694,8 +688,8 @@ impl ConnectionDb {
         &mut self,
         task_id: &str,
         state: TaskState,
-        now: DateTime<Utc>,
-        next_check_at: DateTime<Utc>,
+        now: Timestamp,
+        next_check_at: Timestamp,
     ) -> Result<bool> {
         Ok(self.conn.execute(
             "UPDATE source_ci_waits SET next_check_at = ?3 WHERE task_id = ?1
@@ -832,7 +826,7 @@ impl ConnectionDb {
             params![
                 attempt.id,
                 next.as_str(),
-                ts(Utc::now()),
+                ts(Timestamp::now()),
                 attempt.state.as_str()
             ],
         )?;
@@ -861,8 +855,8 @@ impl ConnectionDb {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
     ) -> Result<Option<(Attempt, Lease)>> {
         self.lease_next_attempt_matching(worker_pool, worker_id, ttl, now, |_| true)
     }
@@ -871,8 +865,8 @@ impl ConnectionDb {
         &mut self,
         worker_pool: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
         accepts: impl Fn(&Attempt) -> bool,
     ) -> Result<Option<(Attempt, Lease)>> {
         self.observe_worker(worker_pool, worker_id, None, now)?;
@@ -954,19 +948,19 @@ impl ConnectionDb {
         &mut self,
         attempt_id: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
     ) -> Result<Lease> {
-        self.heartbeat_until(attempt_id, worker_id, ttl, now, DateTime::<Utc>::MAX_UTC)
+        self.heartbeat_until(attempt_id, worker_id, ttl, now, Timestamp::MAX)
     }
 
     pub fn heartbeat_until(
         &mut self,
         attempt_id: &str,
         worker_id: &str,
-        ttl: Duration,
-        now: DateTime<Utc>,
-        deadline: DateTime<Utc>,
+        ttl: SignedDuration,
+        now: Timestamp,
+        deadline: Timestamp,
     ) -> Result<Lease> {
         let lease = self
             .get_lease(attempt_id)?
@@ -999,7 +993,7 @@ impl ConnectionDb {
     }
 
     /// Marks every attempt whose lease expired as lost. Returns their ids.
-    pub fn expire_leases(&mut self, now: DateTime<Utc>) -> Result<Vec<String>> {
+    pub fn expire_leases(&mut self, now: Timestamp) -> Result<Vec<String>> {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -1033,7 +1027,7 @@ impl ConnectionDb {
             )?;
             tx.execute(
                 "UPDATE workers SET cooldown_until = ?3 WHERE worker_pool = ?1 AND worker_id = ?2",
-                params![lease.0, lease.1, ts(now + Duration::minutes(5))],
+                params![lease.0, lease.1, ts(now + SignedDuration::from_mins(5))],
             )?;
             Self::insert_event(
                 &tx,
@@ -1188,7 +1182,7 @@ impl ConnectionDb {
 
     pub fn due_branch_cleanups(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
     ) -> Result<Vec<PublishedMergeRequest>> {
         let mut stmt = self.conn.prepare_cached(
@@ -1205,7 +1199,7 @@ impl ConnectionDb {
     pub fn begin_branch_cleanup(
         &mut self,
         mr: &PublishedMergeRequest,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<(PublishedMergeRequest, u32)>> {
         let tx = self.conn.transaction()?;
         let pending: Option<(String, u32)> = tx
@@ -1218,7 +1212,7 @@ impl ConnectionDb {
                     mr.task_id,
                     mr.repository_id,
                     mr.number as i64,
-                    ts(now + Duration::seconds(60)),
+                    ts(now + SignedDuration::from_secs(60)),
                     ts(now)
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1290,7 +1284,7 @@ impl ConnectionDb {
             "INSERT INTO events (at, task_id, attempt_id, actor, kind, payload)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                ts(Utc::now()),
+                ts(Timestamp::now()),
                 task_id,
                 attempt_id,
                 actor,
@@ -1353,7 +1347,7 @@ mod retention_tests {
                 .unwrap()
         );
 
-        db.record_artifact_deletion(&artifact, Utc::now(), "test")
+        db.record_artifact_deletion(&artifact, Timestamp::now(), "test")
             .unwrap();
         std::fs::write(
             dir.path().join("backup").join("state.sqlite.partial"),
@@ -1393,8 +1387,12 @@ mod retention_tests {
             sha256: "a".repeat(64),
             size: 10,
         };
-        db.record_artifact_deletion(&artifact, Utc::now(), "completed_task_repository_input")
-            .unwrap();
+        db.record_artifact_deletion(
+            &artifact,
+            Timestamp::now(),
+            "completed_task_repository_input",
+        )
+        .unwrap();
         assert!(db.artifact_was_deleted(&artifact.sha256).unwrap());
         let sync = || {
             db.conn
@@ -1407,10 +1405,27 @@ mod retention_tests {
             size: 20,
         };
         assert!(
-            db.record_artifact_deletion(&rejected, Utc::now(), "reject")
+            db.record_artifact_deletion(&rejected, Timestamp::now(), "reject")
                 .is_err()
         );
         assert_eq!(sync(), 1);
         assert!(!db.artifact_was_deleted(&rejected.sha256).unwrap());
+    }
+
+    /// Rows written by chrono-based releases use `to_rfc3339_opts(Micros, true)`; the column
+    /// format must not change, and older rows must keep reading back to the same instant.
+    #[test]
+    fn timestamp_column_format_is_stable() {
+        for stored in [
+            "2026-09-13T08:15:02.123456Z",
+            "2026-09-13T08:15:02.000000Z",
+            "2026-11-17T23:59:59.999999Z",
+        ] {
+            let parsed = parse_ts(stored).unwrap();
+            assert_eq!(ts(parsed), stored);
+        }
+        let nanos = parse_ts("2026-09-13T08:15:02.123456789+00:00").unwrap();
+        assert_eq!(ts(nanos), "2026-09-13T08:15:02.123456Z");
+        assert!(parse_ts("2026-09-13 08:15:02").is_err());
     }
 }

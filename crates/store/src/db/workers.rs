@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::wire::AdvertisedHarness;
 
 impl ConnectionDb {
@@ -28,7 +29,7 @@ impl ConnectionDb {
         )?;
         tx.execute(
             "UPDATE tasks SET state = 'working', updated_at = ?2 WHERE id = ?1",
-            params![task_id, ts(Utc::now())],
+            params![task_id, ts(Timestamp::now())],
         )?;
         Self::insert_event(
             &tx,
@@ -92,7 +93,7 @@ impl ConnectionDb {
         failed: &str,
         replacement: &Attempt,
         max_retries: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         let tx = self
             .conn
@@ -137,7 +138,7 @@ impl ConnectionDb {
             let mut next = replacement.clone();
             let delays = [60, 120, 300, 600, 1800];
             let delay = delays[(count as usize).min(delays.len() - 1)];
-            next.not_before = Some(now + Duration::seconds(delay));
+            next.not_before = Some(now + SignedDuration::from_secs(delay));
             Self::insert_attempt_in(&tx, &next)?;
             tx.execute("UPDATE transient_failures SET replacement_id = ?2, retry_number = ?3 WHERE attempt_id = ?1", params![failed,next.id,count+1])?;
             let reason: String = tx.query_row(
@@ -177,7 +178,7 @@ impl ConnectionDb {
         pool: &str,
         id: &str,
         quarantined: Option<bool>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO workers (worker_pool, worker_id, last_seen, quarantined)
@@ -195,7 +196,7 @@ impl ConnectionDb {
         id: &str,
         harnesses: &[AdvertisedHarness],
         tags: &[String],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.observe_worker(pool, id, None, now)?;
         self.conn.execute(
@@ -362,7 +363,7 @@ impl ConnectionDb {
         }
         tx.execute(
             "UPDATE tasks SET state = 'needs_human', updated_at = ?2 WHERE id = ?1",
-            params![attempt.task_id, ts(Utc::now())],
+            params![attempt.task_id, ts(Timestamp::now())],
         )?;
         Self::insert_event(
             &tx,

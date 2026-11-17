@@ -6,6 +6,7 @@
 //! through the admin API, and the standalone worker daemon leasing, running (fake harness),
 //! uploading and reporting through the worker API. Also the token boundaries.
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -530,8 +531,8 @@ async fn execution_deadline_refuses_worker_traffic_before_maintenance_runs() {
         o.db.lease_next_attempt(
             "personal",
             "w1",
-            chrono::Duration::hours(3),
-            chrono::Utc::now() - chrono::Duration::hours(2),
+            SignedDuration::from_hours(3),
+            Timestamp::now() - SignedDuration::from_hours(2),
         )
         .unwrap()
         .unwrap();
@@ -672,8 +673,8 @@ async fn uploads_are_authenticated_and_limited() {
         o.db.lease_next_attempt(
             "personal",
             "w1",
-            chrono::Duration::hours(1),
-            chrono::Utc::now(),
+            SignedDuration::from_hours(1),
+            Timestamp::now(),
         )
         .unwrap()
         .unwrap();
@@ -1195,7 +1196,7 @@ async fn navigation_counts_follow_authenticated_pages_and_project_grants() {
             closed: false,
             handler_id: "updates".into(),
             observed_head: "a".repeat(40),
-            head_observed_at: chrono::Utc::now(),
+            head_observed_at: Timestamp::now(),
             last_task_id: None,
             runs: 1,
             paused: false,
@@ -2386,7 +2387,7 @@ async fn ui_distinguishes_automatic_ci_waiting_from_worker_activity_and_human_ho
         task.kind = artidezi_store::model::TaskKind::PullRequest;
         task.instructions = "An accepted update waiting for checks".into();
         o.db.insert_task(&task).unwrap();
-        o.db.wait_for_source_ci(&task.id, chrono::Utc::now() + chrono::Duration::minutes(10))
+        o.db.wait_for_source_ci(&task.id, Timestamp::now() + SignedDuration::from_mins(10))
             .unwrap();
     })
     .await;
@@ -2504,7 +2505,7 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
                 closed: number > 2,
                 handler_id: "updates".into(),
                 observed_head: "a".repeat(40),
-                head_observed_at: chrono::Utc::now(),
+                head_observed_at: Timestamp::now(),
                 last_task_id: None,
                 runs: 1,
                 paused: number == 1,
@@ -2830,8 +2831,7 @@ async fn artifact_retention_admin_preview_apply_and_expired_attempt_ui() {
             .unwrap();
         o.close_task(&task.id, "test").unwrap();
         // Simulate a pass interrupted after recording expiry but before unlinking inputs.
-        o.db.expire_task_inputs(&task.id, chrono::Utc::now())
-            .unwrap();
+        o.db.expire_task_inputs(&task.id, Timestamp::now()).unwrap();
     })
     .await;
     let path = "/admin/v1/artifacts/cleanup";

@@ -16,7 +16,6 @@ test-fixtures = []
 artidezi-contract.workspace = true
 artidezi-git.workspace = true
 git2.workspace = true
-chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true

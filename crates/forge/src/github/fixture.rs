@@ -4,8 +4,8 @@
 //! Disposable loopback GitHub-shaped API for adapter and controller tests. Never in normal builds.
 
 use super::{GithubAppIdentity, GithubForge};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::Utc;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Verifier};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -198,7 +198,7 @@ impl Fixture {
                     let claims: Value =
                         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
                     assert_eq!(claims["iss"], "Iv.fixture");
-                    let now = Utc::now().timestamp();
+                    let now = Timestamp::now().unix_seconds();
                     assert!(
                         claims["iat"].as_i64().unwrap() <= now
                             && claims["iat"].as_i64().unwrap() >= now - 90
@@ -308,7 +308,7 @@ fn reply(r: &Request, state: &mut State) -> Reply {
             state.issued += 1;
             return Reply::new(
                 201,
-                json!({"token":format!("fixture-installation-token-{}",state.issued),"expires_at":(Utc::now()+chrono::Duration::hours(1)).to_rfc3339(),"permissions":r.body["permissions"],"repositories":[{"full_name":"org/app"}]}),
+                json!({"token":format!("fixture-installation-token-{}",state.issued),"expires_at":(Timestamp::now()+SignedDuration::from_hours(1)).to_rfc3339(),"permissions":r.body["permissions"],"repositories":[{"full_name":"org/app"}]}),
             );
         }
         ("GET", "/repos/org/app") => {

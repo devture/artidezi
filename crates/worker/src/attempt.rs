@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -21,7 +22,6 @@ use artidezi_git::series::{CollectLimits, collect};
 use artidezi_git::workspace::{InputRefSpec, prepare_checkout};
 use artidezi_harness::codex::prework_auth_rejection;
 use artidezi_harness::{HarnessAdapter, InvocationContext};
-use chrono::Utc;
 use git2::{Oid, Repository};
 use sha2::{Digest, Sha256};
 
@@ -419,8 +419,8 @@ pub fn run_attempt_cancellable(
             version: harness.installed_version()?,
             model: None,
             exit_code: None,
-            started_at: Utc::now(),
-            finished_at: Utc::now(),
+            started_at: Timestamp::now(),
+            finished_at: Timestamp::now(),
             session_id: None,
             usage: None,
             transcript: None,

@@ -10,6 +10,7 @@ use artidezi_config::model::{
     SafeVerdictChecks,
 };
 use artidezi_config::{ResolvedProjectPolicy, ResolvedRepository};
+use artidezi_contract::time::Timestamp;
 use artidezi_contract::{
     Job,
     attempt::{AttemptRecord, RepositoryCollection},
@@ -18,7 +19,6 @@ use artidezi_contract::{
 };
 use artidezi_forge::{MergeRequestState as RemoteState, NewMergeRequest};
 use artidezi_store::model::*;
-use chrono::Utc;
 use git2::Oid;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt::Write as _};
@@ -956,7 +956,7 @@ impl Orchestrator {
             source_branch: plan.branch.clone(),
             head_commit: plan.head.0.clone(),
             state: MergeRequestState::Open,
-            updated_at: Utc::now(),
+            updated_at: Timestamp::now(),
         })?;
         self.db.record_event(Some(&task.id), Some(&attempt.id), "orchestrator", "merge_request.published", serde_json::json!({"repository":plan.repository,"number":info.number,"url":info.url,"head":plan.head}))?;
         Ok(())
@@ -1034,10 +1034,10 @@ impl Orchestrator {
                 RemoteState::Closed => MergeRequestState::Closed,
                 RemoteState::Merged => MergeRequestState::Merged,
             };
-            mr.updated_at = Utc::now();
+            mr.updated_at = Timestamp::now();
             self.db.upsert_merge_request(mr)?;
             if mr.state == MergeRequestState::Merged {
-                self.cleanup_proposal_branch(task, Some(&attempt.id), policy, mr, Utc::now());
+                self.cleanup_proposal_branch(task, Some(&attempt.id), policy, mr, Timestamp::now());
             }
         }
         self.merge_ready_adaptations(task, &attempt, policy, &mut proposals)?;

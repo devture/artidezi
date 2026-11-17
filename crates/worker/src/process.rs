@@ -4,6 +4,7 @@
 
 //! Running a child process with a wall-clock limit, its own process group and log capture to files.
 
+use artidezi_contract::time::Timestamp;
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -13,7 +14,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -63,8 +63,8 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub spawn_error: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: DateTime<Utc>,
+    pub started_at: Timestamp,
+    pub finished_at: Timestamp,
 }
 
 const TERM_GRACE: Duration = Duration::from_secs(10);
@@ -112,7 +112,7 @@ pub fn run_cancellable(spec: &Spec<'_>, cancellation: &Cancellation) -> Result<O
     cancellation.check()?;
     let stdout = File::create(spec.stdout_path).map_err(io_err(spec.stdout_path))?;
     let stderr = File::create(spec.stderr_path).map_err(io_err(spec.stderr_path))?;
-    let started_at = Utc::now();
+    let started_at = Timestamp::now();
     let started = Instant::now();
 
     let mut command = Command::new(spec.program);
@@ -142,7 +142,7 @@ pub fn run_cancellable(spec: &Spec<'_>, cancellation: &Cancellation) -> Result<O
                 timed_out: false,
                 spawn_error: Some(e.to_string()),
                 started_at,
-                finished_at: Utc::now(),
+                finished_at: Timestamp::now(),
             });
         }
     };
@@ -194,7 +194,7 @@ pub fn run_cancellable(spec: &Spec<'_>, cancellation: &Cancellation) -> Result<O
                 timed_out: false,
                 spawn_error: None,
                 started_at,
-                finished_at: Utc::now(),
+                finished_at: Timestamp::now(),
             });
         }
         if cancelled || started.elapsed() >= spec.timeout {
@@ -225,7 +225,7 @@ pub fn run_cancellable(spec: &Spec<'_>, cancellation: &Cancellation) -> Result<O
                 timed_out: true,
                 spawn_error: None,
                 started_at,
-                finished_at: Utc::now(),
+                finished_at: Timestamp::now(),
             });
         }
         std::thread::sleep(Duration::from_millis(100));

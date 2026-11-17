@@ -250,7 +250,7 @@ mod tests {
         let mut db = Db::open(&path).unwrap();
         db.create_ui_user(&user("owner", true)).unwrap();
         db.create_ui_user(&user("reader", false)).unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = crate::db::UiSession {
             csrf: "csrf".into(),
             principal_id: Some("reader".into()),
@@ -261,7 +261,7 @@ mod tests {
                 "token",
                 &session,
                 "named",
-                now + Duration::days(30),
+                now + SignedDuration::from_hours(24 * 30),
                 None,
                 now,
             )
@@ -280,7 +280,7 @@ mod tests {
                 "stale",
                 &session,
                 "named",
-                now + Duration::days(30),
+                now + SignedDuration::from_hours(24 * 30),
                 None,
                 now,
             )
@@ -357,7 +357,7 @@ mod tests {
             db.change_ui_password("alice", "initial-hash", "personal-hash")
                 .unwrap()
         );
-        let now = Utc::now();
+        let now = Timestamp::now();
         let revision = db.get_ui_user("alice").unwrap().unwrap().revision;
         assert!(
             db.save_ui_session(
@@ -368,7 +368,7 @@ mod tests {
                     verified_revision: Some(revision),
                 },
                 "named",
-                now + Duration::days(30),
+                now + SignedDuration::from_hours(24 * 30),
                 None,
                 now,
             )

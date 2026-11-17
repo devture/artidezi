@@ -4,9 +4,8 @@
 //! Provider-neutral bounds and sanitization for CI job logs. Log text stays untrusted data; these
 //! helpers only limit how much of it is kept and strip terminal control sequences.
 
+use artidezi_contract::time::Timestamp;
 use std::collections::VecDeque;
-
-use chrono::Utc;
 
 use crate::{CiJobLog, CiLogOutcome, ForgeError};
 
@@ -22,7 +21,7 @@ pub(crate) fn unavailable(name: &str, outcome: CiLogOutcome) -> CiJobLog {
         run_id: None,
         run_attempt: None,
         outcome,
-        captured_at: Utc::now(),
+        captured_at: Timestamp::now(),
         raw_bytes: 0,
         sanitized_bytes: 0,
         truncated: false,
@@ -269,7 +268,7 @@ fn diagnostic_ranges(log: &str) -> Vec<std::ops::Range<usize>> {
 
 fn log_line_text(line: &str) -> &str {
     line.split_once(' ')
-        .filter(|(prefix, _)| chrono::DateTime::parse_from_rfc3339(prefix).is_ok())
+        .filter(|(prefix, _)| artidezi_contract::time::Timestamp::parse_rfc3339(prefix).is_ok())
         .map_or(line, |(_, text)| text)
 }
 

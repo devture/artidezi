@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use artidezi_contract::common::RepositoryAccess;
+use artidezi_contract::time::Timestamp;
 use artidezi_contract::{Job, attempt::AttemptRecord};
 use artidezi_store::ArtifactStore;
 use artidezi_store::model::{Attempt, AttemptState, Task, TaskState};
@@ -43,7 +44,7 @@ impl Orchestrator {
         )?;
         if !superseded {
             self.db.record_transient_failure(&attempt.id, reason)?;
-            self.state_access().recover_expired_at(chrono::Utc::now())?;
+            self.state_access().recover_expired_at(Timestamp::now())?;
         }
         Ok(true)
     }
@@ -125,7 +126,7 @@ impl Orchestrator {
                 self.db.save_pull_request_source(&tracked)?;
             }
             self.db.adopt_transient_failure(&attempt.id, reason)?;
-            self.state_access().recover_expired_at(chrono::Utc::now())?;
+            self.state_access().recover_expired_at(Timestamp::now())?;
         } else if attempt.state == AttemptState::Valid
             && events
                 .iter()

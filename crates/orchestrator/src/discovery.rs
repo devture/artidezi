@@ -14,12 +14,12 @@ use artidezi_config::resolve::{
 };
 use artidezi_contract::common::Outcome;
 use artidezi_contract::job::InputRef;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{
     CheckResultKind, ChecksState, CiLogOutcome, MergeRequestInfo, MergeRequestState,
 };
 use artidezi_git::bundle;
 use artidezi_store::{model::*, new_id};
-use chrono::{DateTime, Duration, Utc};
 use git2::Repository;
 use serde::Serialize;
 
@@ -64,14 +64,14 @@ impl Orchestrator {
         project: Option<&str>,
         force: bool,
     ) -> Result<DiscoveryReport> {
-        self.scan_pull_requests_at(project, force, Utc::now())
+        self.scan_pull_requests_at(project, force, Timestamp::now())
     }
 
     pub fn scan_pull_requests_at(
         &mut self,
         project: Option<&str>,
         force: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<DiscoveryReport> {
         if !force && self.db.discovery_paused()? {
             return Ok(DiscoveryReport::default());
@@ -138,7 +138,7 @@ impl Orchestrator {
         project: &str,
         repository_id: &str,
         discovery: &PullRequestDiscovery,
-        now: DateTime<Utc>,
+        now: Timestamp,
         report: &mut DiscoveryReport,
     ) -> Result<()> {
         let repository = self.config.projects[project].repositories[repository_id].clone();
@@ -256,7 +256,7 @@ impl Orchestrator {
     fn process_observed_pull(
         &mut self,
         target: DiscoveryTarget<'_>,
-        now: DateTime<Utc>,
+        now: Timestamp,
         pull: MergeRequestInfo,
         existing: Option<TrackedPullRequest>,
         report: &mut DiscoveryReport,
@@ -346,7 +346,7 @@ impl Orchestrator {
                 source.status = format!("Preparation failed: {error}");
                 if !source.paused {
                     source.follow_up = Some(PullRequestFollowUp {
-                        at: now + Duration::seconds(FOLLOW_UP_INTERVAL_SECONDS),
+                        at: now + SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS),
                         reason: PullRequestFollowUpReason::Retry,
                     });
                 }
@@ -359,10 +359,7 @@ impl Orchestrator {
 
     /// Revisit only unresolved sources whose persisted deadline has passed. The repository-wide
     /// open listing remains on the configured poll interval.
-    pub(crate) fn follow_up_pull_requests_at(
-        &mut self,
-        now: DateTime<Utc>,
-    ) -> Result<DiscoveryReport> {
+    pub(crate) fn follow_up_pull_requests_at(&mut self, now: Timestamp) -> Result<DiscoveryReport> {
         if self.db.discovery_paused()? {
             return Ok(DiscoveryReport::default());
         }
@@ -425,7 +422,7 @@ impl Orchestrator {
                 }
                 Err(error) => {
                     source.follow_up = Some(PullRequestFollowUp {
-                        at: now + Duration::seconds(FOLLOW_UP_INTERVAL_SECONDS),
+                        at: now + SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS),
                         reason: PullRequestFollowUpReason::Retry,
                     });
                     self.db.save_pull_request_source(&source)?;
@@ -443,7 +440,7 @@ impl Orchestrator {
         pull: &MergeRequestInfo,
         handler: Option<&PullRequestHandler>,
         discovery: &PullRequestDiscovery,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<Task>> {
         source.follow_up = None;
         if pull.state != MergeRequestState::Open {
@@ -571,8 +568,8 @@ impl Orchestrator {
                 return Ok(None);
             }
         }
-        let settled_at =
-            source.head_observed_at + Duration::seconds(i64::from(discovery.settle_seconds));
+        let settled_at = source.head_observed_at
+            + SignedDuration::from_secs(i64::from(discovery.settle_seconds));
         if settled_at > now {
             source.status = "Waiting for the source head to settle".into();
             source.follow_up = Some(PullRequestFollowUp {
@@ -584,7 +581,7 @@ impl Orchestrator {
         if pull.draft {
             source.status = "Waiting for the PR to leave draft state".into();
             source.follow_up = Some(PullRequestFollowUp {
-                at: now + Duration::seconds(FOLLOW_UP_INTERVAL_SECONDS),
+                at: now + SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS),
                 reason: PullRequestFollowUpReason::Draft,
             });
             return Ok(None);
@@ -592,7 +589,7 @@ impl Orchestrator {
         if handler.wait_for_checks_to_finish && pull.checks == ChecksState::Pending {
             source.status = "Waiting for forge checks to finish".into();
             source.follow_up = Some(PullRequestFollowUp {
-                at: now + Duration::seconds(FOLLOW_UP_INTERVAL_SECONDS),
+                at: now + SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS),
                 reason: PullRequestFollowUpReason::Checks,
             });
             return Ok(None);
@@ -848,7 +845,7 @@ impl Orchestrator {
         if let Some((feedback, _)) = feedback {
             instructions.push_str(&format!("\n\nHuman follow-up:\n{feedback}"));
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         let task = Task {
             id: new_id("tsk"),
             number: 0,
@@ -1104,7 +1101,7 @@ impl Orchestrator {
         source.paused = false;
         source.handler_id = handler.id.clone();
         source.observed_head = pull.head_commit.0.clone();
-        source.head_observed_at = Utc::now();
+        source.head_observed_at = Timestamp::now();
         let next =
             self.create_pull_request_task(&mut source, &pull, &handler, Some((feedback, actor)))?;
         if !task.state.is_terminal() {

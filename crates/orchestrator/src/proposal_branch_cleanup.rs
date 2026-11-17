@@ -6,9 +6,9 @@
 
 use artidezi_config::{ResolvedProjectPolicy, resolve::ResolvedRepository};
 use artidezi_contract::common::RepositoryAccess;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::MergeRequestState as RemoteState;
 use artidezi_store::model::{MergeRequestState, PublishedMergeRequest, Task};
-use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::{Orchestrator, OrchestratorError, Result};
@@ -20,7 +20,7 @@ impl Orchestrator {
         attempt_id: Option<&str>,
         policy: &ResolvedProjectPolicy,
         mr: &PublishedMergeRequest,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) {
         let queued = if mr.state == MergeRequestState::Merged {
             match self.db.begin_branch_cleanup(mr, now) {
@@ -128,7 +128,7 @@ impl Orchestrator {
             if retry {
                 failed["attempt"] = tries.into();
                 failed["next_attempt_at"] =
-                    (now + chrono::Duration::seconds(60)).to_rfc3339().into();
+                    (now + SignedDuration::from_secs(60)).to_rfc3339().into();
             }
             if let Err(error) = self.db.record_event(
                 Some(&task.id),

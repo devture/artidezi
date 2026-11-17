@@ -21,6 +21,7 @@ mod auth;
 pub mod ui;
 mod worker;
 
+use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -337,7 +338,7 @@ pub async fn serve(
         loop {
             interval.tick().await;
             let result = with_state(&recovery_state, |o| {
-                Ok(o.recover_expired_at(chrono::Utc::now())?)
+                Ok(o.recover_expired_at(Timestamp::now())?)
             })
             .await;
             match result {

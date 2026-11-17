@@ -4,9 +4,9 @@
 
 use artidezi_config::model::DeliveryMode;
 use artidezi_contract::common::{ArtifactRef, Outcome};
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_store::model::*;
 use artidezi_store::{Db, StoreError, new_id};
-use chrono::{Duration, Utc};
 
 fn artifact(c: char) -> ArtifactRef {
     ArtifactRef {
@@ -22,7 +22,7 @@ fn merged_branch_cleanup_queue_is_bounded_persistent_and_never_refreshes_a_lease
     let mut db = Db::open(&path).unwrap();
     let t = task();
     db.insert_task(&t).unwrap();
-    let now = Utc::now();
+    let now = Timestamp::now();
     for number in 1..=20 {
         db.upsert_merge_request(&PublishedMergeRequest {
             task_id: t.id.clone(),
@@ -38,7 +38,7 @@ fn merged_branch_cleanup_queue_is_bounded_persistent_and_never_refreshes_a_lease
         .unwrap();
     }
     assert!(
-        db.due_branch_cleanups(now - Duration::seconds(1), 16)
+        db.due_branch_cleanups(now - SignedDuration::from_secs(1), 16)
             .unwrap()
             .is_empty()
     );
@@ -56,13 +56,13 @@ fn merged_branch_cleanup_queue_is_bounded_persistent_and_never_refreshes_a_lease
     drop(db);
     let mut db = Db::open(&path).unwrap();
     assert_eq!(
-        db.begin_branch_cleanup(&changed, now + Duration::seconds(60))
+        db.begin_branch_cleanup(&changed, now + SignedDuration::from_secs(60))
             .unwrap(),
         Some((original.clone(), 2))
     );
     db.finish_branch_cleanup(&original).unwrap();
     db.upsert_merge_request(&changed).unwrap();
-    let later = now + Duration::days(1);
+    let later = now + SignedDuration::from_hours(24);
     assert!(db.begin_branch_cleanup(&changed, later).unwrap().is_none());
     assert_eq!(db.due_branch_cleanups(later, 100).unwrap().len(), 19);
     assert!(
@@ -82,24 +82,39 @@ fn worker_drain_cooldown_and_bounded_recovery_survive_restart() {
     db.insert_task(&t).unwrap();
     let first = attempt(&t.id, 1);
     db.insert_attempt(&first).unwrap();
-    let now = Utc::now();
-    db.lease_next_attempt("personal", "failed-worker", Duration::seconds(120), now)
-        .unwrap()
-        .unwrap();
+    let now = Timestamp::now();
+    db.lease_next_attempt(
+        "personal",
+        "failed-worker",
+        SignedDuration::from_secs(120),
+        now,
+    )
+    .unwrap()
+    .unwrap();
     db.drain_worker("personal", "failed-worker", true, "operator")
         .unwrap();
     // Drain does not revoke current work or its heartbeats.
-    db.heartbeat(&first.id, "failed-worker", Duration::seconds(120), now)
-        .unwrap();
+    db.heartbeat(
+        &first.id,
+        "failed-worker",
+        SignedDuration::from_secs(120),
+        now,
+    )
+    .unwrap();
     let second_task = task();
     db.insert_task(&second_task).unwrap();
     db.insert_attempt(&attempt(&second_task.id, 1)).unwrap();
     assert!(
-        db.lease_next_attempt("personal", "failed-worker", Duration::seconds(120), now)
-            .unwrap()
-            .is_none()
+        db.lease_next_attempt(
+            "personal",
+            "failed-worker",
+            SignedDuration::from_secs(120),
+            now
+        )
+        .unwrap()
+        .is_none()
     );
-    let expired = now + Duration::seconds(121);
+    let expired = now + SignedDuration::from_secs(121);
     assert_eq!(
         db.expire_leases(expired).unwrap(),
         std::slice::from_ref(&first.id)
@@ -118,15 +133,20 @@ fn worker_drain_cooldown_and_bounded_recovery_survive_restart() {
     db.observe_worker("personal", "failed-worker", Some(false), expired)
         .unwrap();
     assert!(
-        db.lease_next_attempt("personal", "failed-worker", Duration::seconds(120), expired)
-            .unwrap()
-            .is_none()
+        db.lease_next_attempt(
+            "personal",
+            "failed-worker",
+            SignedDuration::from_secs(120),
+            expired
+        )
+        .unwrap()
+        .is_none()
     );
     let other = db
         .lease_next_attempt(
             "personal",
             "healthy-worker",
-            Duration::seconds(120),
+            SignedDuration::from_secs(120),
             expired,
         )
         .unwrap()
@@ -139,7 +159,7 @@ fn worker_drain_cooldown_and_bounded_recovery_survive_restart() {
         db.lease_next_attempt(
             "personal",
             "healthy-worker",
-            Duration::seconds(120),
+            SignedDuration::from_secs(120),
             expired,
         )
         .unwrap()
@@ -150,20 +170,26 @@ fn worker_drain_cooldown_and_bounded_recovery_survive_restart() {
         db.lease_next_attempt(
             "personal",
             "healthy-worker",
-            Duration::seconds(120),
+            SignedDuration::from_secs(120),
             expired
         )
         .unwrap()
         .is_none()
     );
-    db.expire_leases(expired + Duration::seconds(121)).unwrap();
+    db.expire_leases(expired + SignedDuration::from_secs(121))
+        .unwrap();
     let third = attempt(&t.id, 3);
     assert!(!db.recover_lost_attempt(&retry.id, Some(&third), 1).unwrap());
     assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::NeedsHuman);
     assert_eq!(db.list_attempts(&t.id).unwrap().len(), 2);
     assert!(
-        db.heartbeat(&first.id, "failed-worker", Duration::seconds(120), expired)
-            .is_err()
+        db.heartbeat(
+            &first.id,
+            "failed-worker",
+            SignedDuration::from_secs(120),
+            expired
+        )
+        .is_err()
     );
     let workers = db.list_workers().unwrap();
     assert_eq!(workers.len(), 2);
@@ -177,10 +203,10 @@ fn forgetting_a_worker_leaves_its_lease_to_expire_and_recover() {
     db.insert_task(&t).unwrap();
     let first = attempt(&t.id, 1);
     db.insert_attempt(&first).unwrap();
-    let now = Utc::now();
+    let now = Timestamp::now();
     db.observe_worker("personal", "removed", None, now).unwrap();
     db.observe_worker("personal", "kept", None, now).unwrap();
-    db.lease_next_attempt("personal", "removed", Duration::seconds(120), now)
+    db.lease_next_attempt("personal", "removed", SignedDuration::from_secs(120), now)
         .unwrap()
         .unwrap();
 
@@ -189,7 +215,9 @@ fn forgetting_a_worker_leaves_its_lease_to_expire_and_recover() {
     assert_eq!(workers.len(), 1);
     assert_eq!(workers[0].worker_id, "kept");
 
-    let lost = db.expire_leases(now + Duration::seconds(121)).unwrap();
+    let lost = db
+        .expire_leases(now + SignedDuration::from_secs(121))
+        .unwrap();
     assert_eq!(lost, vec![first.id.clone()]);
     let retry = attempt(&t.id, 2);
     assert!(db.recover_lost_attempt(&first.id, Some(&retry), 1).unwrap());
@@ -204,10 +232,11 @@ fn recovery_never_reopens_closed_tasks_or_reruns_publication_history() {
         db.insert_task(&t).unwrap();
         let a = attempt(&t.id, 1);
         db.insert_attempt(&a).unwrap();
-        let now = Utc::now();
-        db.lease_next_attempt("personal", "worker", Duration::seconds(120), now)
+        let now = Timestamp::now();
+        db.lease_next_attempt("personal", "worker", SignedDuration::from_secs(120), now)
             .unwrap();
-        db.expire_leases(now + Duration::seconds(121)).unwrap();
+        db.expire_leases(now + SignedDuration::from_secs(121))
+            .unwrap();
         if closed {
             db.set_task_state(&t.id, TaskState::Closed, "operator")
                 .unwrap();
@@ -244,17 +273,18 @@ fn a_prior_accepted_record_blocks_automatic_reexecution_of_a_lost_revision() {
     db.insert_task(&task).unwrap();
     let first = attempt(&task.id, 1);
     db.insert_attempt(&first).unwrap();
-    let now = Utc::now();
-    db.lease_next_attempt("personal", "worker-1", Duration::seconds(120), now)
+    let now = Timestamp::now();
+    db.lease_next_attempt("personal", "worker-1", SignedDuration::from_secs(120), now)
         .unwrap();
     db.record_upload(&first.id, "worker-1", &artifact('b'), None, None)
         .unwrap();
     db.judge_attempt(&first.id, vec![]).unwrap();
     let revision = attempt(&task.id, 2);
     db.insert_attempt(&revision).unwrap();
-    db.lease_next_attempt("personal", "worker-2", Duration::seconds(120), now)
+    db.lease_next_attempt("personal", "worker-2", SignedDuration::from_secs(120), now)
         .unwrap();
-    db.expire_leases(now + Duration::seconds(121)).unwrap();
+    db.expire_leases(now + SignedDuration::from_secs(121))
+        .unwrap();
     assert!(
         !db.recover_lost_attempt(&revision.id, Some(&attempt(&task.id, 3)), 2)
             .unwrap()
@@ -264,7 +294,7 @@ fn a_prior_accepted_record_blocks_automatic_reexecution_of_a_lost_revision() {
 }
 
 fn task() -> Task {
-    let now = Utc::now();
+    let now = Timestamp::now();
     Task {
         id: new_id("tsk"),
         number: 0,
@@ -288,7 +318,7 @@ fn task() -> Task {
 }
 
 fn attempt(task_id: &str, number: u32) -> Attempt {
-    let now = Utc::now();
+    let now = Timestamp::now();
     Attempt {
         id: new_id("att"),
         task_id: task_id.into(),
@@ -325,7 +355,7 @@ fn discovery_queue_and_source_claim_are_atomic() {
         closed: false,
         handler_id: "renovate".into(),
         observed_head: "a".repeat(40),
-        head_observed_at: Utc::now(),
+        head_observed_at: Timestamp::now(),
         last_task_id: Some(t.id.clone()),
         runs: 1,
         paused: false,
@@ -346,15 +376,20 @@ fn discovery_queue_and_source_claim_are_atomic() {
     assert_eq!(db.get_pull_request_source(&source.id).unwrap(), source);
     let mut scheduled = source.clone();
     scheduled.follow_up = Some(PullRequestFollowUp {
-        at: Utc::now() + Duration::minutes(2),
+        at: Timestamp::now() + SignedDuration::from_mins(2),
         reason: PullRequestFollowUpReason::Checks,
     });
     db.save_pull_request_source(&scheduled).unwrap();
     assert_eq!(db.get_pull_request_source(&source.id).unwrap(), scheduled);
     assert!(
-        db.lease_next_attempt("personal", "worker", Duration::minutes(1), Utc::now())
-            .unwrap()
-            .is_some()
+        db.lease_next_attempt(
+            "personal",
+            "worker",
+            SignedDuration::from_mins(1),
+            Timestamp::now()
+        )
+        .unwrap()
+        .is_some()
     );
 }
 
@@ -375,7 +410,7 @@ fn superseding_closes_the_task_and_reschedules_its_source_atomically() {
         closed: false,
         handler_id: "renovate".into(),
         observed_head: "a".repeat(40),
-        head_observed_at: Utc::now(),
+        head_observed_at: Timestamp::now(),
         last_task_id: Some(t.id.clone()),
         runs: 1,
         paused: true,
@@ -388,7 +423,7 @@ fn superseding_closes_the_task_and_reschedules_its_source_atomically() {
     rescheduled.paused = false;
     rescheduled.observed_head = "b".repeat(40);
     rescheduled.follow_up = Some(PullRequestFollowUp {
-        at: Utc::now(),
+        at: Timestamp::now(),
         reason: PullRequestFollowUpReason::Settling,
     });
     // Another record for the same pull request violates its uniqueness when saved last.
@@ -449,14 +484,14 @@ fn ci_wait_and_poll_deadline_survive_restart_and_stop_on_state_change() {
     let mut db = Db::open(&path).unwrap();
     let t = task();
     db.insert_task(&t).unwrap();
-    let now = Utc::now();
-    let due = now + Duration::minutes(10);
+    let now = Timestamp::now();
+    let due = now + SignedDuration::from_mins(10);
     db.wait_for_source_ci(&t.id, due).unwrap();
     drop(db);
     let mut db = Db::open(&path).unwrap();
     assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::WaitingForCi);
     assert!(!db.claim_source_ci_check(&t.id, now, due).unwrap());
-    let next = due + Duration::minutes(10);
+    let next = due + SignedDuration::from_mins(10);
     assert!(db.claim_source_ci_check(&t.id, due, next).unwrap());
     assert!(!db.clone().claim_source_ci_check(&t.id, due, next).unwrap());
     drop(db);
@@ -465,7 +500,7 @@ fn ci_wait_and_poll_deadline_survive_restart_and_stop_on_state_change() {
     db.set_task_state(&t.id, TaskState::Closed, "human")
         .unwrap();
     assert!(
-        !db.claim_source_ci_check(&t.id, next, next + Duration::minutes(10))
+        !db.claim_source_ci_check(&t.id, next, next + SignedDuration::from_mins(10))
             .unwrap()
     );
     assert!(db.wait_for_source_ci(&t.id, next).is_err());
@@ -504,27 +539,27 @@ fn lease_lifecycle() {
     let a = attempt(&t.id, 1);
     db.insert_attempt(&a).unwrap();
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     assert!(
-        db.lease_next_attempt("other-pool", "w1", Duration::minutes(5), now)
+        db.lease_next_attempt("other-pool", "w1", SignedDuration::from_mins(5), now)
             .unwrap()
             .is_none()
     );
     let (leased, lease) = db
-        .lease_next_attempt("personal", "w1", Duration::minutes(5), now)
+        .lease_next_attempt("personal", "w1", SignedDuration::from_mins(5), now)
         .unwrap()
         .unwrap();
     assert_eq!(leased.id, a.id);
     assert_eq!(lease.worker_id, "w1");
     assert!(
-        db.lease_next_attempt("personal", "w2", Duration::minutes(5), now)
+        db.lease_next_attempt("personal", "w2", SignedDuration::from_mins(5), now)
             .unwrap()
             .is_none()
     );
 
     // Another worker cannot heartbeat or upload.
     assert!(
-        db.heartbeat(&a.id, "w2", Duration::minutes(5), now)
+        db.heartbeat(&a.id, "w2", SignedDuration::from_mins(5), now)
             .is_err()
     );
     assert!(
@@ -533,9 +568,9 @@ fn lease_lifecycle() {
     );
 
     let lease = db
-        .heartbeat(&a.id, "w1", Duration::minutes(10), now)
+        .heartbeat(&a.id, "w1", SignedDuration::from_mins(10), now)
         .unwrap();
-    assert_eq!(lease.expires_at, now + Duration::minutes(10));
+    assert_eq!(lease.expires_at, now + SignedDuration::from_mins(10));
 
     db.record_upload(
         &a.id,
@@ -569,31 +604,38 @@ fn heartbeats_cannot_revive_expired_leases_or_cross_a_fixed_deadline() {
     let a = attempt(&t.id, 1);
     db.insert_task(&t).unwrap();
     db.insert_attempt(&a).unwrap();
-    let start = Utc::now();
-    db.lease_next_attempt("personal", "w1", Duration::minutes(5), start)
+    let start = Timestamp::now();
+    db.lease_next_attempt("personal", "w1", SignedDuration::from_mins(5), start)
         .unwrap()
         .unwrap();
-    let deadline = start + Duration::minutes(8);
+    let deadline = start + SignedDuration::from_mins(8);
     let lease = db
         .heartbeat_until(
             &a.id,
             "w1",
-            Duration::minutes(10),
-            start + Duration::minutes(4),
+            SignedDuration::from_mins(10),
+            start + SignedDuration::from_mins(4),
             deadline,
         )
         .unwrap();
     assert_eq!(lease.expires_at, deadline);
     assert!(
-        db.heartbeat_until(&a.id, "w1", Duration::minutes(10), deadline, deadline)
-            .is_err()
+        db.heartbeat_until(
+            &a.id,
+            "w1",
+            SignedDuration::from_mins(10),
+            deadline,
+            deadline
+        )
+        .is_err()
     );
     assert!(
-        db.heartbeat(&a.id, "w1", Duration::minutes(10), deadline)
+        db.heartbeat(&a.id, "w1", SignedDuration::from_mins(10), deadline)
             .is_err()
     );
     assert_eq!(
-        db.expire_leases(deadline + Duration::seconds(1)).unwrap(),
+        db.expire_leases(deadline + SignedDuration::from_secs(1))
+            .unwrap(),
         std::slice::from_ref(&a.id)
     );
     assert_eq!(db.get_attempt(&a.id).unwrap().state, AttemptState::Lost);
@@ -606,15 +648,15 @@ fn overdue_pre_upgrade_lease_is_shortened_only_by_its_owner() {
     let a = attempt(&t.id, 1);
     db.insert_task(&t).unwrap();
     db.insert_attempt(&a).unwrap();
-    let start = Utc::now();
-    let original = start + Duration::hours(24);
-    db.lease_next_attempt("personal", "w1", Duration::hours(24), start)
+    let start = Timestamp::now();
+    let original = start + SignedDuration::from_hours(24);
+    db.lease_next_attempt("personal", "w1", SignedDuration::from_hours(24), start)
         .unwrap()
         .unwrap();
-    let deadline = start + Duration::hours(2);
-    let now = start + Duration::hours(3);
+    let deadline = start + SignedDuration::from_hours(2);
+    let now = start + SignedDuration::from_hours(3);
     assert!(
-        db.heartbeat_until(&a.id, "w2", Duration::minutes(15), now, deadline)
+        db.heartbeat_until(&a.id, "w2", SignedDuration::from_mins(15), now, deadline)
             .is_err()
     );
     assert_eq!(
@@ -622,11 +664,11 @@ fn overdue_pre_upgrade_lease_is_shortened_only_by_its_owner() {
             .unwrap()
             .unwrap()
             .expires_at
-            .timestamp_micros(),
-        original.timestamp_micros()
+            .unix_micros(),
+        original.unix_micros()
     );
     assert!(
-        db.heartbeat_until(&a.id, "w1", Duration::minutes(15), now, deadline)
+        db.heartbeat_until(&a.id, "w1", SignedDuration::from_mins(15), now, deadline)
             .is_err()
     );
     assert_eq!(db.expire_leases(now).unwrap(), [a.id]);
@@ -639,17 +681,18 @@ fn expired_leases_become_lost() {
     db.insert_task(&t).unwrap();
     let a = attempt(&t.id, 1);
     db.insert_attempt(&a).unwrap();
-    let now = Utc::now();
-    db.lease_next_attempt("personal", "w1", Duration::minutes(5), now)
+    let now = Timestamp::now();
+    db.lease_next_attempt("personal", "w1", SignedDuration::from_mins(5), now)
         .unwrap()
         .unwrap();
     assert!(
-        db.expire_leases(now + Duration::minutes(4))
+        db.expire_leases(now + SignedDuration::from_mins(4))
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        db.expire_leases(now + Duration::minutes(6)).unwrap(),
+        db.expire_leases(now + SignedDuration::from_mins(6))
+            .unwrap(),
         vec![a.id.clone()]
     );
     assert_eq!(db.get_attempt(&a.id).unwrap().state, AttemptState::Lost);
@@ -670,7 +713,7 @@ fn merge_requests_upsert() {
         source_branch: "artidezi/tsk_x".into(),
         head_commit: "1".repeat(40),
         state: MergeRequestState::Open,
-        updated_at: Utc::now(),
+        updated_at: Timestamp::now(),
     };
     db.upsert_merge_request(&mr).unwrap();
     mr.head_commit = "2".repeat(40);
@@ -752,8 +795,8 @@ fn cloned_handles_lease_once_and_share_cancellation() {
                         .lease_next_attempt(
                             "personal",
                             &format!("worker-{i}"),
-                            Duration::minutes(1),
-                            Utc::now(),
+                            SignedDuration::from_mins(1),
+                            Timestamp::now(),
                         )
                         .unwrap()
                 })
@@ -770,8 +813,8 @@ fn cloned_handles_lease_once_and_share_cancellation() {
         .heartbeat(
             &a.id,
             &winners[0].1.worker_id,
-            Duration::minutes(1),
-            Utc::now(),
+            SignedDuration::from_mins(1),
+            Timestamp::now(),
         )
         .unwrap();
     assert!(db.get_lease(&a.id).unwrap().is_some());
@@ -781,8 +824,8 @@ fn cloned_handles_lease_once_and_share_cancellation() {
             .heartbeat(
                 &a.id,
                 &winners[0].1.worker_id,
-                Duration::minutes(1),
-                Utc::now()
+                SignedDuration::from_mins(1),
+                Timestamp::now()
             )
             .is_err()
     );
@@ -810,7 +853,12 @@ fn pausing_queued_work_races_safely_with_leasing() {
             let worker = scope.spawn(move || {
                 gate.wait();
                 transport
-                    .lease_next_attempt("personal", "worker", Duration::minutes(1), Utc::now())
+                    .lease_next_attempt(
+                        "personal",
+                        "worker",
+                        SignedDuration::from_mins(1),
+                        Timestamp::now(),
+                    )
                     .unwrap()
             });
             let pause = scope.spawn(|| {
@@ -839,7 +887,7 @@ fn transient_retry_backoff_budget_and_maintenance_survive_restart() {
     let mut db = Db::open(&path).unwrap();
     let t = task();
     db.insert_task(&t).unwrap();
-    let now = Utc::now();
+    let now = Timestamp::now();
     db.set_discovery_paused(true, "operator").unwrap();
     for number in 1..=3 {
         let current = if number == 1 {
@@ -855,14 +903,14 @@ fn transient_retry_backoff_budget_and_maintenance_survive_restart() {
                 db.lease_next_attempt(
                     "personal",
                     "worker",
-                    Duration::seconds(120),
-                    run_at - Duration::milliseconds(1)
+                    SignedDuration::from_secs(120),
+                    run_at - SignedDuration::from_millis(1)
                 )
                 .unwrap()
                 .is_none()
             );
         }
-        db.lease_next_attempt("personal", "worker", Duration::seconds(120), run_at)
+        db.lease_next_attempt("personal", "worker", SignedDuration::from_secs(120), run_at)
             .unwrap()
             .unwrap();
         db.record_upload(&current.id, "worker", &artifact('b'), None, None)

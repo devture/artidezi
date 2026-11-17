@@ -83,7 +83,7 @@ until doing so. A local reset restores that banner. The flag is stored in SQLite
 calculated by comparing hashes on every login. Changing the initial hash in config does not
 rotate a current password; use a password reset for recovery.
 
-Each account has a personal time zone, set on **Account**. It defaults to the browser's zone at first sign-in, and to UTC until then.
+Each account has a personal time zone, set on **Account**. It defaults to the browser's zone at first sign-in, and to UTC until then. Zone names must match the IANA time zone database built into ArtiDezi exactly (for example `Europe/Berlin`), so they do not depend on the host's `tzdata`.
 
 ### Permissions and password recovery
 

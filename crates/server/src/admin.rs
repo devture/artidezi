@@ -6,6 +6,7 @@
 
 use artidezi_config::model::DeliveryMode;
 use artidezi_config::resolve::TaskSelection;
+use artidezi_contract::time::Timestamp;
 use artidezi_store::model::*;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -274,7 +275,7 @@ pub async fn cleanup_artifacts(
     require_admin(&state, &headers)?;
     Ok(Json(
         with_orchestrator(&state, move |o| {
-            Ok(o.cleanup_artifacts_at(chrono::Utc::now(), request.apply)?)
+            Ok(o.cleanup_artifacts_at(Timestamp::now(), request.apply)?)
         })
         .await?,
     ))

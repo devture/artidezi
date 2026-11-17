@@ -20,6 +20,7 @@ pub mod common;
 pub mod job;
 pub mod result;
 pub mod schema;
+pub mod time;
 pub mod transient;
 pub mod validate;
 pub mod wire;

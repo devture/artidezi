@@ -3,6 +3,7 @@
 
 use super::*;
 use artidezi_contract::attempt::{AttemptStatus, VerificationStep};
+use artidezi_contract::time::Timestamp;
 use artidezi_store::ArtifactStore;
 use std::collections::BTreeSet;
 
@@ -255,7 +256,7 @@ pub(super) fn card(task: &Task, view: &AttemptView, timezone: &str) -> String {
         }
         out.push_str("</section>");
     } else if a.state == AttemptState::Queued {
-        if let Some(at) = a.not_before.filter(|at| *at > chrono::Utc::now()) {
+        if let Some(at) = a.not_before.filter(|at| *at > Timestamp::now()) {
             write!(out, r#"<p class="retry-scheduled">Automatic retry scheduled for {}. No action is needed.</p>"#, time(&at, timezone)).unwrap();
         } else if let Some(reason) = &view.unschedulable {
             write!(
@@ -296,7 +297,7 @@ pub(super) fn card(task: &Task, view: &AttemptView, timezone: &str) -> String {
                         write!(out, "<span>Exit code {code}</span>").unwrap();
                     }
                     if let (Some(start), Some(end)) = (check.started_at, check.finished_at) {
-                        let millis = (end - start).num_milliseconds().max(0);
+                        let millis = (end - start).as_millis().max(0);
                         write!(
                             out,
                             r#"<span title="Command runtime">{}</span>"#,
@@ -455,11 +456,11 @@ pub(in crate::ui) fn unschedulable_reason(
     workers: &[Worker],
     lease_ttl_seconds: u64,
 ) -> Option<String> {
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
     let connected: Vec<_> = workers
         .iter()
         .filter(|w| {
-            w.worker_pool == pool && (now - w.last_seen).num_seconds() <= lease_ttl_seconds as i64
+            w.worker_pool == pool && (now - w.last_seen).as_secs() <= lease_ttl_seconds as i64
         })
         .collect();
     if connected.is_empty() {
@@ -580,7 +581,7 @@ mod tests {
         let store = ArtifactStore::open(dir.path()).unwrap();
         let stderr = b"Your refresh token has already been used; secret=never-show-me";
         let reference = store.put(stderr).unwrap();
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         let mut record = AttemptRecord {
             schema_version: SCHEMA_VERSION,
             attempt_id: "attempt-test".into(),

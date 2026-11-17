@@ -81,7 +81,7 @@ pub fn validate_user(user: &UiUser, config: &Config) -> Result<(), String> {
     if !artidezi_config::validate::valid_ui_initial_hash(&user.password_hash) {
         return Err(format!("UI user {id}: invalid password hash"));
     }
-    if user.timezone.parse::<chrono_tz::Tz>().is_err() {
+    if super::render::time_zone(&user.timezone).is_none() {
         return Err(format!("UI user {id}: invalid timezone"));
     }
     for project in user.grants.keys() {

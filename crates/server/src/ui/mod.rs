@@ -7,6 +7,7 @@ mod assets;
 mod logs;
 mod render;
 
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -317,7 +318,7 @@ async fn session(state: &UiState, headers: &HeaderMap) -> Result<Option<Session>
     let scope = session_scope(&state.config);
     let stored = with_state(&state.api, move |o| {
         let stored =
-            o.db.ui_session_csrf(id.as_deref(), &scope, chrono::Utc::now())?;
+            o.db.ui_session_csrf(id.as_deref(), &scope, Timestamp::now())?;
         let user = stored
             .as_ref()
             .and_then(|stored| stored.principal_id.as_deref())
@@ -487,8 +488,8 @@ async fn login(
     let scope = session_scope(&state.config);
     let principal_id = Some(access.id.clone());
     let saved = with_state(&state.api, move |o| {
-        let now = chrono::Utc::now();
-        let expires = now + chrono::Duration::seconds(SESSION_LIFETIME.as_secs() as i64);
+        let now = Timestamp::now();
+        let expires = now + SignedDuration::from_secs(SESSION_LIFETIME.as_secs() as i64);
         Ok(o.db.save_ui_session(
             &digest,
             &artidezi_store::db::UiSession {
@@ -575,7 +576,7 @@ async fn change_timezone(
 ) -> Result<Response, UiError> {
     let session = require_form(&state, &headers, &form.csrf).await?;
     let timezone = form.timezone.trim().to_owned();
-    if timezone.len() > 64 || timezone.parse::<chrono_tz::Tz>().is_err() {
+    if timezone.len() > 64 || render::time_zone(&timezone).is_none() {
         let page = account_html(
             &session,
             None,

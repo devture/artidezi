@@ -4,7 +4,7 @@
 //! Automatically selected, bounded GitHub Actions job evidence. This never follows check-run URLs
 //! or fetches complete workflow archives. Missing optional evidence does not change the CI gate.
 
-use chrono::Utc;
+use artidezi_contract::time::Timestamp;
 use serde::Deserialize;
 
 use super::GithubForge;
@@ -193,7 +193,7 @@ pub(super) fn collect(
             result.truncated = truncated;
             result.excerpt = Some(excerpt);
             result.outcome = CiLogOutcome::Available;
-            result.captured_at = Utc::now();
+            result.captured_at = Timestamp::now();
             result
         })
         .collect()

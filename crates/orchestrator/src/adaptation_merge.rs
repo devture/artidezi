@@ -11,9 +11,9 @@
 use crate::{Orchestrator, Result};
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::{AdaptationAction, PullRequestMode};
+use artidezi_contract::time::Timestamp;
 use artidezi_forge::{ChecksState, ExpectedProposal, MergeMethod};
 use artidezi_store::model::*;
-use chrono::Utc;
 
 pub(crate) const MERGE_PENDING_STATUS: &str =
     "Published adaptations merge once their checks pass, unless a reviewer requests changes";
@@ -187,7 +187,7 @@ impl Orchestrator {
             {
                 Ok(commit) => {
                     mr.state = MergeRequestState::Merged;
-                    mr.updated_at = Utc::now();
+                    mr.updated_at = Timestamp::now();
                     self.db.upsert_merge_request(mr)?;
                     self.db.record_event(
                         Some(&task.id),
@@ -196,7 +196,13 @@ impl Orchestrator {
                         "merge_request.automerged",
                         serde_json::json!({"repository": mr.repository_id, "number": mr.number, "commit": commit}),
                     )?;
-                    self.cleanup_proposal_branch(task, Some(&attempt.id), policy, mr, Utc::now());
+                    self.cleanup_proposal_branch(
+                        task,
+                        Some(&attempt.id),
+                        policy,
+                        mr,
+                        Timestamp::now(),
+                    );
                 }
                 Err(error) => {
                     let mut payload = payload;

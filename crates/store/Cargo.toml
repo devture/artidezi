@@ -12,7 +12,6 @@ rust-version.workspace = true
 [dependencies]
 artidezi-config.workspace = true
 artidezi-contract.workspace = true
-chrono.workspace = true
 hex.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
