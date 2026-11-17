@@ -768,6 +768,20 @@ fn manual_proposal_changing_protected_paths_waits_for_authorization() {
 
     let held = w.orchestrator.db.get_task(&task.id).unwrap();
     assert_eq!(held.state, TaskState::NeedsHuman);
+    let reason = w
+        .orchestrator
+        .db
+        .list_events(&task.id)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "task.needs_human")
+        .map(|event| event.payload["reason"].clone())
+        .unwrap();
+    assert_eq!(
+        reason,
+        "Protected CI path changes require task-specific human authorization; publication withheld"
+    );
     assert!(
         w.orchestrator
             .db

@@ -1244,9 +1244,27 @@ fn old_dry_run_is_never_promoted_and_workflow_changes_are_withheld() {
     fs::write(&path, script).unwrap();
     assert_eq!(w.work(&path), AttemptState::Valid);
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    // The first delivery evaluates the grant against the accepted record; it must not fail on a
+    // stale view of the attempt from before the upload.
+    assert_eq!(
+        latest_hold_reason(&w, &id),
+        "could not apply accepted attempt outcome: Protected CI path changes require task-specific human authorization; publication withheld"
+    );
     no_publication(&f);
     assert!(w.orchestrator.retry_publication(&id, "human").is_err());
     no_publication(&f);
+}
+
+fn latest_hold_reason(w: &World, id: &str) -> String {
+    w.orchestrator
+        .db
+        .list_events(id)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "task.needs_human")
+        .and_then(|event| event.payload["reason"].as_str().map(str::to_owned))
+        .unwrap()
 }
 
 #[test]

@@ -138,6 +138,10 @@ impl Orchestrator {
         }
 
         let state = self.db.judge_attempt(attempt_id, problems.clone())?;
+        // Outcome handlers read the stored record and result (for example, a workflow grant is
+        // bound to the record digest), so they must see the attempt as recorded and judged, not
+        // the leased snapshot loaded before the upload.
+        let attempt = self.db.get_attempt(attempt_id)?;
         let task = self.db.get_task(&attempt.task_id)?;
         match (state, parsed) {
             (AttemptState::Valid, Some((record, result))) => {
