@@ -31,6 +31,17 @@ Keep each `COPY` on 1 line without JSON syntax, or the release scripts refuse it
 For a release sooner, start the workflow by hand with `gh workflow run release.yml`.
 It skips the waiting, but still needs an image change and passing CI.
 
+### Dependency advisories
+
+CI downloads the current RustSec advisories on every run, so a new advisory can fail an unchanged commit and hold back releases.
+It does so only for what a commit can fix by updating or replacing a dependency: a vulnerability or a yanked version (plus `deny.toml`'s license, ban and source rules).
+Unmaintained and unsound notices concern a crate rather than a commit, so CI allows them (`just deny`).
+
+The scheduled `Dependency advisories` workflow ([`advisories.yml`](../../.github/workflows/advisories.yml)) runs daily against `main` with every advisory kind (`just deny-strict`).
+It fails when it finds one, and GitHub's failed-run notification (sent to whoever last changed its `schedule`) is the report; nothing else is blocked.
+Run it by hand with `gh workflow run advisories.yml`.
+To accept a notice for a while, add its ID to `ignore` in `deny.toml` with the reason.
+
 ## What a release publishes
 
 The `Release` workflow runs the full checks with the new version embedded, tags the tested commit and publishes the exact images those checks built:

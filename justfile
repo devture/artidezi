@@ -53,9 +53,13 @@ extract-binary tag="artidezi:dev" dest="target/artidezi-linux-amd64":
 reuse-lint:
 	reuse lint
 
-# Checks dependencies for advisories, licenses and sources (needs cargo-deny and network access; CI runs it)
+# Checks dependencies for advisories, licenses and sources as CI does (needs cargo-deny and network access)
 deny:
-	cargo deny --locked check
+	cargo deny --locked check --allow unmaintained --allow unsound
+
+# Also fails on unmaintained and unsound crates, as the scheduled advisories workflow does
+deny-strict:
+	cargo deny --locked check advisories
 
 # Runs everything CI would run (except the image build, deny and forgejo-test)
 check: fmt-check clippy test release-test reuse-lint

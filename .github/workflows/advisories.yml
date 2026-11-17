@@ -1,0 +1,33 @@
+name: Dependency advisories
+
+# Every RustSec advisory kind against main's Cargo.lock, including the unmaintained and unsound notices that CI allows.
+# A failure here doesn't block CI or releases; GitHub's failed-run notification is the report.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: All RustSec advisories
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      CARGO_DENY_VERSION: "0.21.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: deny-cache
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '.github/workflows/advisories.yml') }}
+      - name: Install cargo-deny with locked dependencies
+        if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny --version "=$CARGO_DENY_VERSION"
+      - run: cargo deny --locked check advisories

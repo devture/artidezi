@@ -100,7 +100,12 @@ just image artidezi:dev
 just extract-binary artidezi:dev target/artidezi-linux-amd64
 ```
 
-`just check` runs formatting, Clippy, the workspace's Rust tests and REUSE licensing. Strict Clippy
+`just check` runs formatting, Clippy, the workspace's Rust tests and REUSE licensing.
+`just deny` checks dependencies as CI does: it fails on vulnerable or yanked crates, on licenses
+outside `deny.toml`'s list, on banned dependencies and on crates from anywhere but crates.io.
+It needs `cargo-deny` and network access, since it downloads the current RustSec advisories.
+`just deny-strict` additionally fails on unmaintained and unsound crates; see
+[Dependency advisories](releases.md#dependency-advisories). Strict Clippy
 can be requested with `cargo clippy --workspace --all-targets -- -D warnings`. Offline Cargo flags
 are usable when dependencies are cached. HTTP tests require permission to bind loopback ports.
 The HTTP responsiveness tests gate local repository preparation before its real fetch and verify
