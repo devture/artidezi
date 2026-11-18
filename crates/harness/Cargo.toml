@@ -1,6 +1,6 @@
 [package]
 name = "artidezi-harness"
-description = "Harness adapters: how a job becomes a Codex (or fake) invocation on the worker"
+description = "Harness adapters: how a job becomes a Codex, Pi, Claude Code (or fake) invocation on the worker"
 version.workspace = true
 publish.workspace = true
 edition.workspace = true

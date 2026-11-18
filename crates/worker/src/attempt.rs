@@ -622,6 +622,17 @@ pub fn run_attempt_cancellable(
         facts = harness.read_transcript(&stdout_bytes);
         record.harness.session_id = facts.session_id.clone();
         record.harness.model = facts.model.clone();
+        if let Some(failure) = &facts.failure
+            && record.status == AttemptStatus::Completed
+        {
+            // The process exited, but the harness says the run failed (for example a budget or
+            // turn limit). A result file written before that point must not be acted on.
+            record.status = AttemptStatus::HarnessError;
+            tracing::warn!(attempt = %job.attempt_id, failure, "harness reported a failed run");
+            if let Ok(mut stderr) = fs::OpenOptions::new().append(true).open(&stderr_path) {
+                let _ = writeln!(stderr, "[artidezi] {failure}");
+            }
+        }
         if facts.input_tokens.is_some() || facts.output_tokens.is_some() {
             record.harness.usage = Some(Usage {
                 input_tokens: facts.input_tokens.unwrap_or(0),
@@ -736,10 +747,12 @@ pub fn run_attempt_cancellable(
         record.repositories.push(collection);
     }
 
-    // Verification runs only for a valid, non-empty proposal series.
-    let is_proposal = parsed_result
-        .as_ref()
-        .is_some_and(|r| r.outcome == Outcome::Proposal);
+    // Verification runs only for a valid, non-empty proposal series from a completed harness run;
+    // a run the harness itself reports as failed is not acted on.
+    let is_proposal = record.status == AttemptStatus::Completed
+        && parsed_result
+            .as_ref()
+            .is_some_and(|r| r.outcome == Outcome::Proposal);
     if is_proposal {
         for (index, repo_dir) in &repo_dirs {
             cancellation.check()?;

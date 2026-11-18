@@ -141,7 +141,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    | `poll_seconds` | How often to ask for work. Default 15 |
    | `max_log_bytes` | Limit for each captured log. Default 16 MiB |
    | `sweep_system_tmp` | After each attempt, remove what the worker's user created in `/tmp` during it, for tools that ignore `TMPDIR`. Default `false`. Enable it only for a `/tmp` of the worker's own, as in the unit below |
-   | `codex_binary`, `pi_binary` | The harnesses this worker offers, by name or path. Set at least 1 |
+   | `codex_binary`, `pi_binary`, `claude_binary` | The harnesses this worker offers, by name or path. Set at least 1 |
 
 4. Provide the model credentials, in `<credentials_root>/<credential_ref>/`, owned by the worker's user:
 
@@ -150,6 +150,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    | Codex | `openai_api_key` | `api_key` |
    | Codex | `chatgpt_login` | `auth.json` |
    | Pi | `openai_api_key` | `api_key` |
+   | Claude | `anthropic_api_key` | `api_key` |
 
    ```sh
    install -d -o artidezi-worker -m 0700 /var/lib/artidezi-worker/credentials/openai

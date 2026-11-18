@@ -49,8 +49,8 @@ def settings():
                 if name in values:
                     values[name] = value
     values['ARTIDEZI_LOCAL_HARNESS'] = os.environ.get('ARTIDEZI_LOCAL_HARNESS', values['ARTIDEZI_LOCAL_HARNESS'])
-    if values['ARTIDEZI_LOCAL_HARNESS'] not in {'fake', 'pi'}:
-        raise RuntimeError('ARTIDEZI_LOCAL_HARNESS must be fake or pi')
+    if values['ARTIDEZI_LOCAL_HARNESS'] not in {'fake', 'pi', 'claude'}:
+        raise RuntimeError('ARTIDEZI_LOCAL_HARNESS must be fake, pi or claude')
     values['ARTIDEZI_LOCAL_PI_CREDENTIAL'] = os.environ.get(
         'ARTIDEZI_LOCAL_PI_CREDENTIAL', values['ARTIDEZI_LOCAL_PI_CREDENTIAL'])
     if not values['ARTIDEZI_LOCAL_PI_CREDENTIAL'] or '/' in values['ARTIDEZI_LOCAL_PI_CREDENTIAL']:
@@ -69,12 +69,18 @@ def prepare():
     for name in ['config', 'secrets', 'credentials', 'data', 'workspaces']:
         (STATE / name).mkdir(parents=True, exist_ok=True)
     values = settings()
-    credential_path = STATE / 'credentials' / values['ARTIDEZI_LOCAL_PI_CREDENTIAL'] / 'api_key'
-    if values['ARTIDEZI_LOCAL_HARNESS'] == 'pi' and not credential_path.is_file():
-        raise RuntimeError(f"Pi mode needs {credential_path.relative_to(ROOT)} (an untracked local API key)")
-    if values['ARTIDEZI_LOCAL_HARNESS'] == 'pi':
+    harness = values['ARTIDEZI_LOCAL_HARNESS']
+    credential = {'pi': values['ARTIDEZI_LOCAL_PI_CREDENTIAL'], 'claude': 'anthropic'}.get(harness)
+    if credential:
+        credential_path = STATE / 'credentials' / credential / 'api_key'
+        if not credential_path.is_file():
+            raise RuntimeError(f"{harness} mode needs {credential_path.relative_to(ROOT)} (an untracked local API key)")
         credential_path.parent.chmod(0o700)
-    (STATE / 'env').write_text(''.join(f'{k}={v}\n' for k, v in values.items()))
+    # The worker sees only the selected mode's credential; the scripted worker sees none.
+    (STATE / 'credentials-none').mkdir(mode=0o700, exist_ok=True)
+    mount = {'ARTIDEZI_LOCAL_CREDENTIAL_SOURCE': f'credentials/{credential}' if credential else 'credentials-none',
+             'ARTIDEZI_LOCAL_CREDENTIAL_REF': credential or 'none'}
+    (STATE / 'env').write_text(''.join(f'{k}={v}\n' for k, v in {**values, **mount}.items()))
     for name in ['admin-token', 'worker-token', 'ui-password', 'forgejo-password']:
         path = STATE / 'secrets' / name
         if not path.exists():
@@ -82,11 +88,12 @@ def prepare():
         path.chmod(0o600)
     for name in ['orchestrator.yaml', 'worker.yaml']:
         source = ROOT / 'etc/services' / name
-        if values['ARTIDEZI_LOCAL_HARNESS'] == 'pi':
-            source = ROOT / 'etc/services' / ('pi-' + name)
+        if harness != 'fake':
+            source = ROOT / 'etc/services' / (harness + '-' + name)
         # Optional local configuration survives rebuilds without changing the credential-free
         # demo defaults. It contains policy/credential references, never credential values.
-        if name == 'orchestrator.yaml' and (STATE / 'orchestrator.local.yaml').exists():
+        # It describes the scripted stack, so the real-model modes keep their own templates.
+        if name == 'orchestrator.yaml' and harness == 'fake' and (STATE / 'orchestrator.local.yaml').exists():
             source = STATE / 'orchestrator.local.yaml'
         text = source.read_text().replace('${ARTIDEZI_FORGEJO_PORT}', values['ARTIDEZI_FORGEJO_PORT'])
         if name == 'orchestrator.yaml' and '\nui_access:' not in '\n' + text:
@@ -164,7 +171,9 @@ def main():
         if args.command == 'start':
             compose('up', '-d', '--wait', 'forgejo')
             bootstrap(values)
-            compose('up', '-d', '--build', '--wait', 'orchestrator', 'worker')
+            # Configs are bind mounts Compose doesn't hash: recreate so a mode switch takes effect
+            # and no worker of the previous (possibly billed) mode keeps running.
+            compose('up', '-d', '--build', '--force-recreate', '--wait', 'orchestrator', 'worker')
             print(f"UI: http://artidezi.127.0.0.1.nip.io:{values['ARTIDEZI_UI_PORT']}")
             print(f"Forgejo: http://artidezi-forgejo.127.0.0.1.nip.io:{values['ARTIDEZI_FORGEJO_PORT']}")
             print('Local login details: just services-credentials')

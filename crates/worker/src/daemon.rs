@@ -15,6 +15,7 @@ use artidezi_contract::common::{ArtifactRef, RepositoryId};
 use artidezi_contract::job::Harness;
 use artidezi_contract::wire::*;
 use artidezi_harness::HarnessAdapter;
+use artidezi_harness::claude::ClaudeHarness;
 use artidezi_harness::codex::CodexHarness;
 use artidezi_harness::fake::FakeHarness;
 use artidezi_harness::pi::PiHarness;
@@ -41,6 +42,8 @@ pub struct DaemonConfig {
     /// Path of the Codex binary, when this worker offers the `codex` harness.
     pub codex_binary: Option<PathBuf>,
     pub pi_binary: Option<PathBuf>,
+    /// Path of the Claude Code binary, when this worker offers the `claude` harness.
+    pub claude_binary: Option<PathBuf>,
     /// Path of a scripted fake harness, for test deployments only.
     pub fake_script: Option<PathBuf>,
 }
@@ -131,6 +134,14 @@ impl Daemon {
             harnesses.insert(
                 Harness::Pi,
                 Box::new(PiHarness {
+                    binary: binary.clone(),
+                }),
+            );
+        }
+        if let Some(binary) = &config.claude_binary {
+            harnesses.insert(
+                Harness::Claude,
+                Box::new(ClaudeHarness {
                     binary: binary.clone(),
                 }),
             );
@@ -727,6 +738,7 @@ mod tests {
             tags: vec![],
             codex_binary: None,
             pi_binary: None,
+            claude_binary: None,
             fake_script: Some("/bin/true".into()),
         })
         .unwrap()

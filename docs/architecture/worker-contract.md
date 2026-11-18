@@ -82,7 +82,7 @@ retains the partial workspace locally instead of uploading a result. Network fai
 errors do not masquerade as explicit revocation. If renewal remains unconfirmed for a full lease
 period, the supervisor cancels managed execution itself; the controller enforces upload authority.
 Lease, presence and heartbeat requests have a 10-second timeout; transfers and final result processing
-retain their longer timeout. Codex/Pi version probes have a 10-second execution limit and a bounded
+retain their longer timeout. Harness version probes have a 10-second execution limit and a bounded
 5-second kill wait, with file-based output capture to avoid inherited-pipe deadlocks. An unkillable
 probe quarantines the worker, including when it occurs before leasing.
 
@@ -131,10 +131,19 @@ collects repository state and runs applicable verification recipes. Recipes spec
 vector, relative working directory and timeout. The project owns those commands. Runtime commands
 are not executed on the controller.
 
-The [Codex adapter](../../crates/harness/src/codex.rs) and [Pi adapter](../../crates/harness/src/pi.rs)
-support the full-access worker-boundary path; strict harness sandbox mode is rejected. Pi uses its
-OpenAI-compatible Chat Completions provider configuration, so any endpoint implementing that API can
-be selected through `model_endpoints` without a Pi-specific provider integration. Profiles supply
+The [Codex adapter](../../crates/harness/src/codex.rs), [Pi adapter](../../crates/harness/src/pi.rs)
+and [Claude adapter](../../crates/harness/src/claude.rs) support the full-access worker-boundary
+path; strict harness sandbox mode is rejected. Pi uses its OpenAI-compatible Chat Completions
+provider configuration, so any endpoint implementing that API can be selected through
+`model_endpoints` without a Pi-specific provider integration. The Claude adapter runs Claude Code
+headless (`claude --print`, `stream-json` output) with an Anthropic API key in its environment,
+permission checks bypassed, no settings files or MCP servers, and a fixed tool set (shell, file
+read/edit/write and subagents, plus web search/fetch only when the job's web search mode is
+`live` with a public-internet scope; other web search settings are refused). Its final `result`
+event supplies the usage, including cache reads and writes and Claude Code's cost estimate. A stream without that event
+(timeout, crash) records no usage rather than an undercount. An error result (rejected key, budget
+or turn limit) or a missing result makes the attempt a harness error even after a zero exit status
+or a written result document, so nothing from that run is acted on. Profiles supply
 model/harness settings, and the adapters build fresh noninteractive invocations. This code does not
 provision the worker VM, install its Docker daemon or enforce an external network firewall. Other modes
 represented in types may not have runtime implementations. Consult adapter code before claiming support

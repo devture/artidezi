@@ -60,7 +60,7 @@ snapshots participate in each job, so grouping affects access, cost and reasonin
 | [store](../../crates/store/src/lib.rs) | SQLite transitions, leases, source tracking, events and artifacts |
 | [git](../../crates/git/src/lib.rs) | Bare caches, bundles, workspaces, series checks and commit recreation |
 | [forge](../../crates/forge/src/lib.rs) | Provider-neutral operations; Forgejo, GitHub and fake implementations |
-| [harness](../../crates/harness/src/lib.rs) | Codex, Pi and scripted invocation, and harness output interpretation |
+| [harness](../../crates/harness/src/lib.rs) | Codex, Pi, Claude Code and scripted invocation, and harness output interpretation |
 | [worker](../../crates/worker/src/lib.rs) | Lease loop, fresh workspace, recipes, collection and upload |
 | [orchestrator](../../crates/orchestrator/src/lib.rs) | Jobs, discovery, ingestion, publication and reconciliation |
 | [server](../../crates/server/src/lib.rs) | Authenticated transport, UI and timer |
@@ -70,6 +70,6 @@ adaptation PRs (human-reviewed unless a handler opts into merging them), and exp
 approval/merge of unchanged updates.
 Forgejo supports the same source actions with a personal access token.
 Release operations remain unavailable. The worker
-implements the current Codex, Pi and scripted paths, not every modeled harness/auth/sandbox mode.
+implements the current Codex, Pi, Claude Code and scripted paths, not every modeled harness/auth/sandbox mode.
 Runtime behavior and Rust types are authoritative. Examples should distinguish configuration that
 merely validates from a complete stack that can actually run.

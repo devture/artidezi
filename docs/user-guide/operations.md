@@ -142,12 +142,39 @@ use the secure default behind HTTPS.
 
 `artidezi schema config` exports the current schema. Configuration parsing rejects unknown fields
 and validation checks cross-references and permission bounds. Validation alone does not prove the
-chosen execution environment exists: Claude and several auth/sandbox modes remain modeled only.
+chosen execution environment exists: several auth/sandbox modes remain modeled only.
 Forgejo supports delivery, discovery, COMMENT reviews and adaptation PRs; GitHub supports
 App-authenticated discovery, inspection and opt-in COMMENT reviews and adaptation PRs. On both,
-explicit source policies can approve or merge unchanged PRs from the authors a handler names. Release operations remain unavailable. Coding support includes Codex and Pi with the
+explicit source policies can approve or merge unchanged PRs from the authors a handler names. Release operations remain unavailable. Coding support includes Codex, Pi and Claude Code with the
 implemented worker/harness capabilities. Pi consumes an OpenAI-compatible Chat Completions endpoint
 and keeps its API key on the worker. See [worker internals](../architecture/worker-contract.md).
+
+A Claude Code profile uses an Anthropic endpoint with `auth_mode: anthropic_api_key`. Its
+`model_settings` accept only `effort` (`low`, `medium`, `high`, `xhigh` or `max`) and
+`max_budget_usd`. Claude Code stops an attempt once its own cost estimate passes that amount, so
+the request that crosses it can overshoot it; an attempt stopped that way is a harness failure.
+Live web search is supported only with `domain_scope: public_internet`:
+
+```yaml
+model_endpoints:
+  anthropic:
+    provider: anthropic
+    auth_mode: anthropic_api_key
+    credential_ref: anthropic # <credentials_root>/anthropic/api_key on the worker
+agent_profiles:
+  claude:
+    harness: claude
+    harness_version_constraint: '=2.1.325' # the version installed on the workers
+    model: claude-opus-5-5
+    model_settings: {effort: medium}
+    model_endpoint: anthropic
+    worker_pool: maintenance
+```
+
+Claude Code caches prompts itself. Its attempts record cache reads and writes and Claude Code's own
+cost estimate, which the task pages show next to the token counts. The estimate uses Claude Code's
+price table and is not the provider's bill. An orchestrator that knows these fields says so when it
+hands out work; a worker leasing from an older orchestrator leaves them out.
 
 A forge may set `web_base_url` when its browser-facing root differs from `api_base_url` (for example,
 `http://127.0.0.1:3081` versus `http://forgejo:3000` in a local stack). Repository and assessment-list

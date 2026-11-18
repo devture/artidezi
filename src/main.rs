@@ -212,6 +212,8 @@ struct WorkerFile {
     #[serde(default)]
     pi_binary: Option<PathBuf>,
     #[serde(default)]
+    claude_binary: Option<PathBuf>,
+    #[serde(default)]
     fake_script: Option<PathBuf>,
 }
 
@@ -543,6 +545,7 @@ fn worker(config_path: PathBuf, once: bool) -> anyhow::Result<()> {
         tags: file.tags,
         codex_binary: file.codex_binary,
         pi_binary: file.pi_binary,
+        claude_binary: file.claude_binary,
         fake_script: file.fake_script,
     })?;
     if once {

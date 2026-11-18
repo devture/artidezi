@@ -40,13 +40,19 @@ ENTRYPOINT ["/usr/local/bin/artidezi"]
 CMD ["serve", "--config", "/etc/artidezi/artidezi.yaml", "--secrets-dir", "/etc/artidezi/secrets", "--listen", "0.0.0.0:8080"]
 
 # The local scripted worker uses Python, and never receives model credentials or a Docker socket.
+# Pi and Claude Code (its native binary, without the npm wrapper's postinstall) serve the opt-in
+# real-model local modes.
 FROM runtime AS development
 USER root
 COPY --from=docker.io/node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc /usr/local/ /usr/local/
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 python3 wget \
  && rm -rf /var/lib/apt/lists/* \
- && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+ && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2 \
+ && claude_arch="$(dpkg --print-architecture | sed 's/amd64/x64/')" \
+ && npm install --global --ignore-scripts "@anthropic-ai/claude-code-linux-${claude_arch}@2.1.325" \
+ && ln -s "/usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-${claude_arch}/claude" /usr/local/bin/claude \
+ && claude --version
 USER artidezi
 
 # Keep the default build as the minimal production image.

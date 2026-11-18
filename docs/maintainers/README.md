@@ -36,13 +36,18 @@ To exercise the real Pi worker locally, place an OpenAI-compatible API key in th
 just services-start`. This selects the Pi/Venice example configuration and keeps the key mounted only
 in the worker. Set `ARTIDEZI_LOCAL_PI_CREDENTIAL` when using a different credential reference, and edit
 the local Pi template for its endpoint and model. Any OpenAI-compatible Chat Completions service can be
-used; Venice is only the shipped example. Return to the deterministic worker with
+used; Venice is only the shipped example. For Claude Code, place an Anthropic API key in
+`var/services/credentials/anthropic/api_key` and start with `ARTIDEZI_LOCAL_HARNESS=claude
+just services-start`; its profile stops an attempt once Claude Code's cost estimate passes $2 (the
+request that crosses it can overshoot). Both modes bill the key's account. The worker container sees
+only the selected mode's credential directory, and the scripted worker sees none.
+Return to the deterministic worker with
 `ARTIDEZI_LOCAL_HARNESS=fake just services-start`.
 
 The **demo agent is deterministic**: it records the task document in `notes/` and proposes that
 Markdown change. It does not interpret your instructions. Choose `demo-needs-input` to see a
 question for the human, or `demo-failing-check` to see verification block publication. This keeps
-UI and lifecycle iteration repeatable and free of model charges. The default worker is scripted; Pi above is opt-in. A separately configured worker needs its own model authentication and an
+UI and lifecycle iteration repeatable and free of model charges. The default worker is scripted; Pi and Claude Code above are opt-in. A separately configured worker needs its own model authentication and an
 explicitly chosen execution boundary.
 
 ```sh
@@ -68,8 +73,9 @@ Change those source templates for persistent local configuration changes. Prepar
 the SQLite password can change independently.
 
 For additional private fixture projects or an external isolated worker, put a complete orchestrator
-configuration in ignored `var/services/orchestrator.local.yaml`. `just services-start` uses it instead
-of the default template and preserves it across rebuilds. If the override defines its own
+configuration in ignored `var/services/orchestrator.local.yaml`. In the scripted mode,
+`just services-start` uses it instead of the default template and preserves it across rebuilds; the
+Pi and Claude modes always use their own templates. If the override defines its own
 `ui_access`, it must declare an enabled administrator;
 otherwise preparation adds `local-admin`. Keep any initial password hashes in this ignored private
 file; put service tokens under `var/services/secrets/`, and model credentials on the isolated worker.
@@ -115,7 +121,7 @@ Store tests cover concurrent leasing/pause decisions and identical artifact uplo
 
 The default image contains a static musl binary, CA certificates and Git on Ubuntu LTS. Its build checks
 that the binary needs no ELF interpreter or shared libraries. The Compose `development` stage adds Python
-for the scripted worker and installs the pinned Pi coding agent. A standalone worker still needs its
+for the scripted worker and installs the pinned Pi coding agent and Claude Code. A standalone worker still needs its
 selected harness and verification tools.
 UI assets are embedded in the executable; serving the UI does not require Node or an asset directory.
 The logo and favicon share the SVG in [branding assets](../../assets/branding/README.md).

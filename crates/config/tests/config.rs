@@ -491,6 +491,32 @@ fn harness_and_endpoint_provider_must_match() {
 }
 
 #[test]
+fn claude_profiles_accept_only_effort_and_budget() {
+    let text = VALID.replacen("    harness: codex\n", "    harness: claude\n", 1);
+    let problems = problems_of(&text);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("does not understand model_settings.model_reasoning_effort")),
+        "{problems:?}"
+    );
+    let text = text.replace("model_reasoning_effort: xhigh", "effort: extreme");
+    let problems = problems_of(&text);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("model_settings.effort must be one of")),
+        "{problems:?}"
+    );
+    let text = text.replace("effort: extreme", "effort: medium");
+    assert!(
+        !problems_of(&text)
+            .iter()
+            .any(|p| p.contains("model_settings")),
+    );
+}
+
+#[test]
 fn network_allowlist_needs_domains() {
     let text = VALID.replace(
         "mode: public_internet\n        denied_domains",

@@ -6,6 +6,7 @@
 //! facts (session id, model, usage) back out of its output. Adapters never decide policy and never
 //! see forge credentials.
 
+pub mod claude;
 pub mod codex;
 pub mod fake;
 pub mod pi;
@@ -99,6 +100,9 @@ pub struct TranscriptFacts {
     pub cache_creation_input_tokens: Option<u64>,
     /// The harness's own cost estimate in US dollars, when it reports one.
     pub cost_usd: Option<f64>,
+    /// Set when the harness's own output says the run failed even though the process exited.
+    /// The supervisor then records a harness error, so no result from the run is acted on.
+    pub failure: Option<String>,
     /// A result document recovered from harness-native structured output, used only when the
     /// agent did not write the result file.
     pub fallback_result: Option<serde_json::Value>,

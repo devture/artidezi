@@ -515,6 +515,61 @@ fn proposal_is_collected_and_verified() {
 }
 
 #[test]
+fn a_harness_reported_failure_overrides_a_written_result() {
+    let f = fixture();
+    let (job, bytes) = make_job(&f, "att_budget", 60);
+    let harness = FailingHarness(FakeHarness {
+        script: script(&f, "agent.sh", &proposal_script()),
+    });
+    let output = run_attempt(&config(&f), &harness, &inputs(&f, &job, &bytes)).unwrap();
+    let record = &output.record;
+    assert_eq!(record.status, AttemptStatus::HarnessError, "{record:#?}");
+    assert_eq!(record.harness.exit_code, Some(0));
+    assert!(record.result.is_some());
+    assert_eq!(record.harness.usage.as_ref().unwrap().input_tokens, 10);
+    let stderr = output
+        .artifacts
+        .iter()
+        .find(|a| a.name == "harness-stderr.log")
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(&stderr.path)
+            .unwrap()
+            .contains("[artidezi] budget exceeded")
+    );
+    assert!(
+        record.repositories[0].verification.is_empty(),
+        "verification must not run for a failed harness run"
+    );
+    output.cleanup().unwrap();
+}
+
+/// The fake harness, with harness output that reports a failed run (as Claude Code's error
+/// result does) after the agent already wrote a valid result.
+struct FailingHarness(FakeHarness);
+
+impl artidezi_harness::HarnessAdapter for FailingHarness {
+    fn harness(&self) -> artidezi_contract::job::Harness {
+        self.0.harness()
+    }
+    fn installed_version(&self) -> artidezi_harness::Result<String> {
+        self.0.installed_version()
+    }
+    fn build_invocation(
+        &self,
+        ctx: &artidezi_harness::InvocationContext<'_>,
+    ) -> artidezi_harness::Result<artidezi_harness::Invocation> {
+        self.0.build_invocation(ctx)
+    }
+    fn read_transcript(&self, stdout: &[u8]) -> artidezi_harness::TranscriptFacts {
+        artidezi_harness::TranscriptFacts {
+            failure: Some("budget exceeded".into()),
+            ..self.0.read_transcript(stdout)
+        }
+    }
+}
+
+#[test]
 fn inconsistent_head_and_dirty_tree_are_recorded() {
     let f = fixture();
     let (job, bytes) = make_job(&f, "att_bad", 60);

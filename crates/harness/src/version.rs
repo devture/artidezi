@@ -50,10 +50,7 @@ fn probe(binary: &Path, timeout: Duration) -> Result<String> {
                     "harness version output exceeds 4096 bytes".into(),
                 ));
             }
-            return String::from_utf8_lossy(&bytes)
-                .split_whitespace()
-                .last()
-                .map(str::to_owned)
+            return version_word(&String::from_utf8_lossy(&bytes))
                 .ok_or_else(|| HarnessError::Invalid("empty harness version output".into()));
         }
         if started.elapsed() >= timeout {
@@ -78,6 +75,27 @@ fn probe(binary: &Path, timeout: Duration) -> Result<String> {
     })
 }
 
+/// The last word (`codex-cli 1.2.3`), unless it doesn't start with a digit: then the first
+/// dotted numeric word, as in Claude Code's `2.1.325 (Claude Code)`.
+fn version_word(output: &str) -> Option<String> {
+    let last = output.split_whitespace().last()?;
+    if last.starts_with(|c: char| c.is_ascii_digit()) {
+        return Some(last.to_owned());
+    }
+    let dotted = |word: &&str| {
+        let mut parts = word.split('.');
+        parts.clone().count() >= 3
+            && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    };
+    Some(
+        output
+            .split_whitespace()
+            .find(dotted)
+            .unwrap_or(last)
+            .to_owned(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +111,9 @@ mod tests {
             ("exit 0", None),
             ("sleep 30", None),
             ("sleep 1 &\necho codex-cli 1.2.4", Some("1.2.4")),
+            ("echo '2.1.325 (Claude Code)'", Some("2.1.325")),
+            ("echo pi unknown", Some("unknown")),
+            ("echo 'Build 2026.11.18 wrapper 0.9.1'", Some("0.9.1")),
         ] {
             std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();

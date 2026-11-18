@@ -293,6 +293,7 @@ fn daemon(w: &World, token: &str) -> Daemon {
         tags: vec![],
         codex_binary: None,
         pi_binary: None,
+        claude_binary: None,
         fake_script: Some(script),
     })
     .unwrap()

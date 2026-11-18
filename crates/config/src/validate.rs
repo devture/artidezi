@@ -189,6 +189,9 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             }
             Some(_) => {}
         }
+        if profile.harness == artidezi_contract::job::Harness::Claude {
+            problems.extend(claude_settings_problems(name, &profile.model_settings));
+        }
         match config.worker_pools.get(&profile.worker_pool) {
             None => problems.push(problem(format!(
                 "agent profile {name}: worker_pool {:?} does not exist",
@@ -769,4 +772,36 @@ pub(crate) fn validate_network(ctx: &str, network: &NetworkPolicy, problems: &mu
         ))),
         _ => {}
     }
+}
+
+/// The Claude adapter refuses anything else at run time; catching it here saves an attempt.
+fn claude_settings_problems(
+    name: &str,
+    settings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Vec<Problem> {
+    const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    let mut problems = vec![];
+    for (key, value) in settings {
+        let valid = match key.as_str() {
+            "effort" => value.as_str().is_some_and(|v| EFFORTS.contains(&v)),
+            "max_budget_usd" => value.as_f64().is_some_and(|v| v > 0.0),
+            _ => {
+                problems.push(problem(format!(
+                    "agent profile {name}: the claude harness does not understand model_settings.{key}; use effort or max_budget_usd"
+                )));
+                continue;
+            }
+        };
+        if !valid {
+            problems.push(problem(format!(
+                "agent profile {name}: model_settings.{key} must be {}",
+                if key == "effort" {
+                    "one of low, medium, high, xhigh, max"
+                } else {
+                    "a positive number"
+                }
+            )));
+        }
+    }
+    problems
 }

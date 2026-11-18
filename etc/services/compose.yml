@@ -59,7 +59,8 @@ services:
     volumes:
       - ../../var/services/config/worker.yaml:/config/worker.yaml:ro
       - ../../var/services/secrets/worker-token:/secrets/worker-token:ro
-      - ../../var/services/credentials:/credentials:ro
+      # Only the selected local mode's credential; see scripts/services.py.
+      - ../../var/services/${ARTIDEZI_LOCAL_CREDENTIAL_SOURCE:-credentials-none}:/credentials/${ARTIDEZI_LOCAL_CREDENTIAL_REF:-none}:ro
       - ../../var/services/workspaces:/workspaces
       - ./demo-agent.py:/agent/demo-agent.py:ro
     read_only: true
