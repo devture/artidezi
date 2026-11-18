@@ -52,6 +52,30 @@ pub(crate) fn limited(text: &str, limit: usize) -> String {
     // Agent prose must not send unsolicited mentions to repository participants.
     value.replace('@', "@\u{200b}")
 }
+/// Names an adaptation after the source pull request it replaces. The series usually starts with
+/// the source's own commit, so its subject alone would repeat the source title in PR lists.
+/// `source_remote` is set when the adaptation is published in another repository than the source.
+/// The result fits Forgejo's 255-byte title limit after mention sanitizing, so the forge stores it
+/// unchanged and the receipt check can compare it exactly.
+fn adaptation_title(number: u64, source_remote: Option<&str>, subject: Option<&str>) -> String {
+    const MAX_BYTES: usize = 250;
+    let reference = format!("{}#{number}", source_remote.unwrap_or_default());
+    let title = match subject.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(subject) => format!("Adapt {reference}: {subject}"),
+        None => format!("Adapt {reference}"),
+    };
+    // Agent-authored subjects must not send unsolicited mentions to repository participants.
+    let title = title.replace('@', "@\u{200b}");
+    if title.len() <= MAX_BYTES {
+        return title;
+    }
+    let mut end = MAX_BYTES - '…'.len_utf8();
+    while !title.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &title[..end])
+}
+
 fn summary(result: &AgentResult) -> String {
     let mut body = limited(&result.summary, 3000);
     if let Some(risk) = &result.risk_hint {
@@ -508,18 +532,33 @@ impl Orchestrator {
                     let (head, cache_ref) =
                         self.recreate_in_cache_rebased(resolved, collection, &attempt.id)?;
                     let source = policy.source_pull_request.as_ref().unwrap();
-                    let title = collection
+                    let subject = collection
                         .series
                         .as_ref()
                         .and_then(|s| s.commits.first())
-                        .and_then(|c| c.message.lines().next())
-                        .unwrap_or("Adapt dependency update");
+                        .and_then(|c| c.message.lines().next());
+                    let source_repo = &policy.repositories[&source.repository_id];
+                    let same_repository = source_repo.forge_provider == resolved.forge_provider
+                        && source_repo
+                            .forge_api_base_url
+                            .as_deref()
+                            .map(|url| url.trim_end_matches('/'))
+                            == resolved
+                                .forge_api_base_url
+                                .as_deref()
+                                .map(|url| url.trim_end_matches('/'))
+                        && source_repo.remote.eq_ignore_ascii_case(&resolved.remote);
+                    let title = adaptation_title(
+                        source.number,
+                        (!same_repository).then_some(source_repo.remote.as_str()),
+                        subject,
+                    );
                     let plan = ProposalPlan {
                         repository: collection.id.to_string(),
                         branch: format!("artidezi/{}", task.id),
                         head,
                         cache_ref,
-                        title: limited(title, 180),
+                        title,
                         body: format!(
                             "Adapts {} at `{}`.\n\n{}\n\n{}\n{}\n\n<!-- artidezi:proposal:{}:{} -->",
                             source.url,
@@ -1268,6 +1307,28 @@ mod tests {
     use artidezi_contract::result::{
         Evidence, EvidenceKind, ResultRepository, RiskHint, RiskLevel,
     };
+
+    #[test]
+    fn adaptation_title_names_the_source_pull_request() {
+        assert_eq!(
+            adaptation_title(3, None, Some("Update alpine to v3.24.4")),
+            "Adapt #3: Update alpine to v3.24.4"
+        );
+        assert_eq!(
+            adaptation_title(3, Some("org/role"), Some("Adapt the consumer")),
+            "Adapt org/role#3: Adapt the consumer"
+        );
+        assert_eq!(adaptation_title(3, None, Some("  ")), "Adapt #3");
+        assert_eq!(adaptation_title(3, None, None), "Adapt #3");
+        assert_eq!(
+            adaptation_title(3, None, Some("Ping @someone")),
+            "Adapt #3: Ping @\u{200b}someone"
+        );
+        // Multibyte subjects are cut at a character boundary within the forge's byte limit.
+        let long = adaptation_title(3, None, Some(&"é".repeat(200)));
+        assert!(long.len() <= 250 && long.ends_with('…'));
+        assert!(long.starts_with("Adapt #3: éé"));
+    }
 
     #[test]
     fn evidence_source_handles_a_non_ascii_commit_segment() {

@@ -202,8 +202,10 @@ whose source head has changed.
 The worker receives the exact PR commit at `refs/artidezi/inputs/source-pr`, alongside target-branch
 and sibling snapshots, without forge credentials or remotes. An acceptable update returns the
 advisory `approve_untouched` outcome. An adaptation returns a complete replacement commit series on
-the target base, including the update itself. The normal verification recipes run for changed
-writable repositories. Unchanged inputs do not automatically run those recipes; remote CI is an
+the target base, including the update itself. Its PR is titled after the original change, for
+example `Adapt #3: Update example-library to v2` (`owner/name#3` when the adaptation is in another
+repository), so it stays distinct from the PR it replaces. The normal verification recipes run
+for changed writable repositories. Unchanged inputs do not automatically run those recipes; remote CI is an
 eligibility wait by default when checks have started. It uses visible commit statuses and check
 runs, not a configurable list of required checks or a guarantee of independent verification.
 When CI result context is enabled, its point-in-time details are evidence for the agent rather than

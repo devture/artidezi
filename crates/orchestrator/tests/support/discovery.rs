@@ -955,6 +955,21 @@ JSON
     assert_eq!(reviews.len(), 1);
     for p in &proposals {
         assert!(reviews[0].body.contains(&p.url));
+        let (remote, title) = if p.repository_id == "role" {
+            (
+                "org/role",
+                format!("Adapt #{}: Adapt the update", source.number),
+            )
+        } else {
+            (
+                "org/playbook",
+                format!("Adapt org/role#{}: Adapt the consumer", source.number),
+            )
+        };
+        assert_eq!(
+            w.forge.get_merge_request(remote, p.number).unwrap().title,
+            title
+        );
     }
     assert_eq!(
         w.orchestrator.reconcile_task(&task).unwrap(),

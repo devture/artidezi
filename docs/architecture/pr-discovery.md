@@ -164,6 +164,9 @@ transitions; the real Forgejo suite verifies its PR-ref behavior.
 Publish mode uses [source publication](../../crates/orchestrator/src/source_publish.rs): current
 source, target/context and authority checks, durable plans, zero-lease branch creation, owned PR
 receipts and COMMENT review deduplication. Incomplete publication is held for explicit retry.
+Adaptation titles name the source PR (`Adapt #3: <first commit subject>`) and are bounded to fit
+Forgejo's byte limit after mention sanitizing. Plans recorded by an older release replay their
+stored title on retry; proposals already open keep it, and later adaptations use the new form.
 Source-head mismatches use a structured error with the frozen and observed commits. An otherwise
 eligible valid approval/proposal can be retired automatically only before publication plans/effects
 or `assessment.*` events and with no proposal receipts. `publication.retry_requested` alone is not
