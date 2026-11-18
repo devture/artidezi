@@ -21,8 +21,8 @@ use artidezi_harness::pi::PiHarness;
 
 use crate::client::Client;
 use crate::{
-    AttemptInputs, Cancellation, PreviousInputs, Result, WorkerConfig, WorkerError, io_err,
-    run_attempt_cancellable,
+    AttemptInputs, AttemptOutput, Cancellation, PreviousInputs, Result, WorkerConfig, WorkerError,
+    io_err, run_attempt_cancellable,
 };
 
 const RETRY_PAUSE: Duration = Duration::from_secs(1);
@@ -66,6 +66,30 @@ impl Drop for Heartbeat {
             let _ = thread.join();
         }
     }
+}
+
+/// Older controllers reject the optional cache and cost usage fields, so drop them unless the lease
+/// says they are accepted. The uploaded record is read from `out/attempt.json`, so rewrite it too.
+fn negotiate_usage(output: &mut AttemptOutput, accepts_usage_details: bool) -> Result<()> {
+    if accepts_usage_details {
+        return Ok(());
+    }
+    let Some(usage) = &mut output.record.harness.usage else {
+        return Ok(());
+    };
+    if usage.cache_read_input_tokens.is_none()
+        && usage.cache_creation_input_tokens.is_none()
+        && usage.cost_usd.is_none()
+    {
+        return Ok(());
+    }
+    usage.cache_read_input_tokens = None;
+    usage.cache_creation_input_tokens = None;
+    usage.cost_usd = None;
+    let path = output.workspace.join("out/attempt.json");
+    let bytes = serde_json::to_vec_pretty(&output.record)
+        .map_err(|e| WorkerError::Invalid(e.to_string()))?;
+    std::fs::write(&path, bytes).map_err(io_err(&path))
 }
 
 fn is_secure_url(url: &str) -> bool {
@@ -430,7 +454,8 @@ impl Daemon {
             },
             cancellation,
         );
-        let output = outcome?;
+        let mut output = outcome?;
+        negotiate_usage(&mut output, lease.accepts_usage_details)?;
         cancellation.check()?;
         self.check_lease(&attempt_id)?;
 
@@ -627,6 +652,43 @@ fn sweep_system_tmp(system_tmp: &std::path::Path, since: SystemTime) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_details_are_dropped_from_the_uploaded_record_for_older_controllers() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        let record: artidezi_contract::AttemptRecord = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "attempt_id": "att_1",
+            "job": {"sha256": "a".repeat(64), "size": 1},
+            "status": "completed",
+            "supervisor": {"worker_pool": "p", "worker_id": "w", "version": "dev"},
+            "harness": {
+                "name": "claude", "version": "2.1.325",
+                "started_at": "2026-11-18T09:00:00Z", "finished_at": "2026-11-18T09:01:00Z",
+                "usage": {"input_tokens": 100, "output_tokens": 5,
+                          "cache_read_input_tokens": 80, "cache_creation_input_tokens": 10,
+                          "cost_usd": 0.1}
+            },
+            "repositories": []
+        }))
+        .unwrap();
+        let mut output = super::AttemptOutput {
+            record,
+            artifacts: vec![],
+            workspace: dir.path().to_path_buf(),
+        };
+        super::negotiate_usage(&mut output, true).unwrap();
+        assert!(!dir.path().join("out/attempt.json").exists());
+        super::negotiate_usage(&mut output, false).unwrap();
+        let uploaded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("out/attempt.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            uploaded["harness"]["usage"],
+            serde_json::json!({"input_tokens": 100, "output_tokens": 5})
+        );
+    }
+
     #[test]
     fn plain_http_is_only_accepted_on_loopback() {
         for url in [

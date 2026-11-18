@@ -117,6 +117,7 @@ pub async fn lease(
             job_artifact: work.attempt.job.clone(),
             job: work.job,
             task_document: String::from_utf8_lossy(&work.task_document).into_owned(),
+            accepts_usage_details: true,
         }))
     })
     .await?;

@@ -77,11 +77,21 @@ pub struct HarnessRecord {
     pub stderr: Option<ArtifactRef>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Token usage of one attempt. `input_tokens` is the full prompt size including any cached share.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Input tokens read from the provider's prompt cache; absent when the harness doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    /// Input tokens written to the provider's prompt cache; absent when the harness doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// The harness's own cost estimate in US dollars, not a provider bill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

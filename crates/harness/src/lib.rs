@@ -87,12 +87,18 @@ pub struct CredentialFileUpdate {
 }
 
 /// Facts an adapter can recover from harness output.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TranscriptFacts {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Share of the input served from the provider's prompt cache, when the harness reports it.
+    pub cache_read_input_tokens: Option<u64>,
+    /// Share of the input written to the provider's prompt cache, when the harness reports it.
+    pub cache_creation_input_tokens: Option<u64>,
+    /// The harness's own cost estimate in US dollars, when it reports one.
+    pub cost_usd: Option<f64>,
     /// A result document recovered from harness-native structured output, used only when the
     /// agent did not write the result file.
     pub fallback_result: Option<serde_json::Value>,

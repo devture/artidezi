@@ -708,10 +708,7 @@ async fn tasks(
         tasks.retain(|task| access.can_read(&task.project));
         let mut usage = std::collections::BTreeMap::new();
         for task in render::task_page(&tasks, &page_query) {
-            let mut total = artidezi_contract::attempt::Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-            };
+            let mut total = artidezi_contract::attempt::Usage::default();
             let mut reported = false;
             for attempt in o.db.list_attempts(&task.id)? {
                 let Some(reference) = attempt
@@ -728,6 +725,10 @@ async fn tasks(
                     reported = true;
                     total.input_tokens = total.input_tokens.saturating_add(found.input_tokens);
                     total.output_tokens = total.output_tokens.saturating_add(found.output_tokens);
+                    total.cost_usd = match (total.cost_usd, found.cost_usd) {
+                        (Some(a), Some(b)) => Some(a + b),
+                        (a, b) => a.or(b),
+                    };
                 }
             }
             if reported {

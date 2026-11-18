@@ -626,6 +626,9 @@ pub fn run_attempt_cancellable(
             record.harness.usage = Some(Usage {
                 input_tokens: facts.input_tokens.unwrap_or(0),
                 output_tokens: facts.output_tokens.unwrap_or(0),
+                cache_read_input_tokens: facts.cache_read_input_tokens,
+                cache_creation_input_tokens: facts.cache_creation_input_tokens,
+                cost_usd: facts.cost_usd,
             });
         }
         for (index, (stdout, stderr)) in prior_logs.iter().enumerate() {

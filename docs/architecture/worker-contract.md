@@ -139,6 +139,12 @@ model/harness settings, and the adapters build fresh noninteractive invocations.
 provision the worker VM, install its Docker daemon or enforce an external network firewall. Other modes
 represented in types may not have runtime implementations. Consult adapter code before claiming support
 for a new auth/execution mode.
+
+Adapters that can tell report prompt-cache reads and writes and the harness's own cost estimate next
+to the token counts. These fields are optional in attempt records. Lease responses carry
+`accepts_usage_details`; a worker leasing from a controller without it drops those fields, because
+older controllers reject records that carry them.
+
 If Codex exits after an HTTP 401 before any agent message or tool call, the supervisor may rerun
 that invocation twice with 5- and 20-second waits. Unknown stream events, an agent action, a result
 file, cancellation or the job's overall harness wall-clock limit prevent replay. Earlier streams

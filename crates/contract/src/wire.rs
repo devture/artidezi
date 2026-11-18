@@ -39,6 +39,10 @@ pub struct LeaseResponse {
     /// The exact bytes of `job.json` as stored, so the worker can hash-check them.
     pub job_artifact: ArtifactRef,
     pub task_document: String,
+    /// The controller accepts the optional cache and cost fields of an attempt record's usage.
+    /// Older controllers omit it and reject records carrying those fields, so a worker drops them.
+    #[serde(default)]
+    pub accepts_usage_details: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
