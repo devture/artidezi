@@ -12,7 +12,7 @@ use artidezi_contract::Job;
 use artidezi_contract::common::{Outcome, RepositoryAccess};
 use artidezi_contract::result::AgentResult;
 
-pub const PROMPT_TEMPLATE_VERSION: u32 = 12;
+pub const PROMPT_TEMPLATE_VERSION: u32 = 13;
 
 pub struct PreviousAttemptSummary<'a> {
     pub number: u32,
@@ -78,7 +78,7 @@ pub fn render(
     .unwrap();
 
     if job.allowed_outcomes.contains(&Outcome::ApproveUntouched) {
-        writeln!(out, "This is assessment of an existing PR, available as the read-only input ref `refs/artidezi/inputs/source-pr`. Identify the PR's own changes from its merge base with the recorded target base: `git diff <base>...refs/artidezi/inputs/source-pr`. The source may be behind the target; changes present only on the newer target are not deletions by the PR. Separately assess how the proposed changes integrate with the target. If the PR is acceptable as-is, use `approve_untouched` and leave all checkouts unchanged. The controller may approve or merge an unchanged result when explicitly configured and forge checks pass; your risk rating and evidence are recorded as context and do not replace those controller checks. You never perform forge actions yourself. If adaptation is needed, create a complete replacement series on the recorded target base including the original update and your fixes, preserving unrelated target changes; use `proposal`. Unchanged inputs do not automatically run local verification recipes. Report only checks you actually ran.\n").unwrap();
+        writeln!(out, "This is assessment of an existing PR, available as the read-only input ref `refs/artidezi/inputs/source-pr`. Identify the PR's own changes from its merge base with the recorded target base: `git diff <base>...refs/artidezi/inputs/source-pr`. The source may be behind the target; changes present only on the newer target are not deletions by the PR. Separately assess how the proposed changes integrate with the target. If the PR is acceptable as-is, use `approve_untouched` and leave all checkouts unchanged. The controller may approve or merge an unchanged result when explicitly configured and forge checks pass; your risk rating and evidence are recorded as context and do not replace those controller checks. You never perform forge actions yourself. Being behind the target is not by itself a reason to adapt: when the source merges cleanly into the recorded target base, rebasing is left to the forge or updater. Adapt when the change itself needs fixing (for example a compatibility change), or when it conflicts with the recorded target base. Then create a complete replacement series on the recorded target base including the original update and your fixes, preserving unrelated target changes; use `proposal`. Unchanged inputs do not automatically run local verification recipes. Report only checks you actually ran.\n").unwrap();
     }
 
     writeln!(

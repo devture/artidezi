@@ -43,6 +43,7 @@ pull_requests:
       mode: dry_run  # default; publish requires the project publication effect
       wait_for_checks_to_finish: true  # default
       require_successful_checks: false
+      target_conflicts: wait_for_rebase  # default; see below
       ci_context:
         results: true
       instructions: >-
@@ -155,6 +156,39 @@ until an explicit human action, unless the worker pool [opts into retries](opera
 attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded retries; a failed
 final invocation still holds the source for human review.
 
+### Conflicts with the target branch
+
+A change can stop merging cleanly only because its target moved, for example when another update
+edits a neighbouring line of the same file. Updaters such as Renovate rebase their own PRs in that
+case, so an adaptation that only resolves the conflict duplicates their work and needs human review.
+By default (`target_conflicts: wait_for_rebase`), ArtiDezi checks each eligible head before
+evaluating it: after the settle window and CI wait, it merges the head into the current target
+commit in memory, without running repository code or the model. When that merge conflicts, whatever caused it (including a new commit on the
+change itself), no evaluation starts and nothing counts against the run budget. The change shows **Waiting for
+rebase** in Incoming changes, with the reason, for example
+“Conflicts with `main` in `justfile`; waiting for the author or updater to rebase”.
+
+The rebased head is a new revision, so it is evaluated as usual and can be approved or merged
+unchanged. Later scans do not repeat the merge while neither the head nor the target has moved, and
+the change is not paused: if the updater never rebases (for example, rebasing is disabled), it
+simply keeps waiting. To evaluate the conflicting revision anyway, use **Evaluate anyway** (the
+same action as **Resume evaluations**); the agent may then prepare a conflict-resolved adaptation.
+This applies to that one evaluation, not to later returns to the same revision. Feedback on an earlier task of the same
+change also starts an evaluation regardless of conflicts. Set `target_conflicts: adapt` on a handler
+to evaluate conflicting heads immediately, as releases before this setting did.
+
+This check reports what a plain three-way merge into the target would leave unresolved: conflicting
+edits, as well as cases such as one side deleting a file the other modified. Merge settings in
+`.gitattributes` (such as `merge=union`) are not applied, so a file that the forge would merge with
+such a driver can still be reported as conflicting; use **Evaluate anyway** or
+`target_conflicts: adapt` for such repositories. Changes touching files over 16 MiB, and
+branches with criss-cross merge history, are not merged on the controller; they are evaluated as usual. The
+check can also miss conflicts that Git's directory-rename detection would report; such changes are
+evaluated as before. A clean merge says nothing about whether the
+result builds or behaves; that remains the agent's assessment. If the target moves
+after an evaluation has started, the frozen input is assessed as recorded, and a source merge that
+the forge then refuses holds the task as before.
+
 A source rebase during a successful evaluation does not reuse the old verdict. If the only
 changed source field is its head, the accepted result is an unchanged approval or an adaptation,
 and publication has not been planned or attempted, the controller closes the obsolete task and
@@ -233,6 +267,7 @@ The tabs track the source request: **Open** and **Closed** do not filter by eval
 The badge describes the current stage of that source and its latest task:
 
 - **Waiting**: eligibility, timing or capacity prevents an evaluation from starting; the reason appears below the source.
+- **Waiting for rebase**: the latest revision [conflicts with its target](#conflicts-with-the-target-branch); it is evaluated after a rebase or an explicit resume.
 - **In progress**: an evaluation task is queued or running.
 - **Evaluated**: the latest observed source revision has a completed evaluation. Open its task for the verdict and evidence; the source request may still be open.
 - **Ready for review**: published adaptations are awaiting human review, or their checks when the
@@ -254,7 +289,8 @@ controls affect only their named source and return to the same filtered view. Cl
 history without those controls. Projects or repositories no longer watched retain historical rows
 marked **Discovery off**, without resume controls. These rows track source requests, not additional projects.
 
-**Resume evaluations** renews the source's budget and permits another evaluation of the same head.
+**Resume evaluations** renews the source's budget and permits another evaluation of the same head,
+including one that waits for a rebase.
 **Pause evaluations** cancels queued work and withholds pending publication; an already running attempt may finish, with further
 automatic runs held. Task feedback creates a linked assessment of the current source head, retaining
 completed tasks as history. PR comments are not interpreted as commands. Configuration changes do not

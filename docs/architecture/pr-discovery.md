@@ -74,6 +74,7 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | Source closed/merged | Cancel queued or leased work, even if evaluations are paused; do not activate again while closed |
 | Completed assessment of same head | Keep it; metadata changes do not re-run |
 | Previously closed source reopens with a new head | Renew budget and clear pause/latest-task link only after the prior task and attempt are terminal and all adaptations are resolved |
+| New eligible source head that conflicts with its target (default `target_conflicts`) | No task or budget charge; record the head, target and paths and wait for either to move |
 | New eligible source head | Queue within project capacity and the persisted source budget |
 | Failed/lost/needs-human/interrupted work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |
@@ -106,10 +107,35 @@ it into its cache and verifies that its SHA equals the API's observed head. A ch
 snapshot preparation is surfaced and held; the agent never chooses a clone URL or publishes to a
 source branch. All target/context bases and source input are captured in immutable bundles/policy.
 
+Before preparing any input artifact, a handler with the default `target_conflicts: wait_for_rebase`
+checks whether the fetched head merges into the exact target commit that would be frozen.
+[`conflicts::conflicting_paths`](../../crates/git/src/conflicts.rs) runs a libgit2 three-way merge
+in memory on the bare cache; no worktree, hook or repository code runs. Conflicting paths (bounded
+to 20) are stored on the tracking record as `target_conflict` with the head and target commit, a
+task-less `discovery.target_conflict` event is recorded, and no task is created, so the run count is
+unchanged. No follow-up deadline is set. Later scans compare the recorded head and a fresh
+`branch_head` of the target before fetching; while both match, the source keeps waiting without a
+fetch or merge; a failed target lookup also keeps it waiting rather than holding it. A new head or
+target re-enters the normal path. The merge uses libgit2 defaults without `.gitattributes` merge
+drivers, so it can report conflicts that a forge's `merge=union` would resolve. To bound controller
+memory, every blob changed on either side since the merge base is first sized from its object
+header (submodule commits are skipped); a blob over 16 MiB, or more than one merge base, skips the
+probe and the source is evaluated. An unused waiver is dropped when the head moves, and
+the UI's **Evaluate anyway** posts the displayed head; it is refused unless the source still waits
+for a rebase at exactly that head. The UI shows
+**Waiting for rebase** only while the tracking status still carries the conflict reason, because a
+later gate on the same head (such as a CI rerun) replaces it. Unrelated histories or a failed
+check fall back to evaluation, since the check only saves a model run. Creating a task clears the
+record. Resume (**Evaluate anyway** in the UI) waives the check for the recorded head
+(`target_conflict_waived_head`) until that evaluation is queued, and feedback bypasses it. Both fields are optional in the JSON tracking record, so older records remain readable.
+Equivalence handling of published adaptations is unchanged: a deferred head never had one.
+
 The source can be behind its target. The prompt asks the agent to identify the PR's own changes
 from their merge base, then evaluate integration with the recorded target. A two-tip tree diff can
 show newer target work as absent from the source; that absence is not a change made by the PR.
-Replacement candidates must preserve unrelated target work. This is agent guidance, not an
+Replacement candidates must preserve unrelated target work. Since prompt template 13, the agent is
+told not to adapt a source only because it is behind: it adapts when the change needs fixing or
+conflicts with the recorded target. This is agent guidance, not an
 independent semantic guarantee supplied by the controller.
 
 When the matched handler requests CI results, the adapter's already-fetched complete visible

@@ -1353,6 +1353,9 @@ struct IncomingActionForm {
     q: String,
     #[serde(default)]
     page: usize,
+    /// The source revision an action was offered for; a newer revision refuses it.
+    #[serde(default)]
+    head: Option<String>,
 }
 
 impl IncomingActionForm {
@@ -1410,7 +1413,10 @@ async fn resume_source(
     with_orchestrator(&state.api, move |o| {
         let access = fresh_access(o, &access)?;
         ui_source_write(&o.db, &id, &access)?;
-        o.resume_pull_request(&id, &access.actor())?;
+        match form.head.as_deref() {
+            Some(head) => o.evaluate_despite_conflict(&id, &access.actor(), head)?,
+            None => o.resume_pull_request(&id, &access.actor())?,
+        };
         Ok(())
     })
     .await?;

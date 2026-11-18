@@ -23,6 +23,7 @@ fn enable(w: &mut World) {
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
+            target_conflicts: Default::default(),
             safe_verdict_action: Default::default(),
             safe_verdict_checks: Default::default(),
             mode: Default::default(),
@@ -376,7 +377,7 @@ fn opted_in_ci_results_are_frozen_and_rendered_as_untrusted_context() {
 
     let attempt = w.orchestrator.db.latest_attempt(&task_id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.prompt_template_version, 12);
+    assert_eq!(job.prompt_template_version, 13);
     let prompt =
         String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap();
     let handler = prompt
@@ -574,6 +575,7 @@ fn first_matching_handler_does_not_fall_through_while_waiting_for_checks() {
     discovery.handlers[0].wait_for_checks_to_finish = true;
     discovery.handlers.push(PullRequestHandler {
         adaptation_action: Default::default(),
+        target_conflicts: Default::default(),
         safe_verdict_action: Default::default(),
         safe_verdict_checks: Default::default(),
         mode: Default::default(),
@@ -1083,4 +1085,164 @@ fn retention_expires_pr_bundle_edges_in_jobs_and_frozen_source_policies() {
             .removed_bytes,
         0
     );
+}
+
+fn source(w: &World) -> artidezi_store::model::TrackedPullRequest {
+    w.orchestrator
+        .db
+        .list_pull_request_sources(None)
+        .unwrap()
+        .remove(0)
+}
+
+/// Moves the target so the open update (`version: 1.1.0`) no longer merges cleanly.
+fn conflicting_target(w: &World) -> Oid {
+    let repo = w.forge.ensure_repository("org/role").unwrap();
+    let main = repo.refname_to_id("refs/heads/main").unwrap();
+    seed(
+        &repo,
+        Some(main),
+        "defaults.yml",
+        "version: 1.0.1\n",
+        "Target change",
+    )
+}
+
+/// The updater's rebase: the same update on top of the current target.
+fn rebase(w: &World, branch: &str) {
+    let repo = w.forge.ensure_repository("org/role").unwrap();
+    let main = repo.refname_to_id("refs/heads/main").unwrap();
+    let next = seed(
+        &repo,
+        Some(main),
+        "defaults.yml",
+        "version: 1.1.0\n",
+        "Update dependency",
+    );
+    repo.reference("refs/heads/main", main, true, "restore target")
+        .unwrap();
+    repo.reference(&format!("refs/heads/{branch}"), next, true, "rebase")
+        .unwrap();
+}
+
+#[test]
+fn target_conflicts_wait_for_the_updater_without_a_model_run_or_budget() {
+    let mut w = World::new();
+    enable(&mut w);
+    let pr = open(&w, "renovate[bot]", "renovate/update");
+    let target = conflicting_target(&w);
+    assert!(scan(&mut w).is_empty());
+    let deferred = source(&w);
+    assert_eq!((deferred.runs, deferred.paused), (0, false));
+    assert_eq!(deferred.last_task_id, None);
+    assert_eq!(deferred.follow_up, None, "no fast follow-up while waiting");
+    let conflict = deferred.target_conflict.clone().unwrap();
+    assert_eq!(conflict.head, pr.head_commit.0);
+    assert_eq!(conflict.target, target.to_string());
+    assert_eq!(conflict.paths, ["defaults.yml"]);
+    assert_eq!(
+        deferred.status,
+        "Conflicts with `main` in `defaults.yml`; waiting for the author or updater to rebase"
+    );
+    // Repeated scans keep waiting; the budget of two runs is never touched.
+    for _ in 0..3 {
+        assert!(scan(&mut w).is_empty());
+    }
+    assert_eq!(source(&w), deferred);
+    // A transient target lookup failure keeps waiting instead of pausing the source.
+    w.forge.fail_next_branch_head("org/role");
+    assert!(scan(&mut w).is_empty());
+    assert_eq!(source(&w), deferred);
+
+    // The updater's rebase is a new head that merges cleanly and gets a fresh evaluation.
+    rebase(&w, "renovate/update");
+    let task = scan(&mut w).remove(0);
+    let tracked = source(&w);
+    assert_eq!((tracked.runs, tracked.target_conflict), (1, None));
+    assert_eq!(w.work(&approve(&w)), AttemptState::Valid);
+    assert_eq!(
+        w.orchestrator.db.get_task(&task).unwrap().state,
+        TaskState::Done
+    );
+}
+
+#[test]
+fn a_moved_target_rechecks_and_resume_or_adapt_evaluates_the_conflict() {
+    let mut w = World::new();
+    enable(&mut w);
+    open(&w, "renovate[bot]", "renovate/update");
+    conflicting_target(&w);
+    assert!(scan(&mut w).is_empty());
+    // The target moves again, still conflicting: rechecked against the new commit, no run.
+    let target = conflicting_target(&w);
+    assert!(scan(&mut w).is_empty());
+    let deferred = source(&w);
+    assert_eq!(
+        deferred.target_conflict.as_ref().unwrap().target,
+        target.to_string()
+    );
+    assert_eq!(deferred.runs, 0);
+
+    // A resume offered for another revision is refused without touching the source.
+    assert!(
+        w.orchestrator
+            .evaluate_despite_conflict(&deferred.id, "test-admin", &"0".repeat(40))
+            .is_err()
+    );
+    assert_eq!(source(&w), deferred);
+    // An explicit resume evaluates this head despite the conflict.
+    w.orchestrator
+        .evaluate_despite_conflict(&deferred.id, "test-admin", &deferred.observed_head)
+        .unwrap();
+    assert_eq!(
+        source(&w).target_conflict_waived_head.as_ref(),
+        Some(&deferred.observed_head)
+    );
+    assert_eq!(scan(&mut w).len(), 1);
+    // Once evaluation was requested, a stale repeat of the same request is refused.
+    assert!(
+        w.orchestrator
+            .evaluate_despite_conflict(&deferred.id, "test-admin", &deferred.observed_head)
+            .is_err()
+    );
+    let resumed = source(&w);
+    assert_eq!(resumed.target_conflict, None);
+    assert_eq!(
+        resumed.target_conflict_waived_head, None,
+        "a waiver is used once"
+    );
+
+    // An unused waiver does not survive a head change.
+    let mut w2 = World::new();
+    enable(&mut w2);
+    open(&w2, "renovate[bot]", "renovate/update");
+    conflicting_target(&w2);
+    assert!(scan(&mut w2).is_empty());
+    let id = source(&w2).id;
+    w2.orchestrator
+        .resume_pull_request(&id, "test-admin")
+        .unwrap();
+    assert!(source(&w2).target_conflict_waived_head.is_some());
+    head(&w2, "renovate/update", "version: 1.2.0\n");
+    assert!(scan(&mut w2).is_empty());
+    let moved = source(&w2);
+    assert_eq!(moved.target_conflict_waived_head, None);
+    assert_eq!(moved.target_conflict.unwrap().head, moved.observed_head);
+
+    // A handler that adapts conflicts evaluates them directly.
+    let mut w = World::new();
+    enable(&mut w);
+    w.orchestrator
+        .config
+        .projects
+        .get_mut("roles")
+        .unwrap()
+        .pull_requests
+        .as_mut()
+        .unwrap()
+        .handlers[0]
+        .target_conflicts = artidezi_config::model::TargetConflicts::Adapt;
+    open(&w, "renovate[bot]", "renovate/update");
+    conflicting_target(&w);
+    assert_eq!(scan(&mut w).len(), 1);
 }

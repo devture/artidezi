@@ -361,6 +361,8 @@ fn discovery_queue_and_source_claim_are_atomic() {
         paused: false,
         status: "queued".into(),
         follow_up: None,
+        target_conflict: None,
+        target_conflict_waived_head: None,
     };
     let mut old_record = serde_json::to_value(&source).unwrap();
     old_record.as_object_mut().unwrap().remove("follow_up");
@@ -416,6 +418,8 @@ fn superseding_closes_the_task_and_reschedules_its_source_atomically() {
         paused: true,
         status: "held".into(),
         follow_up: None,
+        target_conflict: None,
+        target_conflict_waived_head: None,
     };
     let held = attempt(&t.id, 1);
     db.insert_discovery_task(&t, &held, &source).unwrap();

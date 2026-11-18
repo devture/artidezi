@@ -315,6 +315,7 @@ fn world() -> (World, Fixture) {
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
+            target_conflicts: Default::default(),
             agent_profile: None,
             safe_verdict_action: Default::default(),
             safe_verdict_checks: Default::default(),
@@ -392,7 +393,7 @@ fn selected_failed_log_is_frozen_as_private_evidence_and_rendered_only_for_the_w
     assert!(!task.policy_snapshot.contains("setup\\nfailed"));
     let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.prompt_template_version, 12);
+    assert_eq!(job.prompt_template_version, 13);
     let prompt =
         String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap();
     assert!(prompt.contains("Selected source CI logs"));

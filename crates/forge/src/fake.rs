@@ -31,6 +31,7 @@ struct State {
     /// Check results a test wants a merge request to report, keyed by (remote, source branch).
     checks: BTreeMap<(String, String), ChecksState>,
     fail_next_create: BTreeSet<String>,
+    fail_next_branch_head: BTreeSet<String>,
     reviews: BTreeMap<(String, u64), Vec<MergeRequestReview>>,
 }
 
@@ -105,6 +106,15 @@ impl FakeForge {
             .lock()
             .unwrap()
             .fail_next_create
+            .insert(remote.to_owned());
+    }
+
+    /// Simulates a transient forge failure on the next branch-head lookup.
+    pub fn fail_next_branch_head(&self, remote: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .fail_next_branch_head
             .insert(remote.to_owned());
     }
 
@@ -258,6 +268,15 @@ impl ForgeAdapter for FakeForge {
     }
 
     fn branch_head(&self, remote: &str, branch: &str) -> Result<CommitSha> {
+        if self
+            .state
+            .lock()
+            .unwrap()
+            .fail_next_branch_head
+            .remove(remote)
+        {
+            return Err(ForgeError::Other("simulated branch lookup failure".into()));
+        }
         let repo = self.open(remote)?;
         let oid = repo
             .refname_to_id(&format!("refs/heads/{branch}"))

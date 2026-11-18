@@ -1203,6 +1203,8 @@ async fn navigation_counts_follow_authenticated_pages_and_project_grants() {
             paused: false,
             status: "Evaluated".into(),
             follow_up: None,
+            target_conflict: None,
+            target_conflict_waived_head: None,
         })
         .unwrap();
     }
@@ -2516,6 +2518,8 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
                     "This head has already been evaluated".into()
                 },
                 follow_up: None,
+                target_conflict: None,
+                target_conflict_waived_head: None,
             };
             o.db.save_pull_request_source(&source).unwrap();
         }
@@ -2533,7 +2537,16 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
         other.project = "application".into();
         other.remote = "org/application".into();
         other.paused = false;
+        other.status =
+            artidezi_orchestrator::discovery::target_conflict_status("main", &["justfile".into()]);
+        other.target_conflict = Some(artidezi_store::model::TargetConflict {
+            head: other.observed_head.clone(),
+            target: "b".repeat(40),
+            paths: vec!["justfile".into()],
+        });
         o.db.save_pull_request_source(&other).unwrap();
+        other.status = "This head has already been evaluated".into();
+        other.target_conflict = None;
         other.id = "pr_retired".into();
         other.repository_id = "retired".into();
         other.remote = "org/retired".into();
@@ -2554,6 +2567,16 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
     assert!(all.contains("class=\"source-repository\""));
     assert!(all.contains("class=\"source-title-group\">(<a class=\"source-title\""));
     assert!(all.contains("Dry run"));
+    assert!(all.contains("Waiting for rebase"));
+    assert!(all.contains("/incoming-changes/pr_other/resume"));
+    assert!(all.contains("Evaluate anyway"));
+    assert!(all.contains(&format!(
+        r#"<input type="hidden" name="head" value="{}">"#,
+        "a".repeat(40)
+    )));
+    assert!(all.contains(
+        "Conflicts with `main` in `justfile`; waiting for the author or updater to rebase"
+    ));
     assert!(all.contains("Discovery off"));
     assert!(all.contains("href=\"https://retired.example/org/retired/pulls/1\""));
     assert!(!all.contains("/incoming-changes/pr_retired/resume"));

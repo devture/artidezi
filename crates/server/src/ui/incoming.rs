@@ -285,6 +285,9 @@ pub(in super::super) fn incoming_changes(
                 note
             };
             write!(body, r#"<form method="post" action="/incoming-changes/{}/{action}">{}{}<button class="button {tone}" title="{note}" {disabled}>{}{label}</button></form>"#, url(&source.id), csrf(token), scope_fields(query), icon(symbol)).unwrap();
+            if !source.paused && artidezi_orchestrator::discovery::waits_for_rebase(source) {
+                write!(body, r#"<form method="post" action="/incoming-changes/{}/resume">{}{}<input type="hidden" name="head" value="{}"><button class="button positive" title="Evaluates this revision despite its conflict; the agent may prepare an adaptation">{}Evaluate anyway</button></form>"#, url(&source.id), csrf(token), scope_fields(query), e(&source.observed_head), icon("play")).unwrap();
+            }
         }
         write!(
             body,
@@ -384,6 +387,13 @@ fn evaluation_status(
             "check",
             "The latest observed source revision has a completed evaluation; open its task for the result",
         )
+    } else if artidezi_orchestrator::discovery::waits_for_rebase(source) {
+        (
+            "Waiting for rebase",
+            "closed",
+            "clock",
+            "This revision conflicts with its target branch; it is evaluated once its author or updater rebases it, or when someone resumes evaluations",
+        )
     } else if source.status == "Forge checks failed; evaluation blocked" {
         (
             "Forge checks failed",
@@ -460,6 +470,8 @@ mod tests {
                 paused: false,
                 status: "Waiting for settle window".into(),
                 follow_up: None,
+                target_conflict: None,
+                target_conflict_waived_head: None,
             },
         )
     }
@@ -501,6 +513,24 @@ mod tests {
         source.status = "Waiting for settle window".into();
         // A previous completed task does not mark a new source revision complete.
         assert_eq!(evaluation_status(&source, Some(&task), true).0, "Waiting");
+        source.target_conflict = Some(artidezi_store::model::TargetConflict {
+            head: source.observed_head.clone(),
+            target: "b".repeat(40),
+            paths: vec!["justfile".into()],
+        });
+        // A later gate (for example a CI rerun on the same head) owns the current status.
+        source.status = "Waiting for forge checks to finish".into();
+        assert_eq!(evaluation_status(&source, Some(&task), true).0, "Waiting");
+        source.status =
+            artidezi_orchestrator::discovery::target_conflict_status("main", &["justfile".into()]);
+        assert_eq!(
+            evaluation_status(&source, Some(&task), true).0,
+            "Waiting for rebase"
+        );
+        source.target_conflict_waived_head = Some(source.observed_head.clone());
+        assert_eq!(evaluation_status(&source, Some(&task), true).0, "Waiting");
+        source.target_conflict = None;
+        source.target_conflict_waived_head = None;
         assert_eq!(
             evaluation_status(&source, Some(&task), false).0,
             "Discovery off"

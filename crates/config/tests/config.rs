@@ -209,6 +209,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         .clone();
     let handler = PullRequestHandler {
         adaptation_action: Default::default(),
+        target_conflicts: Default::default(),
         safe_verdict_action: Default::default(),
         safe_verdict_checks: Default::default(),
         mode: Default::default(),
@@ -428,6 +429,7 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     discovery.handlers[0].catch_all = true;
     discovery.handlers.push(PullRequestHandler {
         adaptation_action: Default::default(),
+        target_conflicts: Default::default(),
         safe_verdict_action: Default::default(),
         safe_verdict_checks: Default::default(),
         mode: Default::default(),
@@ -677,6 +679,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
+            target_conflicts: Default::default(),
             safe_verdict_action: Default::default(),
             safe_verdict_checks: Default::default(),
             id: "updates".into(),
@@ -751,6 +754,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
         ci_log_context: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
+            target_conflicts: Default::default(),
             id: "renovate".into(),
             agent_profile: None,
             authors: Some(vec!["renovate[bot]".into()]),

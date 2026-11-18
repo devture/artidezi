@@ -350,6 +350,9 @@ pub struct PullRequestHandler {
     /// What happens to ArtiDezi's own adaptation PRs for this handler's sources.
     #[serde(default, skip_serializing_if = "AdaptationAction::is_review")]
     pub adaptation_action: AdaptationAction,
+    /// What happens when an assessed source no longer merges cleanly into its current target.
+    #[serde(default, skip_serializing_if = "TargetConflicts::is_wait_for_rebase")]
+    pub target_conflicts: TargetConflicts,
     /// Exact forge logins. A handler names its authors with exactly one of `authors`,
     /// `author_regex` or an explicit `catch_all: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,6 +464,25 @@ pub enum AdaptationAction {
 impl AdaptationAction {
     pub fn is_review(&self) -> bool {
         *self == Self::Review
+    }
+}
+
+/// Handling of a source head that conflicts with the current target branch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetConflicts {
+    /// Start no evaluation for that head and wait for its author or updater to rebase it. The
+    /// controller checks with an in-memory merge before any model run; explicit resume or task
+    /// feedback still evaluates the conflicting head.
+    #[default]
+    WaitForRebase,
+    /// Evaluate the conflicting head; the agent may propose a conflict-resolved adaptation.
+    Adapt,
+}
+
+impl TargetConflicts {
+    pub fn is_wait_for_rebase(&self) -> bool {
+        *self == Self::WaitForRebase
     }
 }
 

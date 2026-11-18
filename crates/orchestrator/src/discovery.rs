@@ -6,7 +6,7 @@
 
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::{
-    DeliveryMode, PullRequestAction, PullRequestDiscovery, PullRequestHandler,
+    DeliveryMode, PullRequestAction, PullRequestDiscovery, PullRequestHandler, TargetConflicts,
 };
 use artidezi_config::resolve::{
     PullRequestCiLog, PullRequestCiLogOutcome, PullRequestCiResult, PullRequestCiResultKind,
@@ -33,6 +33,33 @@ pub struct DiscoveryReport {
 
 pub(crate) const EVALUATED_HEAD_STATUS: &str = "This head has already been evaluated";
 pub(crate) const FOLLOW_UP_INTERVAL_SECONDS: i64 = 120;
+
+const TARGET_CONFLICT_STATUS_SUFFIX: &str = "; waiting for the author or updater to rebase";
+
+/// Whether the source's current head waits for a rebase, as recorded by its latest scan.
+pub fn waits_for_rebase(source: &TrackedPullRequest) -> bool {
+    source
+        .target_conflict
+        .as_ref()
+        .is_some_and(|conflict| conflict.head == source.observed_head)
+        && source.target_conflict_waived_head.as_deref() != Some(source.observed_head.as_str())
+        && source.status.ends_with(TARGET_CONFLICT_STATUS_SUFFIX)
+}
+
+/// Source status while a head waits for its author or updater to resolve a target conflict.
+pub fn target_conflict_status(branch: &str, paths: &[String]) -> String {
+    let shown = paths
+        .iter()
+        .take(3)
+        .map(|p| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = match paths.len().saturating_sub(3) {
+        0 => String::new(),
+        n => format!(" and {n} more"),
+    };
+    format!("Conflicts with `{branch}` in {shown}{more}{TARGET_CONFLICT_STATUS_SUFFIX}")
+}
 
 struct DiscoveryTarget<'a> {
     project: &'a str,
@@ -296,6 +323,8 @@ impl Orchestrator {
             paused: false,
             status: "observed".into(),
             follow_up: None,
+            target_conflict: None,
+            target_conflict_waived_head: None,
         });
         let reopened_with_new_head = source.closed
             && pull.state == MergeRequestState::Open
@@ -305,6 +334,8 @@ impl Orchestrator {
         if source.observed_head != pull.head_commit.0 {
             source.observed_head = pull.head_commit.0.clone();
             source.head_observed_at = now;
+            // A waiver was for the revision a person saw, not for a later return to it.
+            source.target_conflict_waived_head = None;
         }
         let result = (|| {
             if reopened_with_new_head {
@@ -594,6 +625,33 @@ impl Orchestrator {
             });
             return Ok(None);
         }
+        let conflict_gate = handler.target_conflicts == TargetConflicts::WaitForRebase
+            && source.target_conflict_waived_head.as_deref() != Some(pull.head_commit.as_str());
+        if conflict_gate
+            && let Some(conflict) = &source.target_conflict
+            && conflict.head == pull.head_commit.0
+        {
+            // Without a model run or fetch, wait until either side moves: the updater's rebase
+            // brings a new head, and a new target commit may resolve or change the conflict.
+            let status = target_conflict_status(&repository.branch, &conflict.paths);
+            match self
+                .forge(&repository.forge)?
+                .branch_head(&repository.remote, &repository.branch)
+            {
+                Ok(target) if target.0 != conflict.target => {}
+                Ok(_) => {
+                    source.status = status;
+                    return Ok(None);
+                }
+                // A failed lookup must not turn this automatic wait into a hold; the next scan
+                // asks again, and a rebased head skips this lookup altogether.
+                Err(error) => {
+                    tracing::warn!(source = %source.id, %error, "target lookup for a conflicting source failed; still waiting");
+                    source.status = status;
+                    return Ok(None);
+                }
+            }
+        }
         if source.runs >= discovery.max_runs_per_pull_request {
             source.paused = true;
             source.status = "Automatic evaluation budget reached; explicit resume required".into();
@@ -613,8 +671,7 @@ impl Orchestrator {
             });
             return Ok(None);
         }
-        self.create_pull_request_task(source, pull, handler, None)
-            .map(Some)
+        self.create_pull_request_task(source, pull, handler, None, conflict_gate)
     }
 
     fn create_pull_request_task(
@@ -623,7 +680,8 @@ impl Orchestrator {
         pull: &MergeRequestInfo,
         handler: &PullRequestHandler,
         feedback: Option<(&str, &str)>,
-    ) -> Result<Task> {
+        conflict_gate: bool,
+    ) -> Result<Option<Task>> {
         let mut policy = self.config.resolve_project(
             &source.project,
             &TaskSelection {
@@ -668,6 +726,46 @@ impl Orchestrator {
             return Err(OrchestratorError::Invalid(
                 "PR head changed while snapshotting; rescan after inspection".into(),
             ));
+        }
+        if conflict_gate {
+            let target = bases
+                .iter()
+                .find(|base| base.repository_id == source.repository_id)
+                .expect("source repository has a resolved base");
+            let target_oid = git2::Oid::from_str(&target.base_commit)
+                .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
+            let head_oid = git.refname_to_id(&local_ref)?;
+            match artidezi_git::conflicts::conflicting_paths(&git, target_oid, head_oid) {
+                Ok(paths) if !paths.is_empty() => {
+                    let paths: Vec<String> = paths.into_iter().take(20).collect();
+                    source.status = target_conflict_status(&target.branch, &paths);
+                    self.db.record_event(
+                        None,
+                        None,
+                        "discovery",
+                        "discovery.target_conflict",
+                        serde_json::json!({
+                            "source": source.id,
+                            "number": pull.number,
+                            "head": pull.head_commit,
+                            "target_branch": target.branch,
+                            "target": target.base_commit,
+                            "paths": paths,
+                        }),
+                    )?;
+                    source.target_conflict = Some(TargetConflict {
+                        head: pull.head_commit.0.clone(),
+                        target: target.base_commit.clone(),
+                        paths,
+                    });
+                    return Ok(None);
+                }
+                Ok(_) => {}
+                // The check only saves a model run; evaluate when it cannot give an answer.
+                Err(error) => {
+                    tracing::warn!(source = %source.id, %error, "target conflict check failed; evaluating the source");
+                }
+            }
         }
         let temp = self
             .artifacts
@@ -872,6 +970,9 @@ impl Orchestrator {
         updated.last_task_id = Some(task.id.clone());
         updated.runs += 1;
         updated.paused = false;
+        updated.target_conflict = None;
+        // A waiver covers one requested evaluation, not later returns to the same head.
+        updated.target_conflict_waived_head = None;
         updated.status = if publishing {
             "Queued for assessment and publication"
         } else {
@@ -927,7 +1028,7 @@ impl Orchestrator {
             }
         }
         *source = updated;
-        Ok(self.db.get_task(&task.id)?)
+        Ok(Some(self.db.get_task(&task.id)?))
     }
 
     /// Stop queued automatic work; a currently leased attempt may finish without reactivation.
@@ -960,6 +1061,26 @@ impl Orchestrator {
 
     /// A human explicitly renews the automatic budget. A scan still applies all eligibility gates.
     pub fn resume_pull_request(&mut self, id: &str, actor: &str) -> Result<TrackedPullRequest> {
+        self.resume_source(id, actor, None)
+    }
+
+    /// Resume to evaluate `head` despite its target conflict. Refused unless the source still
+    /// waits for a rebase at exactly that revision, so a stale request cannot repeat other work.
+    pub fn evaluate_despite_conflict(
+        &mut self,
+        id: &str,
+        actor: &str,
+        head: &str,
+    ) -> Result<TrackedPullRequest> {
+        self.resume_source(id, actor, Some(head))
+    }
+
+    fn resume_source(
+        &mut self,
+        id: &str,
+        actor: &str,
+        expected_head: Option<&str>,
+    ) -> Result<TrackedPullRequest> {
         let mut source = self.db.get_pull_request_source(id)?;
         let project =
             self.config.projects.get(&source.project).ok_or_else(|| {
@@ -985,6 +1106,15 @@ impl Orchestrator {
         if pull.state != MergeRequestState::Open || pull.target_branch != repository.branch {
             return Err(OrchestratorError::Invalid(
                 "source PR is closed or targets an unwatched branch".into(),
+            ));
+        }
+        if expected_head.is_some_and(|head| {
+            head != pull.head_commit.as_str()
+                || head != source.observed_head
+                || !waits_for_rebase(&source)
+        }) {
+            return Err(OrchestratorError::Invalid(
+                "this revision is no longer waiting for a rebase; reload the page".into(),
             ));
         }
         source.handler_id = discovery
@@ -1019,6 +1149,17 @@ impl Orchestrator {
         // Retain task history through immutable source references, but allow explicit same-head retry.
         source.last_task_id = None;
         source.status = "Resumed by a human; waiting for the next eligible scan".into();
+        // Resuming a head that waits for a rebase asks for its evaluation despite the conflict.
+        if source
+            .target_conflict
+            .as_ref()
+            .is_some_and(|conflict| conflict.head == pull.head_commit.0)
+        {
+            source.target_conflict_waived_head = Some(pull.head_commit.0.clone());
+            source.status =
+                "Resumed by a human; this head will be evaluated despite its target conflict"
+                    .into();
+        }
         self.db.save_pull_request_source(&source)?;
         self.db.record_event(
             None,
@@ -1102,8 +1243,10 @@ impl Orchestrator {
         source.handler_id = handler.id.clone();
         source.observed_head = pull.head_commit.0.clone();
         source.head_observed_at = Timestamp::now();
-        let next =
-            self.create_pull_request_task(&mut source, &pull, &handler, Some((feedback, actor)))?;
+        // Feedback is an explicit request to evaluate, so a target conflict does not defer it.
+        let next = self
+            .create_pull_request_task(&mut source, &pull, &handler, Some((feedback, actor)), false)?
+            .expect("ungated evaluation creates a task");
         if !task.state.is_terminal() {
             self.db.set_task_state(&task.id, TaskState::Closed, actor)?;
         }

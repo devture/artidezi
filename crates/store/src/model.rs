@@ -45,6 +45,20 @@ pub struct TrackedPullRequest {
     /// A known unresolved source can be revisited without listing its repository again.
     #[serde(default)]
     pub follow_up: Option<PullRequestFollowUp>,
+    /// The latest head found to conflict with its target before evaluation; no task was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_conflict: Option<TargetConflict>,
+    /// A head a person explicitly resumed despite its recorded target conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_conflict_waived_head: Option<String>,
+}
+
+/// A source head that does not merge cleanly into the recorded target commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetConflict {
+    pub head: String,
+    pub target: String,
+    pub paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
