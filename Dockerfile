@@ -50,7 +50,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2 \
  && claude_arch="$(dpkg --print-architecture | sed 's/amd64/x64/')" \
- && npm install --global --ignore-scripts "@anthropic-ai/claude-code-linux-${claude_arch}@2.1.325" \
+ && npm install --global --ignore-scripts "@anthropic-ai/claude-code-linux-${claude_arch}@2.1.327" \
  && ln -s "/usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-${claude_arch}/claude" /usr/local/bin/claude \
  && claude --version
 USER artidezi

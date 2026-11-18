@@ -164,7 +164,7 @@ model_endpoints:
 agent_profiles:
   claude:
     harness: claude
-    harness_version_constraint: '=2.1.325' # the version installed on the workers
+    harness_version_constraint: '*' # or a requirement such as '>=2.1' to hold jobs for matching workers
     model: claude-opus-5-5
     model_settings: {effort: medium}
     model_endpoint: anthropic

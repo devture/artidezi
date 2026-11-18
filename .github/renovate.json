@@ -41,9 +41,10 @@
 			"groupName": "Forgejo"
 		},
 		{
-			"description": "Pi and Node.js only go into the unpublished development image, which CI builds and smoke-tests: merge minor and patch bumps once checks pass.",
+			"description": "Pi, Claude Code and Node.js only go into the unpublished development image, which CI builds and smoke-tests: merge minor and patch bumps once checks pass.",
 			"matchPackageNames": [
 				"@earendil-works/pi-coding-agent",
+				"@anthropic-ai/claude-code",
 				"docker.io/node"
 			],
 			"matchUpdateTypes": [
@@ -102,6 +103,20 @@
 			],
 			"datasourceTemplate": "npm",
 			"depNameTemplate": "@earendil-works/pi-coding-agent",
+			"versioningTemplate": "semver"
+		},
+		{
+			"customType": "regex",
+			"description": "The image installs the per-architecture native package; track the x64 one, which is published together with the others.",
+			"managerFilePatterns": [
+				"Dockerfile"
+			],
+			"matchStrings": [
+				"@anthropic-ai/claude-code-linux-\\$\\{claude_arch\\}@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+			],
+			"datasourceTemplate": "npm",
+			"depNameTemplate": "@anthropic-ai/claude-code",
+			"packageNameTemplate": "@anthropic-ai/claude-code-linux-x64",
 			"versioningTemplate": "semver"
 		}
 	],

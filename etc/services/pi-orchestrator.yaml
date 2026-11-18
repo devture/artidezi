@@ -24,7 +24,7 @@ worker_pools:
 agent_profiles:
   pi-venice:
     harness: pi
-    harness_version_constraint: "=0.85.1"
+    harness_version_constraint: '*' # the development image's Pi
     model: deepseek-v4-1-flash
     model_settings: {thinking: off}
     model_endpoint: venice

@@ -8,7 +8,7 @@
 //! and a fixed tool set: the worker VM is the boundary, not the harness. Claude Code applies prompt
 //! caching itself; the final `result` event reports cache reads/writes and its own cost estimate.
 //!
-//! The flag set below was confirmed against Claude Code 2.1.325 (2026-11-18): `--tools` limits
+//! The flag set below was confirmed against Claude Code 2.1.327 (2026-11-18): `--tools` limits
 //! the built-in tools to the named ones, `--setting-sources ''` ignores user, project and local
 //! settings files, `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`, and a failed run
 //! (rejected key, budget or turn limit) ends with an `is_error` result event and exit status 1.

@@ -24,7 +24,7 @@ worker_pools:
 agent_profiles:
   claude-opus:
     harness: claude
-    harness_version_constraint: "=2.1.325"
+    harness_version_constraint: '*' # the development image's Claude Code
     model: claude-opus-5-5
     model_settings: {effort: medium, max_budget_usd: 2}
     model_endpoint: anthropic
