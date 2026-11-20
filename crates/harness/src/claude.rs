@@ -100,6 +100,7 @@ impl HarnessAdapter for ClaudeHarness {
             "--setting-sources".into(),
             String::new(),
         ];
+        let mut env = common_env(ctx);
         if ctx.job.agent_profile.model != "default" {
             args.push("--model".into());
             args.push(ctx.job.agent_profile.model.clone());
@@ -129,6 +130,18 @@ impl HarnessAdapter for ClaudeHarness {
                     args.push("--max-budget-usd".into());
                     args.push(budget.to_string());
                 }
+                "max_output_tokens" => {
+                    let limit = value
+                        .as_u64()
+                        .filter(|v| (1..=u64::from(u32::MAX)).contains(v))
+                        .ok_or_else(|| {
+                            HarnessError::Invalid(
+                                "model_settings.max_output_tokens must be a positive 32-bit integer"
+                                    .into(),
+                            )
+                        })?;
+                    env.push(("CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(), limit.to_string()));
+                }
                 other => {
                     return Err(HarnessError::Invalid(format!(
                         "the Claude adapter does not understand model_settings.{other}"
@@ -140,7 +153,6 @@ impl HarnessAdapter for ClaudeHarness {
         args.push("--tools".into());
         args.extend(tools.iter().map(|t| (*t).to_owned()));
 
-        let mut env = common_env(ctx);
         env.push(("ANTHROPIC_API_KEY".into(), key.trim().to_owned()));
         if let Some(base_url) = &endpoint.base_url {
             env.push(("ANTHROPIC_BASE_URL".into(), base_url.clone()));
@@ -420,7 +432,7 @@ not json
     #[test]
     fn invocation_is_headless_with_the_key_effort_and_fixed_tools() {
         let job = job(
-            serde_json::json!({"effort": "medium", "max_budget_usd": 3}),
+            serde_json::json!({"effort": "medium", "max_budget_usd": 3, "max_output_tokens": 8192}),
             WebSearchMode::Disabled,
             "anthropic_api_key",
         );
@@ -439,6 +451,11 @@ not json
                 .env
                 .contains(&("ANTHROPIC_API_KEY".into(), "sk-ant-test".into()))
         );
+        assert!(
+            invocation
+                .env
+                .contains(&("CLAUDE_CODE_MAX_OUTPUT_TOKENS".into(), "8192".into()))
+        );
         assert_eq!(invocation.stdin.as_deref(), Some(&b"Do the task."[..]));
 
         let live = invoke(&self::job(
@@ -449,6 +466,12 @@ not json
         .unwrap();
         assert!(live.args.join(" ").ends_with("Task WebSearch WebFetch"));
         assert!(!live.args.contains(&"--effort".to_owned()));
+        assert!(
+            !live
+                .env
+                .iter()
+                .any(|(key, _)| key == "CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+        );
     }
 
     #[test]
@@ -471,6 +494,11 @@ not json
             ),
             (
                 serde_json::json!({"thinking": "high"}),
+                WebSearchMode::Disabled,
+                "anthropic_api_key",
+            ),
+            (
+                serde_json::json!({"max_output_tokens": 0}),
                 WebSearchMode::Disabled,
                 "anthropic_api_key",
             ),

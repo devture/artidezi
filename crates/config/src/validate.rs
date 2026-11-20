@@ -782,24 +782,28 @@ fn claude_settings_problems(
     const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
     let mut problems = vec![];
     for (key, value) in settings {
-        let valid = match key.as_str() {
-            "effort" => value.as_str().is_some_and(|v| EFFORTS.contains(&v)),
-            "max_budget_usd" => value.as_f64().is_some_and(|v| v > 0.0),
+        let (valid, expected) = match key.as_str() {
+            "effort" => (
+                value.as_str().is_some_and(|v| EFFORTS.contains(&v)),
+                "one of low, medium, high, xhigh, max",
+            ),
+            "max_budget_usd" => (value.as_f64().is_some_and(|v| v > 0.0), "a positive number"),
+            "max_output_tokens" => (
+                value
+                    .as_u64()
+                    .is_some_and(|v| (1..=u64::from(u32::MAX)).contains(&v)),
+                "a positive 32-bit integer",
+            ),
             _ => {
                 problems.push(problem(format!(
-                    "agent profile {name}: the claude harness does not understand model_settings.{key}; use effort or max_budget_usd"
+                    "agent profile {name}: the claude harness does not understand model_settings.{key}; use effort, max_budget_usd or max_output_tokens"
                 )));
                 continue;
             }
         };
         if !valid {
             problems.push(problem(format!(
-                "agent profile {name}: model_settings.{key} must be {}",
-                if key == "effort" {
-                    "one of low, medium, high, xhigh, max"
-                } else {
-                    "a positive number"
-                }
+                "agent profile {name}: model_settings.{key} must be {expected}"
             )));
         }
     }

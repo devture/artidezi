@@ -150,9 +150,14 @@ implemented worker/harness capabilities. Pi consumes an OpenAI-compatible Chat C
 and keeps its API key on the worker. See [worker internals](../architecture/worker-contract.md).
 
 A Claude Code profile uses an Anthropic endpoint with `auth_mode: anthropic_api_key`. Its
-`model_settings` accept only `effort` (`low`, `medium`, `high`, `xhigh` or `max`) and
-`max_budget_usd`. Claude Code stops an attempt once its own cost estimate passes that amount, so
-the request that crosses it can overshoot it; an attempt stopped that way is a harness failure.
+`model_settings` accept `effort` (`low`, `medium`, `high`, `xhigh` or `max`),
+`max_budget_usd` and `max_output_tokens`. Claude Code stops an attempt once its own cost estimate
+passes the budget, so the request that crosses it can overshoot it. An attempt stopped that way is
+a harness failure.
+For an Anthropic gateway configured through `base_url`, set `max_output_tokens` to the gateway's
+model output limit as a positive integer when it is lower than Claude Code's default. Claude Code
+2.1.329 removed the automatic retry at the limit reported in a `max_tokens` error. Upgrade the
+controller and its Claude workers before setting this option on a profile.
 Live web search is supported only with `domain_scope: public_internet`:
 
 ```yaml

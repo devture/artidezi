@@ -144,7 +144,9 @@ event supplies the usage, including cache reads and writes and Claude Code's cos
 (timeout, crash) records no usage rather than an undercount. An error result (rejected key, budget
 or turn limit) or a missing result makes the attempt a harness error even after a zero exit status
 or a written result document, so nothing from that run is acted on. Profiles supply
-model/harness settings, and the adapters build fresh noninteractive invocations. This code does not
+model/harness settings, and the adapters build fresh noninteractive invocations. For Claude,
+`model_settings.max_output_tokens` sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` for that invocation. When
+omitted, Claude Code chooses its model-specific default. This code does not
 provision the worker VM, install its Docker daemon or enforce an external network firewall. Other modes
 represented in types may not have runtime implementations. Consult adapter code before claiming support
 for a new auth/execution mode.
