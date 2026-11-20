@@ -22,7 +22,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn run_git(repo_dir: &Path, args: &[&str], timeout: Option<Duration>) -> Result<Vec<u8>> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(repo_dir).args(args);
+    // Git commands, fetch in particular, can start a detached `git maintenance run --auto` that
+    // outlives this call and keeps writing into the repository while callers inspect or delete it.
+    command
+        .args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"])
+        .arg("-C")
+        .arg(repo_dir)
+        .args(args);
     // No prompts, no user config surprises, no hooks with side effects.
     command
         .env("GIT_TERMINAL_PROMPT", "0")

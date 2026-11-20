@@ -468,3 +468,33 @@ fn bundle_operations_stop_at_their_timeout() {
 
     assert!(error.to_string().contains("timed out"), "{error}");
 }
+
+#[test]
+fn bundle_fetch_leaves_no_automatic_maintenance_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Repository::init(dir.path().join("source")).unwrap();
+    commit_file(&source, "README.md", "base", "Base");
+    let bundle_path = dir.path().join("snapshot.bundle");
+    bundle::create(source.workdir().unwrap(), &bundle_path, &["--all"]).unwrap();
+
+    // Force synchronous commit-graph maintenance on every automatic run, so that a fetch which
+    // still triggers it writes the graph before returning instead of racing in the background.
+    let dest = Repository::init(dir.path().join("dest")).unwrap();
+    let mut config = dest.config().unwrap();
+    config.set_bool("maintenance.autoDetach", false).unwrap();
+    config
+        .set_bool("maintenance.commit-graph.enabled", true)
+        .unwrap();
+    config.set_i32("maintenance.commit-graph.auto", -1).unwrap();
+
+    bundle::fetch(
+        dest.workdir().unwrap(),
+        &bundle_path,
+        &["refs/heads/*:refs/fetched/*"],
+        None,
+    )
+    .unwrap();
+    let info = dest.path().join("objects/info");
+    assert!(!info.join("commit-graph").exists());
+    assert!(!info.join("commit-graphs").exists());
+}
