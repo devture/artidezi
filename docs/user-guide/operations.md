@@ -154,10 +154,11 @@ A Claude Code profile uses an Anthropic endpoint with `auth_mode: anthropic_api_
 `max_budget_usd` and `max_output_tokens`. Claude Code stops an attempt once its own cost estimate
 passes the budget, so the request that crosses it can overshoot it. An attempt stopped that way is
 a harness failure.
-For an Anthropic gateway configured through `base_url`, set `max_output_tokens` to the gateway's
-model output limit as a positive integer when it is lower than Claude Code's default. Claude Code
-2.1.329 removed the automatic retry at the limit reported in a `max_tokens` error. Upgrade the
-controller and its Claude workers before setting this option on a profile.
+Claude Code 2.1.330 restores automatic retry at the limit reported in a `max_tokens` error.
+For an Anthropic gateway configured through `base_url`, you can set `max_output_tokens` to a
+positive integer matching the gateway's model output limit to use that limit on the first
+request. This setting also works with Claude Code 2.1.329, which lacks the automatic retry.
+Upgrade the controller and its Claude workers before setting this option on a profile.
 Live web search is supported only with `domain_scope: public_internet`:
 
 ```yaml
