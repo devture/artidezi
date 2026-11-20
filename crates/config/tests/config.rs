@@ -493,7 +493,7 @@ fn harness_and_endpoint_provider_must_match() {
 }
 
 #[test]
-fn claude_profiles_accept_only_effort_and_budget() {
+fn claude_profiles_validate_model_settings() {
     let text = VALID.replacen("    harness: codex\n", "    harness: claude\n", 1);
     let problems = problems_of(&text);
     assert!(
@@ -510,12 +510,26 @@ fn claude_profiles_accept_only_effort_and_budget() {
             .any(|p| p.contains("model_settings.effort must be one of")),
         "{problems:?}"
     );
-    let text = text.replace("effort: extreme", "effort: medium");
+    let text = text.replace(
+        "effort: extreme",
+        "effort: medium\n      max_budget_usd: 3\n      max_output_tokens: 8192",
+    );
     assert!(
         !problems_of(&text)
             .iter()
             .any(|p| p.contains("model_settings")),
     );
+    for invalid in ["0", "-1", "1.5", "'8192'", "4294967296"] {
+        let text = text.replace(
+            "max_output_tokens: 8192",
+            &format!("max_output_tokens: {invalid}"),
+        );
+        assert!(
+            problems_of(&text).iter().any(|p| p
+                .contains("model_settings.max_output_tokens must be a positive 32-bit integer")),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]
