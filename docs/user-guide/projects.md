@@ -57,6 +57,9 @@ Avoid granting write access to every related repository in one project: it expan
 scope, snapshot cost and available changes. Several small projects are useful even when the repositories
 are related. The current system has no per-task repository-subset selector; prose cannot narrow
 the actual granted access. Repository `allowed_paths` can constrain changed paths within a target.
+These globs support ASCII POSIX character classes. For example, `reports/[[:digit:]]*.csv`
+matches paths that start with `reports/` followed by a digit and end in `.csv`. Brace alternatives
+can nest up to 100 levels. To match a bracket literally, use `[[]` for `[` and `[]]` for `]`.
 
 ## Prepare the repository's CI
 

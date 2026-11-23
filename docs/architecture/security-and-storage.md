@@ -12,6 +12,10 @@ The controller owns forge/admin credentials, repository scope, resolved policy a
 PR text, source code, release notes, model output and worker uploads as untrusted input. A convincing
 instruction in a source repository cannot grant additional repositories, publication modes or tokens.
 
+When a repository has an `allowed_paths` policy, the controller matches the old and new paths of
+each proposed commit against the configured glob set. The glob parser rejects invalid patterns and
+brace alternatives nested more than 100 levels deep.
+
 The supervisor mechanically records work, but runs in the same execution environment as the agent.
 The current full-access Codex path trusts the provisioned worker VM as its execution boundary. The
 harness runs as the supervisor's user, so an agent can read the worker token and model credentials
