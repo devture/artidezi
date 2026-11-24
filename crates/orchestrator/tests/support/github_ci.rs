@@ -615,6 +615,31 @@ fn failed_checks_hold_still_recovers_after_reopening_on_the_same_head() {
     assert!(!f.state.lock().unwrap().merged);
 }
 
+#[test]
+fn failed_checks_hold_reopened_on_a_moved_head_is_assessed_whatever_its_checks_say() {
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    f.state.lock().unwrap().conclusion = "failure".into();
+    w.work(&safe_result(&w, Some("low"), true));
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    move_source_head(&w, &f);
+    scan(&mut w);
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    f.state.lock().unwrap().open = true;
+    scan(&mut w);
+    let now = Timestamp::now();
+    for seconds in [601, 1300, 2000] {
+        w.orchestrator
+            .tick_at(now + SignedDuration::from_secs(seconds))
+            .unwrap();
+    }
+    // Queued; whether red checks hold it back from there is the handler's setting.
+    assert_eq!(held_source(&w).hold, None);
+    assert!(!held_source(&w).paused);
+}
+
 /// An approval whose response was lost is bound to its head. Failed checks on the retry hold it like
 /// any other approval: a new head is assessed afresh, without posting or merging anything.
 #[test]

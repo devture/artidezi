@@ -503,6 +503,39 @@ fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
 }
 
 #[test]
+fn unreported_commits_beyond_what_is_collected_or_inspected_ask_right_away() {
+    for limit in ["message", "bundle"] {
+        let (mut w, _f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        let message = match limit {
+            "message" => "$(head -c 4000 /dev/zero | tr '\\0' x)",
+            _ => {
+                w.orchestrator.config.instance.limits.max_bundle_bytes = 1;
+                "Change"
+            }
+        };
+        let script = w.script(
+            "unreported.sh",
+            &format!(
+                "echo x > x.txt; git add -A; git commit -q -m \"{message}\"; {}",
+                result_writer(r#"{"schema_version":1,"outcome":"failed","summary":"Broke.","repositories":[{"id":"role","changed":false}]}"#)
+            ),
+        );
+        assert_eq!(w.work(&script), AttemptState::Invalid, "{limit}");
+        let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+        assert!(
+            attempt
+                .validation_problems
+                .iter()
+                .any(|problem| problem.contains("unreported commits could not be inspected")),
+            "{limit}: {:?}",
+            attempt.validation_problems
+        );
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{limit}");
+    }
+}
+
+#[test]
 fn a_restart_keeps_a_lost_run_and_its_retry() {
     let (mut w, f) = safe_world(true);
     let id = scan(&mut w).remove(0);
@@ -940,6 +973,76 @@ fn a_restart_before_a_reported_blocker_was_recorded_still_waits() {
     assert_eq!(hold(&w).reason, HoldReason::TemporaryBlocker);
     assert_eq!(hold(&w).retries, 1);
     assert_eq!(tick(&mut w, 8000).discovered.len(), 1);
+}
+
+#[test]
+fn a_restart_goes_on_without_a_result_that_is_gone() {
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    let script = blocked(&w);
+    w.work(&script);
+    w.orchestrator
+        .db
+        .set_task_state(&id, TaskState::Working, "test")
+        .unwrap();
+    let mut tracked = source(&w);
+    tracked.release_hold();
+    w.orchestrator
+        .db
+        .save_pull_request_source(&tracked)
+        .unwrap();
+    let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+    let result = attempt.result.unwrap();
+    std::fs::remove_file(w.orchestrator.artifacts.path(&result).unwrap()).unwrap();
+    reopen(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert!(hold(&w).message.contains("cannot be read"));
+}
+
+/// Those releases planned the exact body of an approval, but its receipt had no digest.
+#[test]
+fn an_approval_of_an_older_release_that_was_edited_stays_with_a_person() {
+    for edited in [true, false] {
+        let (mut w, f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        f.state.lock().unwrap().lose_review_response = true;
+        let script = safe_result(&w, Some("low"), true);
+        w.work(&script);
+        let review = f.state.lock().unwrap().reviews[0].clone();
+        let head = source(&w).observed_head;
+        w.orchestrator
+            .db
+            .record_event(
+                Some(&id),
+                None,
+                "orchestrator",
+                "assessment.published",
+                json!({"review_id": review["id"], "head": head, "outcome": "approve_untouched", "state": "approved"}),
+            )
+            .unwrap();
+        if edited {
+            let body = review["body"].as_str().unwrap();
+            let marker = body.find("<!-- artidezi:assessment:").unwrap();
+            f.state.lock().unwrap().reviews[0]["body"] = json!(format!(
+                "{}Not yet.\n\n{}",
+                &body[..marker],
+                &body[marker..]
+            ));
+        }
+        w.orchestrator
+            .db
+            .set_task_state(&id, TaskState::NeedsHuman, "test")
+            .unwrap();
+        untype(
+            &w,
+            Some("could not apply accepted attempt outcome: GitHub HTTP 503: temporary failure"),
+            &id,
+        );
+        move_source_head(&w, &f);
+        reopen(&mut w, &f);
+        assert_eq!(settle(&mut w).len(), usize::from(!edited), "{edited}");
+        assert!(!f.state.lock().unwrap().merged);
+    }
 }
 
 #[test]

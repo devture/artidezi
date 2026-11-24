@@ -225,10 +225,11 @@ impl Orchestrator {
         }
         // A task that closed with its change cannot deliver after a reopening; a new one can.
         let closed = task.state == TaskState::Closed;
-        if closed && current.checks != ChecksState::Success {
+        let moved = current.head_commit != source.input.commit;
+        if closed && !moved && current.checks != ChecksState::Success {
             return Ok(());
         }
-        if closed || current.head_commit != source.input.commit {
+        if closed || moved {
             // Equivalence preserves published adaptations only; it cannot reuse a source
             // approval or authorize a merge of this different commit.
             // A maintainer objection made during the hold is a human decision; a new head alone

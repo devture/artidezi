@@ -14,7 +14,9 @@ use artidezi_config::resolve::PullRequestSource;
 use artidezi_contract::common::{CommitSha, Outcome};
 use artidezi_contract::result::AgentResult;
 use artidezi_contract::time::{SignedDuration, Timestamp};
-use artidezi_forge::{ForgeError, MergeRequestInfo, MergeRequestState as RemoteState, ReviewState};
+use artidezi_forge::{
+    ForgeError, MergeRequestInfo, MergeRequestReview, MergeRequestState as RemoteState, ReviewState,
+};
 use artidezi_store::model::*;
 
 use crate::discovery::{FOLLOW_UP_INTERVAL_SECONDS, source_of};
@@ -139,8 +141,15 @@ impl Orchestrator {
                 let Some(result) = &attempt.result else {
                     return Ok(false);
                 };
-                let result: AgentResult = self.artifacts.get_json(result)?;
-                self.run_postponed(task, attempt, &result)?;
+                match self.artifacts.get_json::<AgentResult>(result) {
+                    Ok(result) => self.run_postponed(task, attempt, &result)?,
+                    // Startup goes on for the other tasks.
+                    Err(error) => self.run_failed(
+                        task,
+                        attempt,
+                        &format!("The result of the interrupted run cannot be read: {error}"),
+                    )?,
+                }
             }
             _ => return Ok(false),
         }
@@ -525,7 +534,8 @@ impl Orchestrator {
             .forge(&tracked.forge)?
             .list_reviews(&tracked.remote, source.number)?;
         let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
-        // Receipts of older releases have no digest; at least the verdict has to be there.
+        // Plans and receipts of older releases can lack what was posted; at least the verdict has to
+        // be there.
         let verdict: Option<AgentResult> = self
             .db
             .latest_attempt(&task.id)?
@@ -533,6 +543,14 @@ impl Orchestrator {
             .and_then(|result| self.artifacts.get_json(&result).ok());
         // Forges dismiss approvals themselves when the head moves.
         let moved = tracked.observed_head != source.input.commit.as_str();
+        let has_verdict = |review: &MergeRequestReview| {
+            review.body.trim_end().ends_with(&marker)
+                && verdict.as_ref().is_none_or(|verdict| {
+                    review
+                        .body
+                        .contains(&crate::source_publish::summary(verdict))
+                })
+        };
         if published.is_empty() {
             // Its receipt was lost: it can have arrived, and have been edited since.
             return Ok(reviews.iter().any(|review| {
@@ -547,11 +565,7 @@ impl Orchestrator {
                         crate::source_publish::digest(&review.body) == sha256
                     } else {
                         // Plans of older releases for a comment.
-                        verdict.as_ref().is_none_or(|verdict| {
-                            review
-                                .body
-                                .contains(&crate::source_publish::summary(verdict))
-                        })
+                        has_verdict(review)
                     }
                 });
                 altered
@@ -564,11 +578,18 @@ impl Orchestrator {
                     && review.body.contains(&marker)
                     && match receipt["body_sha256"].as_str() {
                         Some(digest) => digest == crate::source_publish::digest(&review.body),
-                        None => verdict.as_ref().is_none_or(|verdict| {
-                            review
-                                .body
-                                .contains(&crate::source_publish::summary(verdict))
-                        }),
+                        None => {
+                            let mut bodies = planned
+                                .iter()
+                                .filter(|_| receipt["state"] == "approved")
+                                .filter_map(|plan| plan["body"].as_str())
+                                .peekable();
+                            if bodies.peek().is_some() {
+                                bodies.any(|body| body == review.body)
+                            } else {
+                                has_verdict(review)
+                            }
+                        }
                     }
                     && (review.state != ReviewState::Dismissed
                         || (receipt["state"] == "approved" && moved))

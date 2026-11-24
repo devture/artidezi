@@ -404,8 +404,9 @@ impl Orchestrator {
                     "repository {}: reported unchanged but HEAD moved",
                     collection.id
                 ));
-                if !series.commits.is_empty()
-                    && !inspection.problems.contains_key(collection.id.as_str())
+                if !inspection.inspected.contains(collection.id.as_str())
+                    || series.commits.last().map(|commit| &commit.sha)
+                        != Some(&collection.head_commit)
                 {
                     problems.push(format!(
                         "repository {}: unreported commits could not be inspected",
@@ -459,6 +460,7 @@ pub(crate) fn broke_a_rule(problem: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct SeriesInspection {
     problems: BTreeMap<String, Vec<String>>,
+    inspected: BTreeSet<String>,
     patches: BTreeMap<String, ArtifactRef>,
 }
 
@@ -489,7 +491,7 @@ impl StateAccess {
             else {
                 continue;
             };
-            let (problems, patch) =
+            let (problems, patch, inspected) =
                 self.inspect_series(&attempt, &job, job_repo, series, bundle_ref, deadline)?;
             let id = collection.id.to_string();
             inspection
@@ -497,6 +499,9 @@ impl StateAccess {
                 .entry(id.clone())
                 .or_default()
                 .extend(problems);
+            if inspected {
+                inspection.inspected.insert(id.clone());
+            }
             if let Some(patch) = patch {
                 inspection.patches.insert(id, patch);
             }
@@ -504,7 +509,8 @@ impl StateAccess {
         Ok(inspection)
     }
 
-    /// Fetches the series bundle into the trusted cache and re-checks the chain and content.
+    /// Fetches the series bundle into the trusted cache and re-checks the chain and content. The flag
+    /// says whether the content was looked at.
     fn inspect_series(
         &self,
         attempt: &Attempt,
@@ -513,7 +519,7 @@ impl StateAccess {
         series: &artidezi_contract::attempt::SeriesCollection,
         bundle_ref: &ArtifactRef,
         deadline: Instant,
-    ) -> Result<(Vec<String>, Option<ArtifactRef>)> {
+    ) -> Result<(Vec<String>, Option<ArtifactRef>, bool)> {
         let mut problems = vec![];
         if series
             .commits
@@ -521,7 +527,7 @@ impl StateAccess {
             .any(|commit| Oid::from_str(commit.sha.as_str()).is_err())
         {
             problems.push(format!("repository {}: malformed commit id", job_repo.id));
-            return Ok((problems, None));
+            return Ok((problems, None, false));
         }
         let task = self.db.get_task(&attempt.task_id)?;
         let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
@@ -534,11 +540,11 @@ impl StateAccess {
                 "repository {}: bundle has {} bytes, above the {} byte limit",
                 job_repo.id, bundle_ref.size, limits.max_bundle_bytes
             ));
-            return Ok((problems, None));
+            return Ok((problems, None, false));
         }
         let Ok(bundle_path) = self.artifacts.path(bundle_ref) else {
             problems.push(format!("repository {}: bundle is missing", job_repo.id));
-            return Ok((problems, None));
+            return Ok((problems, None, false));
         };
         let refname = format!("refs/artidezi/attempts/{}/{}", attempt.id, job_repo.id);
         let remaining = || Some(deadline.saturating_duration_since(Instant::now()));
@@ -547,7 +553,7 @@ impl StateAccess {
                 "repository {}: bundle does not verify: {e}",
                 job_repo.id
             ));
-            return Ok((problems, None));
+            return Ok((problems, None, false));
         }
         let head = &series.commits[series.commits.len() - 1].sha;
         if let Err(e) = bundle::fetch(
@@ -560,7 +566,7 @@ impl StateAccess {
                 "repository {}: cannot fetch bundle: {e}",
                 job_repo.id
             ));
-            return Ok((problems, None));
+            return Ok((problems, None, false));
         }
         if series.commits.len() as u32 > job.limits.max_commits_per_repository {
             problems.push(format!("repository {}: too many commits", job_repo.id));
@@ -603,7 +609,7 @@ impl StateAccess {
                 .map(|p| format!("repository {}: {p}", job_repo.id)),
         );
         if !problems.is_empty() {
-            return Ok((problems, None));
+            return Ok((problems, None, true));
         }
         let head =
             Oid::from_str(head.as_str()).map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
@@ -613,7 +619,7 @@ impl StateAccess {
                 "repository {}: diff is above the {} byte limit",
                 job_repo.id, job.limits.max_diff_bytes_per_repository
             ));
-            return Ok((problems, None));
+            return Ok((problems, None, true));
         }
         let _guard = self.artifacts.upload_guard();
         let artifact = ArtifactRef {
@@ -622,7 +628,7 @@ impl StateAccess {
         };
         self.db
             .pin_artifact_upload(&attempt.id, &artifact, Timestamp::now())?;
-        Ok((problems, Some(self.artifacts.put(&patch)?)))
+        Ok((problems, Some(self.artifacts.put(&patch)?), true))
     }
 }
 
