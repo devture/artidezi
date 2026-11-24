@@ -162,7 +162,8 @@ attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded 
 | What happened | What ArtiDezi does | Default limit |
 | --- | --- | --- |
 | A run broke, was lost, produced no acceptable result or reported `failed` | Evaluates again after an hour; until then the task shows **Waiting to retry** | once per change |
-| The assessment reported a temporary blocker (`retry_later`), such as an image that isn't published yet | Evaluates again after 1, 3, 9 and 24 hours, telling the agent what blocked it; until then the task shows **Waiting to retry** | 4 times per change |
+| The assessment reported a temporary blocker (`retry_later`) that should clear soon, such as an image that isn't published yet | Evaluates again after 1, 3, 9 and 24 hours, telling the agent what blocked it; until then the task shows **Waiting to retry** | 4 times per change |
+| The same, but slow, such as a fix that upstream merged and hasn't released | Evaluates again every week, likewise | 6 times, also across updates of the change |
 | A held assessment, and the change itself differs now | Evaluates the new revision after it settles | the run budget |
 | A held assessment, and its target branch moved or the change was merely rebased | Evaluates again after an hour; until then it stays with you, in case you answer first | once per change |
 
@@ -174,18 +175,28 @@ pull_requests:
       initial_delay_seconds: 3600
       multiplier: 3
       max_delay_seconds: 86400                    # at most 604800
+      slow: {max: 6, delay_seconds: 604800}       # max: 0-52; 1 hour to 30 days
     failed: {max: 1, initial_delay_seconds: 3600}        # 0 turns it off; at most 5
     target_change: {max: 1, initial_delay_seconds: 3600}
 ```
 
 `retry_later` is the agent's verdict that something specific outside the change prevents a decision
-for now and will clear by itself. It must say what. The agent doesn't choose times or counts, nothing
+for now and will clear without you. It must say what, with a sign that this will happen, and whether to
+expect it `soon` (within about a day) or only `slow`ly. The agent doesn't choose times or counts, nothing
 is posted to the forge while waiting, and a person is asked only when the retries run out. With
-`max: 0`, agents aren't offered this outcome.
+`max: 0`, agents aren't offered this outcome. With `slow.max: 0`, a slow blocker goes to a person right away.
+
+What a person could work around, like pinning an unreleased revision, still waits by default. To step in, use
+**Evaluate again** with your instructions; it starts the counts over. A blocker that only a change on your side clears,
+such as another base image or a host's kernel, is a question (`needs_human`) instead. Project
+instructions that demand `needs_human` for a missing upstream release take precedence, so adjust them.
+
+A slow wait isn't cut short by the run budget: once that is used up, a revision that differs is evaluated
+with the next weekly check.
 
 These evaluations don't count against `max_runs_per_pull_request`, use the current head, target, CI
-and configuration, and pass the usual gates. Their counts start over when the change itself differs,
-or when a person resumes it or gives feedback. “Merely rebased” means that Git proves the same paths, contents and
+and configuration, and pass the usual gates. Their counts start over when the change itself differs
+(except for slow blockers), or when a person resumes it or gives feedback. “Merely rebased” means that Git proves the same paths, contents and
 modes, as for [published adaptations](#conflicts-with-the-target-branch); anything unclear counts as
 a different change and uses the run budget.
 

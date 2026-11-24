@@ -274,6 +274,15 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
     );
     let partial = retries(r#"{"retry_later":{"max":2}}"#).unwrap().retry_later;
     assert_eq!((partial.max, partial.multiplier), (2, 3));
+    assert_eq!(
+        (partial.slow.max, partial.slow.delay_seconds),
+        (6, 7 * 86_400)
+    );
+    let partial = retries(r#"{"retry_later":{"slow":{"max":2}}}"#)
+        .unwrap()
+        .retry_later;
+    assert_eq!((partial.max, partial.slow.max), (4, 2));
+    assert_eq!(partial.slow.delay_seconds, 7 * 86_400);
     let partial = retries(r#"{"delivery":{"max":0}}"#).unwrap().delivery;
     assert_eq!((partial.max, partial.initial_delay_seconds), (0, 120));
     assert!(retries(r#"{"delivery":{"delay":1}}"#).is_err());
@@ -294,6 +303,17 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
             true,
         ),
         (r#"{"retry_later":{"max":11}}"#, false),
+        (r#"{"retry_later":{"slow":{"max":0}}}"#, true),
+        (
+            r#"{"retry_later":{"slow":{"max":52,"delay_seconds":2592000}}}"#,
+            true,
+        ),
+        (r#"{"retry_later":{"slow":{"max":53}}}"#, false),
+        (r#"{"retry_later":{"slow":{"delay_seconds":3599}}}"#, false),
+        (
+            r#"{"retry_later":{"slow":{"delay_seconds":2592001}}}"#,
+            false,
+        ),
         (r#"{"retry_later":{"multiplier":11}}"#, false),
         (r#"{"retry_later":{"initial_delay_seconds":59}}"#, false),
         (r#"{"retry_later":{"max_delay_seconds":3599}}"#, false),

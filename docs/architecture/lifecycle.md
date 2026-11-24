@@ -118,9 +118,12 @@ announced retry. `reconsider` then decides, with the next look reserved before a
   delivery retry this doesn't pause the source. Validation problems that `broke_a_rule`, and
   provider refusals over credentials, permissions or quota and Claude Code's own budget or turn
   limit, go to a person instead.
-- `run_postponed` does the same for a `retry_later` result, with a `retry_later` retry and growing
-  delays. It reads nothing from the forge and publishes nothing. The next evaluation of the same change gets
+- `run_postponed` does the same for a `retry_later` result: with a `retry_later` retry and growing
+  delays, or, for the hint `slow`, with an evenly spaced `retry_later_slow` retry. It reads nothing from the forge and publishes nothing. The next evaluation of the same change gets
   the reported blocker as untrusted task text. Once the retries are used, a person is asked.
+- A slow wait survives a spent run budget: a head that differs is then noted in `rebased_head` and
+  evaluated when the wait is due, counted as that retry. Such retries aren't reset by a change that
+  differs, so updates cannot prolong the wait without end.
 
 Every release first requires that the source is watched and open, nobody's latest review requests
 changes, the published assessment still exists unedited (receipts of older releases have no digest, so it is compared with the planned approval or what the result renders to), and all planned proposals are settled; a
@@ -130,8 +133,8 @@ permission or a foreign edit have none.
 
 `TrackedPullRequest::reevaluations` holds the retries used for the current change and the `pending`
 one. Task creation compares the change with the previous task's once more, after fetching it: only
-the same change counts as that retry instead of a run; another one uses the budget and resets the
-counts. People's resume, feedback and a reopened lifecycle reset them too.
+the same change, or any change for a due `retry_later_slow`, counts as that retry instead of a run;
+another one uses the budget and resets the other counts. People's resume, feedback and a reopened lifecycle reset them too.
 
 ## Proposal branch cleanup
 

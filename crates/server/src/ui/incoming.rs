@@ -371,7 +371,7 @@ fn evaluation_status(
             "Waiting to retry",
             "waiting_to_retry",
             "clock",
-            "The run failed, or a temporary failure interrupted delivery; it is tried again automatically",
+            "A blocker was reported, the run failed, or a temporary failure interrupted delivery; it is tried again automatically",
         )
     } else if task.is_some_and(|t| t.state == TaskState::AwaitingReview) {
         (

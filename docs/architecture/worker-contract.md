@@ -24,10 +24,11 @@ artidezi schema attempt
 | `attempt.json` | Supervisor → controller | Harness facts, collections, checks, logs and artifact index |
 | Series bundles/patches/logs | Supervisor → controller | Candidate changes and supporting evidence |
 
-New jobs carry schema version 3; stored version 1 and 2 jobs remain supported. Version 2 permits a
+New jobs carry schema version 4; stored jobs of versions 1 to 3 remain supported. Version 2 permits a
 revision without `previous_attempt` artifacts when the prior execution returned no record; version 1
 retains its requirement for them. Version 3 permits the `retry_later` outcome, whose result carries a
-`retry_reason`. Result and attempt records still use version 1: a result can only use what its job
+`retry_reason`. Version 4 also requires a `retry_hint` of `soon` or `slow` there; without one, as in
+version 3, `soon` applies. Result and attempt records still use version 1: a result can only use what its job
 allows. Workers advertise the job versions they support; the controller rejects workers that lack one
 before leasing work. Upgrade workers alongside the controller.
 
@@ -169,8 +170,8 @@ branch/base changes, read-only violations, size/count limit problems and per-com
 A `proposal` must match actual changed writable repositories. `approve_untouched`, `needs_human`,
 `retry_later` and `failed` cannot be used to smuggle a changed series through the result contract.
 `retry_later` is allowed only in jobs that assess an incoming change, never for revising its proposal,
-and requires a `retry_reason`; no other outcome may carry one. The agent cannot choose when or how
-often its change is evaluated again.
+and requires a `retry_reason` and `retry_hint`; no other outcome may carry them. The hint selects one of
+two configured schedules. The agent cannot choose when or how often its change is evaluated again.
 
 Verification runs for non-empty valid writable series after the harness finishes. Records capture
 command, directory, exit status, timing, timeout/skip/truncation facts and output artifact references.

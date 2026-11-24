@@ -18,9 +18,10 @@ use crate::common::{
 
 /// Version 2 permits revision jobs without previous artifacts after an unreported attempt.
 /// Version 3 permits the `retry_later` outcome.
+/// Version 4 requires its `retry_hint`.
 /// Existing jobs of earlier versions remain readable and retain their original validation rules.
-pub const JOB_SCHEMA_VERSION: u32 = 3;
-pub const SUPPORTED_JOB_SCHEMA_VERSIONS: &[u32] = &[1, 2, JOB_SCHEMA_VERSION];
+pub const JOB_SCHEMA_VERSION: u32 = 4;
+pub const SUPPORTED_JOB_SCHEMA_VERSIONS: &[u32] = &[1, 2, 3, JOB_SCHEMA_VERSION];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

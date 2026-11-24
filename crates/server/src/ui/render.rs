@@ -348,7 +348,7 @@ fn status(task: &Task) -> String {
         ),
         TaskState::WaitingToRetry => (
             "Waiting to retry",
-            "A temporary blocker, a failed run or an interrupted delivery; it is tried again automatically.",
+            "A reported blocker, a failed run or an interrupted delivery; it is tried again automatically.",
         ),
         TaskState::AwaitingReview => (
             "Ready for review",
@@ -439,6 +439,7 @@ fn retry_line(hold: &Hold, timezone: &str) -> String {
         }
         Some(EvaluationRetry::TargetChange) => " because the target branch moved",
         Some(EvaluationRetry::RetryLater) => " because of a temporary blocker",
+        Some(EvaluationRetry::RetryLaterSlow) => " because of a blocker that takes a while",
         _ => "",
     };
     format!("{what}{when}{count}{why}: {}", e(&hold.message))
@@ -1351,10 +1352,10 @@ pub(super) fn detail(
                 "Evaluation {} of {} after a {} scheduled",
                 event.payload["retry"],
                 event.payload["max_retries"],
-                if event.payload["kind"] == "retry_later" {
-                    "temporary blocker"
-                } else {
-                    "failed run"
+                match event.payload["kind"].as_str() {
+                    Some("retry_later") => "temporary blocker",
+                    Some("retry_later_slow") => "blocker that takes a while",
+                    _ => "failed run",
                 }
             ),
             "delivery.retry_started" => "Retrying delivery".into(),

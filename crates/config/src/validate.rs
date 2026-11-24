@@ -492,6 +492,9 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             {
                 problems.push(problem(format!("{ctx}: retries.retry_later needs max 0-10, multiplier 1-10 and 60 <= initial_delay_seconds <= max_delay_seconds <= 604800")));
             }
+            if retries.slow.max > 52 || !(3600..=2_592_000).contains(&retries.slow.delay_seconds) {
+                problems.push(problem(format!("{ctx}: retries.retry_later.slow needs max 0-52 and 3600 <= delay_seconds <= 2592000")));
+            }
             for (name, retries) in [
                 ("failed", discovery.retries.failed),
                 ("target_change", discovery.retries.target_change),

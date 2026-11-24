@@ -138,7 +138,7 @@ head alongside target and context snapshots. The default **dry-run mode** retain
 
 - `approve_untouched`: the agent considers the original update acceptable as-is; no merge or approval.
 - `proposal`: a complete candidate adaptation is retained and checked, with no new forge PR.
-- `retry_later`: a temporary blocker prevents a verdict; the change is
+- `retry_later`: a temporary blocker that clears without you prevents a verdict; the change is
   [evaluated again later](pr-discovery.md#automatic-reevaluation).
 - `failed`: evaluated once more, then held for human attention.
 - `needs_human`: held for a decision, or for the change or its target to move.

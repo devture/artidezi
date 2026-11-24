@@ -54,12 +54,15 @@ fn failed(w: &World) -> PathBuf {
     w.script("failed.sh", &result_writer(r#"{"schema_version":1,"outcome":"failed","summary":"Assessment failed.","repositories":[{"id":"role","changed":false}]}"#))
 }
 fn blocked(w: &World) -> PathBuf {
-    w.script("blocked.sh", &result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Not decidable yet.","retry_reason":"The image 1.2.3\nis not published yet","repositories":[{"id":"role","changed":false}]}"#))
+    w.script("blocked.sh", &result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Not decidable yet.","retry_reason":"The image 1.2.3\nis not published yet","retry_hint":"soon","repositories":[{"id":"role","changed":false}]}"#))
+}
+fn slowly_blocked(w: &World) -> PathBuf {
+    w.script("slowly_blocked.sh", &result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Not decidable yet.","retry_reason":"The merged fix is not released yet","retry_hint":"slow","repositories":[{"id":"role","changed":false}]}"#))
 }
 fn prompt(w: &World, id: &str) -> String {
     let attempt = w.orchestrator.db.latest_attempt(id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.schema_version, 3);
+    assert_eq!(job.schema_version, 4);
     String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap()
 }
 /// A published assessment that asks for a decision.
@@ -496,7 +499,7 @@ fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
         "oversized.sh",
         &format!(
             "head -c 3000000 /dev/urandom | base64 > big.txt; git add -A; git commit -q -m Big; {}",
-            result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Later.","retry_reason":"No image","repositories":[{"id":"role","changed":false}]}"#)
+            result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Later.","retry_reason":"No image","retry_hint":"soon","repositories":[{"id":"role","changed":false}]}"#)
         ),
     );
     assert_eq!(w.work(&script), AttemptState::Invalid);
@@ -841,6 +844,7 @@ fn a_temporary_blocker_is_evaluated_again_with_growing_waits_and_then_needs_a_pe
         let (mut w, f) = if shadow { world() } else { safe_world(true) };
         let mut id = scan(&mut w).remove(0);
         assert!(prompt(&w, &id).contains("\"retry_reason\": null"));
+        assert!(prompt(&w, &id).contains("\"retry_hint\": null"));
         assert!(!prompt(&w, &id).contains("temporary blocker. Check"));
         assert!(prompt(&w, &id).contains("return `needs_human` (or `retry_later` for"));
         assert!(
@@ -945,6 +949,112 @@ fn a_cleared_blocker_is_delivered_and_people_end_the_wait() {
     move_source_head(&w, &f);
     assert_eq!(settle(&mut w).len(), 1);
     assert_eq!(source(&w).runs, 2);
+}
+
+#[test]
+fn a_slow_blocker_is_checked_weekly_and_updates_do_not_extend_the_wait() {
+    const WEEK: i64 = 7 * 86_400;
+    let (mut w, f) = safe_world(true);
+    discovery(&mut w).max_runs_per_pull_request = 2;
+    retries(&mut w).retry_later.slow.max = 3;
+    let mut id = scan(&mut w).remove(0);
+    let script = slowly_blocked(&w);
+    assert_eq!(w.work(&script), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    let held = hold(&w);
+    assert_eq!(held.reason, HoldReason::TemporaryBlocker);
+    assert_eq!(held.retry, Some(EvaluationRetry::RetryLaterSlow));
+    assert_eq!((held.retries, held.max_retries), (1, 3));
+    assert!(((held.next_at.unwrap() - held.since).as_secs() - WEEK).abs() < 60);
+    assert!(!source(&w).paused);
+    advance_target(&w);
+    assert!(tick(&mut w, WEEK - 600).discovered.is_empty());
+    reopen(&mut w, &f);
+    id = tick(&mut w, WEEK + 120).discovered.remove(0);
+    assert_eq!(source(&w).runs, 1);
+    assert_eq!(source(&w).reevaluations.retry_later_slow, 1);
+    assert!(prompt(&w, &id).contains("The merged fix is not released yet"));
+
+    // A change that differs is evaluated at once within the run budget, without a new wait.
+    w.work(&script);
+    move_source_head_to(&w, &f, "2.0.0");
+    id = settle(&mut w).remove(0);
+    assert_eq!(source(&w).runs, 2);
+    assert_eq!(source(&w).reevaluations.retry_later_slow, 1);
+    w.work(&script);
+    let held = hold(&w);
+    assert_eq!((held.retries, held.max_retries), (2, 3));
+
+    // Without budget it waits with the blocker instead of asking a person, and is looked at once.
+    move_source_head_to(&w, &f, "3.0.0");
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    let held = hold(&w);
+    assert_eq!(
+        held.rebased_head.as_deref(),
+        Some(source(&w).observed_head.as_str())
+    );
+    assert_eq!(held.blocked_until, None);
+    reopen(&mut w, &f);
+    let queued = tick(&mut w, WEEK + 120).discovered;
+    assert_eq!(queued.len(), 1);
+    id = queued[0].clone();
+    assert!(prompt(&w, &id).contains("The merged fix is not released yet"));
+    assert_eq!(source(&w).runs, 2);
+    assert_eq!(source(&w).reevaluations.retry_later_slow, 2);
+
+    // Also when it moves only right before the check, and the checks run out all the same.
+    w.work(&script);
+    assert_eq!(hold(&w).retries, 3);
+    move_source_head_to(&w, &f, "4.0.0");
+    reopen(&mut w, &f);
+    let mut queued = tick(&mut w, WEEK + 120).discovered;
+    queued.extend(tick(&mut w, WEEK + 240).discovered);
+    assert_eq!(queued.len(), 1);
+    id = queued.remove(0);
+    assert_eq!(source(&w).reevaluations.retry_later_slow, 3);
+    w.work(&script);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(
+        hold(&w).message,
+        "Still blocked after 3 retries: The merged fix is not released yet"
+    );
+    assert!(f.state.lock().unwrap().reviews.is_empty());
+    let tracked = source(&w);
+    w.orchestrator
+        .resume_pull_request(&tracked.id, "operator")
+        .unwrap();
+    assert_eq!(source(&w).reevaluations, Default::default());
+}
+
+#[test]
+fn a_blocker_can_turn_out_slow_and_slow_checks_can_be_turned_off() {
+    let (mut w, f) = safe_world(true);
+    scan(&mut w);
+    let script = blocked(&w);
+    w.work(&script);
+    reopen(&mut w, &f);
+    assert_eq!(tick(&mut w, 3700).discovered.len(), 1);
+    let script = slowly_blocked(&w);
+    w.work(&script);
+    let held = hold(&w);
+    assert_eq!(held.retry, Some(EvaluationRetry::RetryLaterSlow));
+    assert_eq!((held.retries, held.max_retries), (1, 6));
+    assert_eq!(source(&w).reevaluations.retry_later, 1);
+
+    for all in [false, true] {
+        let (mut w, _f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        if all {
+            retries(&mut w).retry_later.max = 0;
+        } else {
+            retries(&mut w).retry_later.slow.max = 0;
+        }
+        let script = slowly_blocked(&w);
+        assert_eq!(w.work(&script), AttemptState::Valid);
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        assert_eq!(hold(&w).message, "The merged fix is not released yet");
+    }
 }
 
 #[test]

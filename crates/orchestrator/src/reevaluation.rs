@@ -12,7 +12,7 @@ use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::PullRequestDiscovery;
 use artidezi_config::resolve::PullRequestSource;
 use artidezi_contract::common::{CommitSha, Outcome};
-use artidezi_contract::result::AgentResult;
+use artidezi_contract::result::{AgentResult, RetryHint};
 use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{
     ForgeError, MergeRequestInfo, MergeRequestReview, MergeRequestState as RemoteState, ReviewState,
@@ -49,6 +49,12 @@ impl Orchestrator {
         self.config.projects.get(project)?.pull_requests.as_ref()
     }
 
+    /// Whether the run budget allows evaluating a change that differs.
+    fn runs_left(&self, source: &TrackedPullRequest) -> bool {
+        self.discovery_of(&source.project)
+            .is_some_and(|discovery| source.runs < discovery.max_runs_per_pull_request)
+    }
+
     /// How many evaluations of this kind a change gets, and the wait before the next one after
     /// `used` of them, in seconds.
     fn evaluation_retries(&self, project: &str, kind: EvaluationRetry, used: u32) -> (u32, u32) {
@@ -65,6 +71,12 @@ impl Orchestrator {
             EvaluationRetry::RetryLater => (
                 retries.retry_later.max,
                 retries.retry_later.delay_seconds(used),
+            ),
+            // Turning the outcome off covers both hints.
+            EvaluationRetry::RetryLaterSlow if retries.retry_later.max == 0 => (0, 0),
+            EvaluationRetry::RetryLaterSlow => (
+                retries.retry_later.slow.max,
+                retries.retry_later.slow.delay_seconds,
             ),
             EvaluationRetry::Unknown => (0, 0),
         }
@@ -121,7 +133,11 @@ impl Orchestrator {
         result: &AgentResult,
     ) -> Result<()> {
         let reason = excerpt(result.retry_reason.as_deref().unwrap_or_default(), 500);
-        self.retry_run(task, attempt, EvaluationRetry::RetryLater, reason)
+        let kind = match result.retry_hint.unwrap_or_default() {
+            RetryHint::Soon => EvaluationRetry::RetryLater,
+            RetryHint::Slow => EvaluationRetry::RetryLaterSlow,
+        };
+        self.retry_run(task, attempt, kind, reason)
     }
 
     /// A restart came between accepting a result that needs no delivery and acting on it.
@@ -166,7 +182,9 @@ impl Orchestrator {
         let task = self.db.get_task(&task.id)?;
         let attempt = self.db.get_attempt(&attempt.id)?;
         let reason = match kind {
-            EvaluationRetry::RetryLater => HoldReason::TemporaryBlocker,
+            EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow => {
+                HoldReason::TemporaryBlocker
+            }
             _ => HoldReason::FailedRun,
         };
         let mut hold = self.new_hold(&task, reason, message)?;
@@ -229,10 +247,10 @@ impl Orchestrator {
             .reevaluations
             .used(kind);
         Ok(match kind {
-            EvaluationRetry::RetryLater if used == 1 => {
+            EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow if used == 1 => {
                 format!("Still blocked after 1 retry: {message}")
             }
-            EvaluationRetry::RetryLater if used > 1 => {
+            EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow if used > 1 => {
                 format!("Still blocked after {used} retries: {message}")
             }
             _ => message,
@@ -282,7 +300,9 @@ impl Orchestrator {
             AttemptState::Valid => {
                 attempt.outcome
                     == Some(match kind {
-                        EvaluationRetry::RetryLater => Outcome::RetryLater,
+                        EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow => {
+                            Outcome::RetryLater
+                        }
                         _ => Outcome::Failed,
                     })
             }
@@ -463,12 +483,30 @@ impl Orchestrator {
             if hold.rebased_head.as_deref() != Some(current.head_commit.as_str())
                 && !self.held_change_is_unchanged(source, &tracked, hold, &current)?
             {
-                return self.evaluate_again(task, &attempt, &policy, &current.head_commit, None);
+                if self.runs_left(&tracked) || hold.retry != Some(EvaluationRetry::RetryLaterSlow) {
+                    return self.evaluate_again(
+                        task,
+                        &attempt,
+                        &policy,
+                        &current.head_commit,
+                        None,
+                    );
+                }
+                // Only the run budget is spent: what differs is looked at when the wait is over.
+                if !due {
+                    self.update_hold(&tracked.id, |hold| {
+                        hold.rebased_head = Some(current.head_commit.0);
+                        hold.blocked_until = None;
+                    })?;
+                    return Ok(Verdict::Done);
+                }
             }
         }
         if due && let Some(kind) = hold.retry {
             let applies = match kind {
-                EvaluationRetry::Failed | EvaluationRetry::RetryLater => true,
+                EvaluationRetry::Failed
+                | EvaluationRetry::RetryLater
+                | EvaluationRetry::RetryLaterSlow => true,
                 EvaluationRetry::TargetChange => moved || self.target_moved(&tracked, hold)?,
                 EvaluationRetry::Unknown => false,
             };
@@ -714,17 +752,15 @@ impl Orchestrator {
             Proposals::Unsettled => return Ok(Verdict::Blocked("proposals are unresolved")),
         }
         let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-        if kind.is_none()
-            && self
-                .discovery_of(&tracked.project)
-                .is_none_or(|discovery| tracked.runs >= discovery.max_runs_per_pull_request)
-        {
+        if kind.is_none() && !self.runs_left(&tracked) {
             // The question stays visible as such; only its automatic release ends here.
             return Ok(Verdict::Blocked("evaluation budget reached"));
         }
         let cause = match kind {
             Some(EvaluationRetry::Failed) => "failed_run",
-            Some(EvaluationRetry::RetryLater) => "temporary_blocker",
+            Some(EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow) => {
+                "temporary_blocker"
+            }
             Some(_) => "target_change",
             None => "held_change",
         };

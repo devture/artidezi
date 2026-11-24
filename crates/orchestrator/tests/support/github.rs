@@ -398,7 +398,7 @@ fn selected_failed_log_is_frozen_as_private_evidence_and_rendered_only_for_the_w
     assert!(!task.policy_snapshot.contains("setup\\nfailed"));
     let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.prompt_template_version, 14);
+    assert_eq!(job.prompt_template_version, 15);
     let prompt =
         String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap();
     assert!(prompt.contains("Selected source CI logs"));
@@ -1105,13 +1105,20 @@ fn reopened_new_head_renews_a_resolved_lifecycle_and_preserves_history() {
 }
 
 fn move_source_head(w: &World, f: &Fixture) -> artidezi_contract::common::CommitSha {
+    move_source_head_to(w, f, "2.0.0")
+}
+fn move_source_head_to(
+    w: &World,
+    f: &Fixture,
+    version: &str,
+) -> artidezi_contract::common::CommitSha {
     let repo = w.forge.ensure_repository("org/app").unwrap();
     let base = repo.refname_to_id("refs/heads/main").unwrap();
     let next = seed(
         &repo,
         Some(base),
         "defaults.yml",
-        "version: 2.0.0\n",
+        &format!("version: {version}\n"),
         "New source revision",
     );
     repo.reference("refs/heads/main", base, true, "restore target")

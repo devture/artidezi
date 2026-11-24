@@ -394,7 +394,7 @@ impl Orchestrator {
             tracked.release_hold();
             tracked.status = match (retry, cause) {
                 (Some(EvaluationRetry::Failed), _) => "Evaluating again after a failed run",
-                (Some(EvaluationRetry::RetryLater), _) => {
+                (Some(EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow), _) => {
                     "Evaluating again after a temporary blocker"
                 }
                 (Some(_), _) => "Evaluating again because the target moved or the PR was rebased",

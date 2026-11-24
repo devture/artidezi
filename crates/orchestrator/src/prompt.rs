@@ -12,9 +12,9 @@ use artidezi_contract::Job;
 use artidezi_contract::common::{Outcome, RepositoryAccess};
 use artidezi_contract::result::AgentResult;
 
-pub const PROMPT_TEMPLATE_VERSION: u32 = 14;
+pub const PROMPT_TEMPLATE_VERSION: u32 = 15;
 
-const RETRY_LATER_RULES: &str = "Use `retry_later` when a specific temporary blocker outside this change prevents a verdict now and can be expected to clear within days without anyone acting on this change, such as a release artifact that is announced but not published yet or an upstream service that is down. Set `retry_reason` to what is missing and how you checked it, so that the next evaluation can check it again; leave it null for every other outcome. The controller decides when and how often this change is evaluated again. Do not use it for a defect in the change, for pending checks, for work you could do now, or as a substitute for a verdict you are unsure about; if a person has to decide or act whatever happens, use `needs_human`. ";
+const RETRY_LATER_RULES: &str = "Use `retry_later` when a specific event outside this change has to come first, nobody responsible for this project can bring it about, and waiting for it is the sensible default: a release artifact that is announced but not published yet, an upstream service that is down, or an upstream release that adds needed support. There must be a sign that the wait can end, such as a merged fix, active work on one, or regular releases. A workaround that a person could choose instead, such as pinning an unreleased revision, does not make it a question; mention it in `summary`. Set `retry_reason` to the event, that sign and how you checked both, so that the next evaluation can check them again. Set `retry_hint` to `soon` when it can be expected within about a day, else to `slow`. Leave both null for every other outcome. The controller decides when and how often this change is evaluated again. Use `needs_human` when waiting would not help: the project's own configuration, dependencies, hosts or policy have to change, someone has to supply information, upstream declined or abandoned it, or there is no sign that it will happen, also after earlier evaluations waited for it. Then ask for a decision between concrete alternatives, not whether to wait. Do not use `retry_later` for a defect in the change, for pending checks, for work you could do now, or as a substitute for a verdict you are unsure about. ";
 
 pub struct PreviousAttemptSummary<'a> {
     pub number: u32,
@@ -260,7 +260,7 @@ pub fn render(
             .map(|r| format!("{{\"id\": \"{}\", \"changed\": true, \"head_commit\": \"<sha>\"}}", r.id))
             .collect::<Vec<_>>()
             .join(", "),
-        if retry_later { "  \"retry_reason\": null,\n" } else { "" },
+        if retry_later { "  \"retry_reason\": null,\n  \"retry_hint\": null,\n" } else { "" },
         if retry_later { RETRY_LATER_RULES } else { "" },
         if retry_later {
             " or broke in a way you cannot name as such a blocker"

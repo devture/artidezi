@@ -378,7 +378,7 @@ fn opted_in_ci_results_are_frozen_and_rendered_as_untrusted_context() {
 
     let attempt = w.orchestrator.db.latest_attempt(&task_id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.prompt_template_version, 14);
+    assert_eq!(job.prompt_template_version, 15);
     let prompt =
         String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap();
     let handler = prompt

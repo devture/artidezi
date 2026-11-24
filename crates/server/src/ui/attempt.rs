@@ -3,6 +3,7 @@
 
 use super::*;
 use artidezi_contract::attempt::{AttemptStatus, VerificationStep};
+use artidezi_contract::result::RetryHint;
 use artidezi_contract::time::Timestamp;
 use artidezi_contract::transient;
 use artidezi_store::ArtifactStore;
@@ -263,7 +264,12 @@ pub(super) fn card(task: &Task, view: &AttemptView, timezone: &str) -> String {
         if let Some(reason) = &result.retry_reason {
             write!(
                 out,
-                r#"<p class="prewrap"><strong>Temporary blocker:</strong> {}</p>"#,
+                r#"<p class="prewrap"><strong>Temporary blocker{}:</strong> {}</p>"#,
+                match result.retry_hint {
+                    Some(RetryHint::Soon) => ", expected to clear soon",
+                    Some(RetryHint::Slow) => ", expected to take a while",
+                    None => "",
+                },
                 e(reason)
             )
             .unwrap();

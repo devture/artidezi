@@ -406,6 +406,26 @@ pub struct PostponedRetries {
     pub initial_delay_seconds: u32,
     pub multiplier: u32,
     pub max_delay_seconds: u32,
+    /// For blockers that the agent expects to take longer.
+    pub slow: SlowRetries,
+}
+
+/// Evenly spaced evaluations of a change that waits for something slow. Unlike the others, they are
+/// counted until a person acts, so that updates of the change cannot extend the wait forever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SlowRetries {
+    pub max: u32,
+    pub delay_seconds: u32,
+}
+
+impl Default for SlowRetries {
+    fn default() -> Self {
+        Self {
+            max: 6,
+            delay_seconds: 604_800,
+        }
+    }
 }
 
 impl Default for PostponedRetries {
@@ -415,6 +435,7 @@ impl Default for PostponedRetries {
             initial_delay_seconds: 3600,
             multiplier: 3,
             max_delay_seconds: 86_400,
+            slow: SlowRetries::default(),
         }
     }
 }

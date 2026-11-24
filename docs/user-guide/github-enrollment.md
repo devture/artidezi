@@ -230,7 +230,7 @@ Publish mode has three useful outcomes:
 - `needs_human`: publish the assessment as an informational review and wait for a decision, or for
   the change or its target to [move](pr-discovery.md#automatic-reevaluation).
   `failed` and invalid worker results publish nothing and are evaluated once more; `retry_later`
-  publishes nothing and is [evaluated again](pr-discovery.md#automatic-reevaluation) up to four times.
+  publishes nothing and is [evaluated again](pr-discovery.md#automatic-reevaluation) within its limits.
 
 Published reviews keep the verdict, summary, agent-assessed risk and maintainer questions visible.
 The complete evidence list is retained in a collapsed disclosure so a routine review stays compact

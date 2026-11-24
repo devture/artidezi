@@ -336,6 +336,15 @@ pub fn validate_result(job: &Job, result: &AgentResult) -> Vec<Problem> {
         )),
         (_, None) => {}
     }
+    match (result.outcome, result.retry_hint) {
+        (Outcome::RetryLater, None) if job.schema_version >= 4 => {
+            problems.push(problem("retry_later requires a retry_hint"));
+        }
+        (Outcome::RetryLater, _) | (_, None) => {}
+        (_, Some(_)) => problems.push(problem(
+            "retry_hint must be null unless the outcome is retry_later",
+        )),
+    }
 
     problems
 }
@@ -450,6 +459,7 @@ mod tests {
             }],
             questions_for_human: vec![],
             retry_reason: None,
+            retry_hint: None,
             notes_for_next_attempt: None,
         }
     }
@@ -513,7 +523,7 @@ mod tests {
     fn retry_later_requires_job_version_three_and_a_reason() {
         let mut j = job();
         j.allowed_outcomes.push(Outcome::RetryLater);
-        for (version, valid) in [(1, false), (2, false), (3, true)] {
+        for (version, valid) in [(1, false), (2, false), (3, true), (4, true)] {
             j.schema_version = version;
             assert_eq!(validate_job(&j).is_empty(), valid, "{version}");
         }
@@ -527,7 +537,18 @@ mod tests {
         };
         for (reason, valid) in [(None, false), (Some(" "), false), (Some("No image"), true)] {
             r.retry_reason = reason.map(Into::into);
+            r.retry_hint = Some(RetryHint::Soon);
             assert_eq!(validate_result(&j, &r).is_empty(), valid, "{reason:?}");
+        }
+        // The hint came with version 4.
+        for (version, hint, valid) in [
+            (3, None, true),
+            (4, None, false),
+            (4, Some(RetryHint::Slow), true),
+        ] {
+            j.schema_version = version;
+            r.retry_hint = hint;
+            assert_eq!(validate_result(&j, &r).is_empty(), valid, "{version}");
         }
         r.repositories[0].changed = true;
         r.repositories[0].head_commit = Some(sha('1'));
@@ -543,6 +564,13 @@ mod tests {
             validate_result(&j, &r)
                 .iter()
                 .any(|p| p.0.contains("retry_reason must be null"))
+        );
+        r.retry_reason = None;
+        r.retry_hint = Some(RetryHint::Soon);
+        assert!(
+            validate_result(&job(), &r)
+                .iter()
+                .any(|p| p.0.contains("retry_hint must be null"))
         );
         r.outcome = Outcome::RetryLater;
         assert!(

@@ -29,8 +29,23 @@ pub struct AgentResult {
     /// The temporary blocker. Required non-empty for `retry_later`, absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,
+    /// How soon that blocker can be expected to clear. Required for `retry_later` since job schema
+    /// version 4, absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_hint: Option<RetryHint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_for_next_attempt: Option<String>,
+}
+
+/// The agent's expectation. The controller decides the times and the limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryHint {
+    /// Within about a day. Results from before this hint existed mean this.
+    #[default]
+    Soon,
+    /// Later than that, such as an upstream release without a date.
+    Slow,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -859,8 +859,11 @@ impl Orchestrator {
             }
         }
         let same_change = self.continues_last_evaluation(source, pull, &bases, &git);
+        // A slow wait outlasts the run budget, so that its evaluations also cover a change that differs.
         let retry = source.reevaluations.pending.filter(|kind| {
-            feedback.is_none() && same_change && self.evaluation_retry_left(source, *kind)
+            feedback.is_none()
+                && (same_change || *kind == EvaluationRetry::RetryLaterSlow)
+                && self.evaluation_retry_left(source, *kind)
         });
         if feedback.is_none()
             && retry.is_none()
@@ -1060,7 +1063,7 @@ impl Orchestrator {
             "Assess source PR #{} in repository `{}`. Identify its own changes using the merge base of `refs/artidezi/inputs/source-pr` and the recorded target base, then assess integration with that target.\n\nSource title:\n{}\n\nSource description:\n{}",
             pull.number, source.repository_id, pull.title, pull.body
         );
-        if same_change
+        if (same_change || retry == Some(EvaluationRetry::RetryLaterSlow))
             && feedback.is_none()
             && let Some(blocker) = self.last_blocker(source)?
         {
@@ -1095,7 +1098,7 @@ impl Orchestrator {
         let mut updated = source.clone();
         updated.last_task_id = Some(task.id.clone());
         if !same_change {
-            updated.reevaluations = Default::default();
+            updated.reevaluations.restart();
         }
         updated.reevaluations.pending = None;
         match retry {

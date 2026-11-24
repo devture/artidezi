@@ -96,6 +96,9 @@ pub struct Reevaluations {
     pub target_change: u32,
     #[serde(default)]
     pub retry_later: u32,
+    /// Not reset by a change that differs.
+    #[serde(default)]
+    pub retry_later_slow: u32,
 }
 
 impl Reevaluations {
@@ -108,6 +111,7 @@ impl Reevaluations {
             EvaluationRetry::Failed => self.failed,
             EvaluationRetry::TargetChange => self.target_change,
             EvaluationRetry::RetryLater => self.retry_later,
+            EvaluationRetry::RetryLaterSlow => self.retry_later_slow,
             EvaluationRetry::Unknown => u32::MAX,
         }
     }
@@ -117,8 +121,17 @@ impl Reevaluations {
             EvaluationRetry::Failed => self.failed += 1,
             EvaluationRetry::TargetChange => self.target_change += 1,
             EvaluationRetry::RetryLater => self.retry_later += 1,
+            EvaluationRetry::RetryLaterSlow => self.retry_later_slow += 1,
             EvaluationRetry::Unknown => {}
         }
+    }
+
+    /// Starts over for a change that differs. A slow wait goes on.
+    pub fn restart(&mut self) {
+        *self = Self {
+            retry_later_slow: self.retry_later_slow,
+            ..Self::default()
+        };
     }
 }
 
@@ -131,6 +144,8 @@ pub enum EvaluationRetry {
     TargetChange,
     /// The agent reported a temporary blocker.
     RetryLater,
+    /// The agent reported one that takes longer to clear.
+    RetryLaterSlow,
     /// Not understood by this controller.
     #[serde(other)]
     Unknown,
@@ -163,7 +178,8 @@ pub struct Hold {
     /// The evaluation that `next_at` starts. Delivery and checks have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<EvaluationRetry>,
-    /// A later head that was compared with `head` and carries the same change.
+    /// A later head that needs no look of its own: it carries the same change as `head`, or it waits
+    /// for the next evaluation of a slow blocker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebased_head: Option<String>,
     /// A moved head is not looked at again before this, after something kept it from release.
@@ -200,7 +216,10 @@ impl Hold {
         match self.reason {
             HoldReason::Delivery => true,
             HoldReason::FailedRun => self.retry == Some(EvaluationRetry::Failed),
-            HoldReason::TemporaryBlocker => self.retry == Some(EvaluationRetry::RetryLater),
+            HoldReason::TemporaryBlocker => matches!(
+                self.retry,
+                Some(EvaluationRetry::RetryLater | EvaluationRetry::RetryLaterSlow)
+            ),
             _ => false,
         }
     }

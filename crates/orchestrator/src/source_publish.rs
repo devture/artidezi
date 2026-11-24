@@ -1579,6 +1579,7 @@ mod tests {
             }],
             questions_for_human: vec![],
             retry_reason: None,
+            retry_hint: None,
             notes_for_next_attempt: None,
         };
         for index in 2..=9 {
