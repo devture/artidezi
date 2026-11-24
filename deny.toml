@@ -5,8 +5,8 @@
 # cargo-deny (https://embarkstudios.github.io/cargo-deny/): fails on vulnerable, unmaintained, unsound or yanked dependencies,
 # on licenses outside this list and on crates from anywhere but crates.io.
 #
-# CI and releases (`just deny`) run this with `--allow unmaintained --allow unsound`: those notices concern a crate,
-# not a commit, so the scheduled `Dependency advisories` workflow (`just deny-strict`) reports them instead.
+# CI and releases (`just deny`) check only licenses, bans and sources. Advisories and yanks are published without any change here,
+# so nothing checks them automatically; run `just deny-advisories` by hand.
 
 [graph]
 # The image's (musl) and the development hosts' targets: dependencies of other platforms don't count.
@@ -19,8 +19,7 @@ targets = [
 all-features = true
 
 [advisories]
-# Every RustSec advisory fails, including unmaintained and unsound crates and yanked versions
-# (unmaintained and unsound only in the strict check; see above).
+# Every RustSec advisory fails, including unmaintained and unsound crates and yanked versions (in `just deny-advisories`).
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"

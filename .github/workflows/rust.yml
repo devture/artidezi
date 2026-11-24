@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   deny:
-    name: Dependency advisories, licenses and sources
+    name: Dependency licenses and sources
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
@@ -30,9 +30,8 @@ jobs:
       - name: Install cargo-deny with locked dependencies
         if: steps.deny-cache.outputs.cache-hit != 'true'
         run: cargo install --locked cargo-deny --version "=$CARGO_DENY_VERSION"
-      # Fetches the current RustSec advisories: a new vulnerability or yanked version fails CI without any change here.
-      # Unmaintained and unsound notices say nothing about this commit; advisories.yml reports them on a schedule.
-      - run: cargo deny --locked check --allow unmaintained --allow unsound
+      # No advisories: they are published without any change here, and would hold back unrelated changes and releases.
+      - run: cargo deny --locked check bans licenses sources
 
   reuse:
     name: REUSE compliance

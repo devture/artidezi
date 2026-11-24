@@ -53,12 +53,12 @@ extract-binary tag="artidezi:dev" dest="target/artidezi-linux-amd64":
 reuse-lint:
 	reuse lint
 
-# Checks dependencies for advisories, licenses and sources as CI does (needs cargo-deny and network access)
+# Checks dependencies' licenses, bans and sources as CI does (needs cargo-deny)
 deny:
-	cargo deny --locked check --allow unmaintained --allow unsound
+	cargo deny --locked check bans licenses sources
 
-# Also fails on unmaintained and unsound crates, as the scheduled advisories workflow does
-deny-strict:
+# Fails on every RustSec advisory and on yanked crates; not part of CI (needs cargo-deny and network access)
+deny-advisories:
 	cargo deny --locked check advisories
 
 # Runs everything CI would run (except the image build, deny and forgejo-test)

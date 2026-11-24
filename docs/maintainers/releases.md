@@ -33,14 +33,9 @@ It skips the waiting, but still needs an image change and passing CI.
 
 ### Dependency advisories
 
-CI downloads the current RustSec advisories on every run, so a new advisory can fail an unchanged commit and hold back releases.
-It does so only for what a commit can fix by updating or replacing a dependency: a vulnerability or a yanked version (plus `deny.toml`'s license, ban and source rules).
-Unmaintained and unsound notices concern a crate rather than a commit, so CI allows them (`just deny`).
-
-The scheduled `Dependency advisories` workflow ([`advisories.yml`](../../.github/workflows/advisories.yml)) runs weekly (Mondays) against `main` with every advisory kind (`just deny-strict`).
-It fails when it finds one, and GitHub's failed-run notification (sent to whoever last changed its `schedule`) is the report; nothing else is blocked.
-Run it by hand with `gh workflow run advisories.yml`.
-To accept a notice for a while, add its ID to `ignore` in `deny.toml` with the reason.
+Advisories never fail CI or hold back releases: a new one is published without any change here, and a blocked release wouldn't protect anyone running the previous one.
+CI's dependency check fails only on `deny.toml`'s license, ban and source rules (`just deny`).
+Renovate's lock file maintenance picks up compatible fixes. To look for advisories and yanked versions by hand, run `just deny-advisories`.
 
 ## What a release publishes
 
