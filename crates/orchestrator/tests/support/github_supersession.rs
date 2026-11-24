@@ -1526,50 +1526,52 @@ fn current_changed_or_paused_adaptations_are_never_closed_automatically() {
 /// A revision that failed with commits nobody looked at stays with the person who asked for it.
 #[test]
 fn a_failed_revision_with_unreported_commits_keeps_its_adaptation_when_the_source_moves() {
-    let (mut w, f) = publishing_world();
-    w.orchestrator
-        .config
-        .worker_pools
-        .get_mut("personal")
-        .unwrap()
-        .transient_failure_retries = 2;
-    let id = published_adaptation(&mut w);
-    let published = w
-        .orchestrator
-        .db
-        .list_merge_requests(&id)
-        .unwrap()
-        .remove(0);
-    w.orchestrator
-        .revise_proposal(&id, "Adjust the change", "human")
-        .unwrap();
-    let script = w.script(
-        "failed-revision.sh",
-        "echo x >> elsewhere.md; git add -A; git commit -q -m Change; exit 1",
-    );
-    assert_eq!(
-        w.work_with_record(&script, |record| record.result = None),
-        AttemptState::Invalid
-    );
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
-    assert!(
-        attempt
-            .validation_problems
-            .iter()
-            .any(|problem| problem.contains("reported unchanged but HEAD moved")),
-        "{:?}",
-        attempt.validation_problems
-    );
-    move_source_head(&w, &f);
-    for _ in 0..2 {
-        scan(&mut w);
-        w.orchestrator.tick().unwrap();
+    for retries in [0, 2] {
+        let (mut w, f) = publishing_world();
+        w.orchestrator
+            .config
+            .worker_pools
+            .get_mut("personal")
+            .unwrap()
+            .transient_failure_retries = retries;
+        let id = published_adaptation(&mut w);
+        let published = w
+            .orchestrator
+            .db
+            .list_merge_requests(&id)
+            .unwrap()
+            .remove(0);
+        w.orchestrator
+            .revise_proposal(&id, "Adjust the change", "human")
+            .unwrap();
+        let script = w.script(
+            "failed-revision.sh",
+            "echo x >> elsewhere.md; git add -A; git commit -q -m Change; exit 1",
+        );
+        assert_eq!(
+            w.work_with_record(&script, |record| record.result = None),
+            AttemptState::Invalid
+        );
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+        assert!(
+            attempt
+                .validation_problems
+                .iter()
+                .any(|problem| problem.contains("reported unchanged but HEAD moved")),
+            "{:?}",
+            attempt.validation_problems
+        );
+        move_source_head(&w, &f);
+        for _ in 0..2 {
+            scan(&mut w);
+            w.orchestrator.tick().unwrap();
+        }
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        let state = f.state.lock().unwrap();
+        assert_eq!(state.proposals[&published.number]["state"], "open");
+        assert!(state.comments.is_empty());
     }
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    let state = f.state.lock().unwrap();
-    assert_eq!(state.proposals[&published.number]["state"], "open");
-    assert!(state.comments.is_empty());
 }
 
 #[test]

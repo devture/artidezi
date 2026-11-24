@@ -84,7 +84,9 @@ impl StateAccess {
     fn replacement_attempt(&self, attempt: &Attempt, now: Timestamp) -> Result<Attempt> {
         let mut job = self.load_job(attempt)?;
         let id = new_id("att");
-        job.schema_version = artidezi_contract::job::JOB_SCHEMA_VERSION;
+        // Version 1 requires previous artifacts, which this attempt lacks. Later versions stay: the
+        // retained prompt only explains what its own version requires of the result.
+        job.schema_version = job.schema_version.max(2);
         job.attempt_id = id.as_str().into();
         job.attempt_number = attempt
             .number

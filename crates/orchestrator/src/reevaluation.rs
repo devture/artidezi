@@ -480,19 +480,8 @@ impl Orchestrator {
             if !hold.releases_on(HoldRelease::NewHead) {
                 return Ok(Verdict::Blocked("not released by a new head"));
             }
-            if hold.rebased_head.as_deref() != Some(current.head_commit.as_str())
-                && !self.held_change_is_unchanged(source, &tracked, hold, &current)?
-            {
-                if self.runs_left(&tracked) || hold.retry != Some(EvaluationRetry::RetryLaterSlow) {
-                    return self.evaluate_again(
-                        task,
-                        &attempt,
-                        &policy,
-                        &current.head_commit,
-                        None,
-                    );
-                }
-                // Only the run budget is spent: what differs is looked at when the wait is over.
+            if hold.retry == Some(EvaluationRetry::RetryLaterSlow) && !self.runs_left(&tracked) {
+                // Whatever moved, only the end of the wait allows another evaluation.
                 if !due {
                     self.update_hold(&tracked.id, |hold| {
                         hold.rebased_head = Some(current.head_commit.0);
@@ -500,6 +489,10 @@ impl Orchestrator {
                     })?;
                     return Ok(Verdict::Done);
                 }
+            } else if hold.rebased_head.as_deref() != Some(current.head_commit.as_str())
+                && !self.held_change_is_unchanged(source, &tracked, hold, &current)?
+            {
+                return self.evaluate_again(task, &attempt, &policy, &current.head_commit, None);
             }
         }
         if due && let Some(kind) = hold.retry {

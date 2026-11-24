@@ -189,7 +189,8 @@ is posted to the forge while waiting, and a person is asked only when the retrie
 What a person could work around, like pinning an unreleased revision, still waits by default. To step in, use
 **Evaluate again** with your instructions; it starts the counts over. A blocker that only a change on your side clears,
 such as another base image or a host's kernel, is a question (`needs_human`) instead. Project
-instructions that demand `needs_human` for a missing upstream release take precedence, so adjust them.
+instructions that demand `needs_human` for a missing upstream release itself take precedence, so adjust
+those; general ones, such as for an unsafe update, don't rule out waiting.
 
 A slow wait isn't cut short by the run budget: once that is used up, a revision that differs is evaluated
 with the next weekly check.

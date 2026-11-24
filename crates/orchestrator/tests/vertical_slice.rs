@@ -29,6 +29,48 @@ mod github;
 #[path = "support/proposal_branch_cleanup.rs"]
 mod proposal_branch_cleanup;
 
+/// The retained prompt only explains what its own job version requires of the result.
+#[test]
+fn a_replaced_execution_of_an_older_job_keeps_its_version() {
+    for (older, kept) in [(1, 2), (2, 2), (3, 3), (4, 4)] {
+        let mut w = World::new();
+        w.orchestrator
+            .config
+            .worker_pools
+            .get_mut("personal")
+            .unwrap()
+            .lost_attempt_retries = 2;
+        let task = w
+            .orchestrator
+            .create_manual_task("roles", "Old job", "operator", &TaskSelection::default())
+            .unwrap();
+        let lease = |w: &mut World, worker: &str| {
+            w.orchestrator
+                .lease("personal", worker, SignedDuration::from_secs(120))
+                .unwrap()
+                .unwrap()
+        };
+        let first = lease(&mut w, "first-worker");
+        let mut attempt = first.attempt.clone();
+        let mut job = first.job.clone();
+        attempt.id = format!("{}-old", attempt.id);
+        attempt.number = 2;
+        attempt.state = AttemptState::Queued;
+        job.schema_version = older;
+        job.attempt_id = attempt.id.as_str().into();
+        attempt.job = w.orchestrator.artifacts.put_json(&job).unwrap();
+        w.orchestrator.db.insert_attempt(&attempt).unwrap();
+        assert_eq!(lease(&mut w, "second-worker").attempt.id, attempt.id);
+        let mut access = w.orchestrator.state_access();
+        access
+            .recover_expired_at(Timestamp::now() + SignedDuration::from_secs(121))
+            .unwrap();
+        let next = access.db.latest_attempt(&task.id).unwrap().unwrap();
+        assert_eq!(next.number, 3);
+        assert_eq!(access.load_job(&next).unwrap().schema_version, kept);
+    }
+}
+
 #[test]
 fn lost_execution_reuses_frozen_inputs_and_recovers_without_forge_access() {
     let mut w = World::new();
