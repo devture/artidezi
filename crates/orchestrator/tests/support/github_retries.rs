@@ -868,6 +868,58 @@ fn switching_retries_off_stops_the_one_already_scheduled() {
     later(&mut w, &f);
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     assert_eq!(sent(&f, "PUT", MERGE), 1);
+    // A later head is still evaluated.
+    move_source_head(&w, &f);
+    scan(&mut w);
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+
+    // A lowered limit counts for the one already scheduled.
+    let (mut w, f, id) = safe_run();
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    later(&mut w, &f);
+    assert_eq!(hold(&w).retries, 2);
+    limits(&mut w).max = 1;
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(sent(&f, "PUT", MERGE), 2);
+}
+
+#[test]
+fn an_objection_while_waiting_keeps_a_moved_head_with_a_person() {
+    // Before anything was planned, and after an approval that arrived although its response did not.
+    for case in ["unplanned", "lost_then_edited", "lost_then_stripped"] {
+        let (mut w, f, id) = safe_run();
+        match case {
+            "unplanned" => respond(&f, REVIEWS, 503),
+            _ => f.state.lock().unwrap().lose_review_response = true,
+        }
+        finish(&mut w);
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+        {
+            let mut state = f.state.lock().unwrap();
+            match case {
+                "unplanned" => {
+                    let head = state.head.clone();
+                    state.reviews.push(json!({"id": 900, "user": {"login": "maintainer", "type": "User"}, "commit_id": head, "body": "No.", "state": "CHANGES_REQUESTED"}));
+                }
+                "lost_then_edited" => {
+                    let body = state.reviews[0]["body"].as_str().unwrap().to_owned();
+                    let marker = &body[body.find("<!-- artidezi:assessment:").unwrap()..];
+                    state.reviews[0]["body"] = json!(format!("Not yet. {marker}"));
+                }
+                _ => state.reviews[0]["body"] = json!("Not yet."),
+            }
+        }
+        restore(&f, REVIEWS);
+        move_source_head(&w, &f);
+        scan(&mut w);
+        later(&mut w, &f);
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{case}");
+        later(&mut w, &f);
+        assert_eq!(source(&w).runs, 1, "{case}");
+    }
 }
 
 #[test]

@@ -477,14 +477,19 @@ impl Orchestrator {
         if self.changes_requested(&tracked.forge, &tracked.remote, source.number)? {
             return Ok(true);
         }
-        let published: Vec<_> = self
-            .db
-            .list_events(&task.id)?
-            .into_iter()
+        let events = self.db.list_events(&task.id)?;
+        let published: Vec<_> = events
+            .iter()
             .filter(|event| event.kind == "assessment.published")
-            .filter_map(|event| Some((event.payload["review_id"].as_u64()?, event.payload)))
+            .filter_map(|event| Some((event.payload["review_id"].as_u64()?, &event.payload)))
             .collect();
-        if published.is_empty() {
+        let planned = events.iter().any(|event| {
+            matches!(
+                event.kind.as_str(),
+                "assessment.approval_planned" | "assessment.comment_planned"
+            )
+        });
+        if published.is_empty() && !planned {
             return Ok(false);
         }
         let reviews = self
@@ -497,6 +502,24 @@ impl Orchestrator {
             .latest_attempt(&task.id)?
             .and_then(|attempt| attempt.result)
             .and_then(|result| self.artifacts.get_json(&result).ok());
+        // Forges dismiss approvals themselves when the head moves.
+        let moved = tracked.observed_head != source.input.commit.as_str();
+        if published.is_empty() {
+            // Its receipt was lost: it can have arrived, and have been edited since.
+            return Ok(reviews.iter().any(|review| {
+                let ours = review.body.contains(&marker);
+                let altered = Some(&review.author_login) == source.publisher_login.as_ref()
+                    && review.head_commit == source.input.commit
+                    && !review.body.contains("<!-- artidezi:assessment:");
+                altered
+                    || (ours
+                        && (verdict.as_ref().is_some_and(|verdict| {
+                            !review
+                                .body
+                                .contains(&crate::source_publish::summary(verdict))
+                        }) || (review.state == ReviewState::Dismissed && !moved)))
+            }));
+        }
         Ok(!published.iter().all(|(id, receipt)| {
             reviews.iter().any(|review| {
                 review.id == *id
@@ -510,9 +533,7 @@ impl Orchestrator {
                         }),
                     }
                     && (review.state != ReviewState::Dismissed
-                        // Forges dismiss approvals themselves when the head moves.
-                        || (receipt["state"] == "approved"
-                            && tracked.observed_head != source.input.commit.as_str()))
+                        || (receipt["state"] == "approved" && moved))
             })
         }))
     }
@@ -722,6 +743,22 @@ impl Orchestrator {
         let Some(attempt) = self.db.latest_attempt(&task.id)? else {
             return self.pause_task_source(task, HoldReason::Unclassified, status);
         };
+        // Older releases stopped looking at a run's commits after any of these, so that one can have
+        // broken a rule without saying so.
+        let uninspected = attempt.state == AttemptState::Invalid
+            && attempt.validation_problems.iter().any(|problem| {
+                [
+                    "reported unchanged but HEAD moved",
+                    "head commit mismatch between",
+                    "series invalid",
+                    "series has no bundle",
+                ]
+                .iter()
+                .any(|text| problem.contains(text))
+            });
+        if uninspected {
+            return self.pause_task_source(task, HoldReason::Unclassified, status);
+        }
         let failure = match (attempt.state, attempt.outcome) {
             (AttemptState::Lost, _) => Some("The worker did not finish"),
             (AttemptState::Invalid, _) => Some("The worker result was rejected"),

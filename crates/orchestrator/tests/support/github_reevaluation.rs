@@ -823,3 +823,43 @@ fn a_restart_before_a_reported_blocker_was_recorded_still_waits() {
     assert_eq!(hold(&w).reason, HoldReason::TemporaryBlocker);
     assert_eq!(tick(&mut w, 8000).discovered.len(), 1);
 }
+
+#[test]
+fn an_older_run_that_moved_its_commits_stays_with_a_person() {
+    for committed in [true, false] {
+        let (mut w, f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        let script = if committed {
+            w.script(
+                "commit.sh",
+                "echo x >> CHANGES.md; git add -A; git commit -q -m Change",
+            )
+        } else {
+            failed(&w)
+        };
+        w.work_with_record(&script, |record| record.result = None);
+        let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+        assert_eq!(attempt.state, AttemptState::Invalid);
+        assert_eq!(
+            attempt
+                .validation_problems
+                .iter()
+                .any(|problem| problem.contains("reported unchanged but HEAD moved")),
+            committed,
+            "{:?}",
+            attempt.validation_problems
+        );
+        w.orchestrator
+            .db
+            .set_task_state(&id, TaskState::NeedsHuman, "test")
+            .unwrap();
+        untype(&w, None, &id);
+        reopen(&mut w, &f);
+        assert_eq!(
+            task_state(&w, &id) == TaskState::WaitingToRetry,
+            !committed,
+            "{committed}"
+        );
+        assert_eq!(hold(&w).releases.is_empty(), committed);
+    }
+}

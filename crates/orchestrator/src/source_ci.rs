@@ -191,6 +191,11 @@ impl Orchestrator {
             Ok(()) => Ok(()),
             // Keep the hold and its schedule; a later check sees the current forge state.
             Err(OrchestratorError::Forge(_) | OrchestratorError::Store(_)) => Ok(()),
+            // It closed with its change, which was reopened since; its hold still says why.
+            Err(error) if task.state == TaskState::Closed => {
+                tracing::debug!(task = %task.id, %error, "reopened change not evaluated again yet");
+                Ok(())
+            }
             Err(error) => self.stop_delivery(
                 task,
                 &attempt,
@@ -223,9 +228,11 @@ impl Orchestrator {
             // approval or authorize a merge of this different commit.
             // A maintainer objection made during the hold is a human decision; a new head alone
             // must not reactivate automatic evaluation past it.
-            if self.source_changes_requested(&policy)? {
+            let mut seen = tracked.clone();
+            seen.observed_head = current.head_commit.0.clone();
+            if self.person_objects(task, &source, &seen)? {
                 return Err(OrchestratorError::Outdated(
-                    "a reviewer has requested changes; maintainer input required".into(),
+                    "a reviewer has requested changes, or the published assessment was edited or removed; maintainer input required".into(),
                 ));
             }
             return self.retire_superseded_source(
@@ -238,7 +245,7 @@ impl Orchestrator {
                 None,
             );
         }
-        if current.checks != ChecksState::Success {
+        if task.state == TaskState::Closed || current.checks != ChecksState::Success {
             return Ok(());
         }
         self.db.record_event(

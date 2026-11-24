@@ -316,11 +316,16 @@ impl Orchestrator {
         let mut holds: BTreeMap<String, Hold> = self.db.list_task_holds()?.into_iter().collect();
         // Held assessments that their source or schedule gives a reason to look at.
         let mut reconsider = BTreeSet::new();
+        // Changes held for failed checks whose head moved.
+        let mut moved = BTreeSet::new();
         for source in self.db.list_pull_request_sources(None)? {
             if let Some(hold) = &source.hold
                 && let Some(task_id) = &source.last_task_id
                 && hold.task_id.as_ref() == Some(task_id)
             {
+                if !source.closed && hold.head.as_ref() != Some(&source.observed_head) {
+                    moved.insert(task_id.clone());
+                }
                 if Self::worth_reconsidering(&source, now) {
                     reconsider.insert(task_id.clone());
                 }
@@ -344,7 +349,8 @@ impl Orchestrator {
                 let task = self.db.get_task(&task_id)?;
                 // A task can have closed with its change, which was then reopened.
                 if task.state == TaskState::NeedsHuman
-                    || (task.state == TaskState::Closed && reconsider.contains(&task_id))
+                    || (task.state == TaskState::Closed
+                        && (reconsider.contains(&task_id) || moved.contains(&task_id)))
                 {
                     due.push((task, Some(hold)));
                 }
@@ -388,11 +394,19 @@ impl Orchestrator {
             // A crash while queuing a revision left its state behind; the revision replaces the retry.
             return self.clear_delivery_hold(task);
         }
-        if self.delivery_retries(task).max == 0 {
-            return self.needs_human(
+        let used = self.delivery_retries_used(task, &attempt)?;
+        let max = self.delivery_retries(task).max;
+        if max == 0 || used > max {
+            let releases = match task.kind {
+                TaskKind::PullRequest => vec![HoldRelease::NewHead, HoldRelease::TargetMoved],
+                _ => vec![],
+            };
+            return self.hold_until(
                 task,
                 &attempt,
-                "delivery retries were turned off while one was scheduled",
+                HoldReason::DeliveryStopped,
+                "delivery retries were turned off or limited while one was scheduled",
+                releases,
             );
         }
         self.db.record_event(
@@ -400,7 +414,7 @@ impl Orchestrator {
             Some(&attempt.id),
             "orchestrator",
             RETRY_STARTED,
-            serde_json::json!({"retry": self.delivery_retries_used(task, &attempt)?}),
+            serde_json::json!({"retry": used}),
         )?;
         let task = self.db.get_task(&task.id)?;
         if let Err(error) = self.redeliver(&task, &attempt)

@@ -542,6 +542,79 @@ fn failed_checks_recovery_respects_explicit_pauses_and_new_objections() {
     }
 }
 
+#[test]
+fn failed_checks_recovery_respects_an_edited_approval() {
+    for edited in [true, false] {
+        let (mut w, f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        f.state.lock().unwrap().overrides.insert(
+            "/repos/org/app/pulls/33/merge".into(),
+            Reply::new(503, json!({"message":"fixture"})),
+        );
+        w.work(&safe_result(&w, Some("low"), true));
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+        f.state.lock().unwrap().conclusion = "failure".into();
+        let now = Timestamp::now();
+        reopen(&mut w, &f);
+        w.orchestrator
+            .tick_at(now + SignedDuration::from_secs(601))
+            .unwrap();
+        assert_eq!(
+            held_source(&w).hold.unwrap().reason,
+            HoldReason::FailedChecks
+        );
+        if edited {
+            let mut s = f.state.lock().unwrap();
+            let body = s.reviews[0]["body"].as_str().unwrap().to_owned();
+            s.reviews[0]["body"] = json!(format!("{body}\nEdited."));
+        }
+        move_source_head(&w, &f);
+        f.state.lock().unwrap().conclusion = "success".into();
+        reopen(&mut w, &f);
+        w.orchestrator
+            .tick_at(now + SignedDuration::from_secs(1300))
+            .unwrap();
+        let expected = if edited {
+            TaskState::NeedsHuman
+        } else {
+            TaskState::Closed
+        };
+        assert_eq!(task_state(&w, &id), expected);
+        assert_eq!(held_source(&w).runs, if edited { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn failed_checks_hold_still_recovers_after_reopening_on_the_same_head() {
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    f.state.lock().unwrap().conclusion = "failure".into();
+    w.work(&safe_result(&w, Some("low"), true));
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    f.state.lock().unwrap().open = true;
+    let now = Timestamp::now();
+    let pass = |w: &mut World, seconds| {
+        reopen(w, &f);
+        scan(w);
+        w.orchestrator
+            .tick_at(now + SignedDuration::from_secs(seconds))
+            .unwrap()
+            .errors
+    };
+    assert!(pass(&mut w, 601).is_empty());
+    assert_eq!(held_source(&w).runs, 1);
+    move_source_head(&w, &f);
+    f.state.lock().unwrap().conclusion = "success".into();
+    for seconds in [1300, 2000] {
+        assert!(pass(&mut w, seconds).is_empty());
+    }
+    assert_eq!(held_source(&w).runs, 2);
+    assert_ne!(held_source(&w).last_task_id, Some(id));
+}
+
 /// An approval whose response was lost is bound to its head. Failed checks on the retry hold it like
 /// any other approval: a new head is assessed afresh, without posting or merging anything.
 #[test]

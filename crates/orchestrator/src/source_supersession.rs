@@ -181,9 +181,19 @@ impl Orchestrator {
         {
             return Ok(false);
         }
+        let events = self.db.list_events(&task.id)?;
+        // An objection made while a delivery waited is a human decision; a new head must not bypass
+        // it.
+        if events
+            .iter()
+            .any(|event| event.kind == crate::holds::RETRY_STARTED)
+            && self.person_objects(task, source, &tracked)?
+        {
+            return Ok(false);
+        }
         // Plans precede writes, including writes whose receipts may have been lost. A retry
         // request alone carries no remote effect and must not strand an obsolete assessment.
-        if self.db.list_events(&task.id)?.iter().any(|event| {
+        if events.iter().any(|event| {
             (event.kind.starts_with("publication.") && event.kind != "publication.retry_requested")
                 || event.kind.starts_with("assessment.")
         }) || !self.db.list_merge_requests(&task.id)?.is_empty()
