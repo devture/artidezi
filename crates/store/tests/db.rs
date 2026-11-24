@@ -359,6 +359,7 @@ fn discovery_queue_and_source_claim_are_atomic() {
         last_task_id: Some(t.id.clone()),
         runs: 1,
         paused: false,
+        hold: None,
         status: "queued".into(),
         follow_up: None,
         target_conflict: None,
@@ -416,6 +417,7 @@ fn superseding_closes_the_task_and_reschedules_its_source_atomically() {
         last_task_id: Some(t.id.clone()),
         runs: 1,
         paused: true,
+        hold: None,
         status: "held".into(),
         follow_up: None,
         target_conflict: None,
@@ -962,4 +964,81 @@ fn a_database_from_a_newer_version_is_refused_and_left_alone() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(after, version + 1);
+}
+
+#[test]
+fn holding_a_task_records_its_state_source_and_event_together() {
+    let mut db = Db::open_in_memory().unwrap();
+    let mut t = task();
+    t.kind = TaskKind::PullRequest;
+    let mut source = TrackedPullRequest {
+        id: new_id("pr"),
+        project: t.project.clone(),
+        repository_id: "role".into(),
+        forge: "fake".into(),
+        remote: "org/role".into(),
+        number: 1,
+        url: "http://fake.invalid/1".into(),
+        title: "Update library".into(),
+        closed: false,
+        handler_id: "renovate".into(),
+        observed_head: "a".repeat(40),
+        head_observed_at: Timestamp::now(),
+        last_task_id: Some(t.id.clone()),
+        runs: 1,
+        paused: false,
+        hold: None,
+        status: "queued".into(),
+        follow_up: None,
+        target_conflict: None,
+        target_conflict_waived_head: None,
+    };
+    let held = attempt(&t.id, 1);
+    db.insert_discovery_task(&t, &held, &source).unwrap();
+    let place = |db: &mut Db, source: &TrackedPullRequest, state| {
+        db.hold_task(
+            TaskHold {
+                task_id: &t.id,
+                attempt_id: &held.id,
+                state,
+                event: "delivery.retry_scheduled",
+                payload: serde_json::json!({}),
+                source: Some(source),
+                hold: None,
+            },
+            "orchestrator",
+        )
+    };
+    let mut hold = Hold::new(HoldReason::Delivery, "unavailable");
+    hold.next_at = Some(Timestamp::now());
+    source.place_hold(hold);
+    assert!(!source.paused, "a delivery retry is not a pause");
+    // Saving the source last fails: nothing of the hold may remain.
+    let mut conflicting = source.clone();
+    conflicting.id = new_id("pr");
+    assert!(place(&mut db, &conflicting, TaskState::WaitingToRetry).is_err());
+    assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::Working);
+    assert!(
+        db.list_events(&t.id)
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != "delivery.retry_scheduled")
+    );
+    place(&mut db, &source, TaskState::WaitingToRetry).unwrap();
+    assert_eq!(db.get_task(&t.id).unwrap().state, TaskState::WaitingToRetry);
+    assert_eq!(db.get_pull_request_source(&source.id).unwrap(), source);
+
+    // Automation neither replaces nor releases an operator's pause.
+    source.place_hold(Hold::new(HoldReason::OperatorPause, "paused"));
+    let paused = source.clone();
+    source.place_hold(Hold::new(HoldReason::Question, "asks"));
+    assert_eq!(source, paused);
+    assert!(source.paused);
+
+    // A hold kind this controller does not know stays readable and waits for a person.
+    let mut newer = serde_json::to_value(&source).unwrap();
+    newer["hold"]["reason"] = "from_the_future".into();
+    newer["hold"]["releases"] = serde_json::json!(["eclipse"]);
+    let read: TrackedPullRequest = serde_json::from_value(newer).unwrap();
+    assert_eq!(read.hold.unwrap().reason, HoldReason::Unclassified);
 }

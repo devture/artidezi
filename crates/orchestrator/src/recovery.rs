@@ -121,7 +121,7 @@ impl Orchestrator {
                     self.reschedule_superseded_source(task, &attempt, &error)?;
                     return Ok(());
                 }
-                tracked.paused = false;
+                tracked.release_hold();
                 tracked.status = "Transient model failure; automatic retry scheduled".into();
                 self.db.save_pull_request_source(&tracked)?;
             }

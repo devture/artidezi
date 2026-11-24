@@ -8,6 +8,7 @@
 mod adaptation_merge;
 pub mod discovery;
 pub mod forges;
+mod holds;
 pub mod ingest;
 pub mod maintenance;
 pub mod prompt;
@@ -64,6 +65,19 @@ pub enum OrchestratorError {
         "Current forge checks failed; delivery continues automatically if they pass on this head"
     )]
     ChecksFailed,
+    #[error("The forge accepted the merge but its final state is not yet confirmed")]
+    MergeUnconfirmed,
+}
+
+impl OrchestratorError {
+    /// Whether delivery can succeed later without anyone changing anything.
+    pub fn is_temporary(&self) -> bool {
+        match self {
+            Self::Forge(error) => error.is_temporary(),
+            Self::Git(artidezi_git::GitError::Temporary(_)) | Self::MergeUnconfirmed => true,
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, OrchestratorError>;
@@ -139,16 +153,21 @@ impl Orchestrator {
             snapshot_path: data_dir.join(SNAPSHOT_PATH),
             last_snapshot: None,
         };
+        orchestrator.adopt_untyped_holds()?;
         // A crash can occur after accepting an upload but before finishing remote publication.
-        // Startup only makes it actionable; it never retries a remote effect automatically.
+        // Startup itself repeats no remote effect: it schedules a retry where delivery is safe to
+        // repeat, and otherwise asks a person.
         use artidezi_store::model::{AttemptState, TaskKind, TaskState};
         for task in orchestrator.db.list_tasks(Some(TaskState::Working))? {
-            let delivers = task.kind == TaskKind::Manual
-                || (task.kind == TaskKind::PullRequest
-                    && task.delivery_mode == artidezi_config::model::DeliveryMode::MergeRequest);
-            if delivers
+            if task.kind != TaskKind::Renovate
                 && let Some(attempt) = orchestrator.db.latest_attempt(&task.id)?
                 && attempt.state == AttemptState::Valid
+                && !orchestrator.schedule_delivery_retry(
+                    &task,
+                    &attempt,
+                    "a restart interrupted delivery",
+                    None,
+                )?
             {
                 orchestrator.needs_human(
                     &task,
@@ -164,7 +183,11 @@ impl Orchestrator {
         if let Some(retry_at) = self.db.forge_retry_after(name)?
             && retry_at > Timestamp::now()
         {
-            return Err(artidezi_forge::ForgeError::RetryAfter { retry_at }.into());
+            return Err(artidezi_forge::ForgeError::RetryAfter {
+                retry_at,
+                rate_limited: true,
+            }
+            .into());
         }
         self.forges
             .get(name)

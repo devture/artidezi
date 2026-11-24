@@ -1201,6 +1201,8 @@ async fn navigation_counts_follow_authenticated_pages_and_project_grants() {
             last_task_id: None,
             runs: 1,
             paused: false,
+
+            hold: None,
             status: "Evaluated".into(),
             follow_up: None,
             target_conflict: None,
@@ -2417,6 +2419,64 @@ async fn ui_distinguishes_automatic_ci_waiting_from_worker_activity_and_human_ho
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn waiting_delivery_retries_show_their_schedule_without_asking_for_attention() {
+    let w = world_with_setup(Some(UiConfig::new(false)), |o| {
+        use artidezi_store::model::{Hold, HoldReason, TaskHold, TaskState};
+        let task = o
+            .create_manual_task(
+                "roles",
+                "Deliver me",
+                "admin",
+                &artidezi_config::resolve::TaskSelection::default(),
+            )
+            .unwrap();
+        let attempt = o.db.latest_attempt(&task.id).unwrap().unwrap();
+        let mut hold = Hold::new(HoldReason::Delivery, "GitHub HTTP 503 <script>");
+        hold.retries = 2;
+        hold.max_retries = 8;
+        hold.next_at = Some(Timestamp::now() + SignedDuration::from_mins(4));
+        o.db.hold_task(
+            TaskHold {
+                task_id: &task.id,
+                attempt_id: &attempt.id,
+                state: TaskState::WaitingToRetry,
+                event: "delivery.retry_scheduled",
+                payload: serde_json::json!({"retry": 2, "max_retries": 8}),
+                source: None,
+                hold: Some(&hold),
+            },
+            "orchestrator",
+        )
+        .unwrap();
+    })
+    .await;
+    let cookie = login_browser(&w.base_url);
+    let (code, _, page) = browser_request(
+        &w.base_url,
+        "/tasks?filter=waiting",
+        Some(&cookie),
+        None,
+        None,
+    );
+    assert_eq!(code, 200);
+    assert!(page.contains("status waiting_to_retry"));
+    let (_, _, page) = browser_request(
+        &w.base_url,
+        "/tasks?filter=attention",
+        Some(&cookie),
+        None,
+        None,
+    );
+    assert_eq!(page.matches("class=\"task-row row-tone-").count(), 0);
+    let (code, _, page) = browser_request(&w.base_url, "/tasks/1", Some(&cookie), None, None);
+    assert_eq!(code, 200);
+    assert!(page.contains("Retrying at <time"), "{page}");
+    assert!(page.contains("(2 of 8): GitHub HTTP 503 &lt;script&gt;"));
+    assert!(page.contains("Delivery retry 2 of 8 scheduled after a temporary failure"));
+    assert!(!page.contains("needs attention"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_profiles_require_login_and_show_only_selected_configuration() {
     let w = world_with_setup(Some(UiConfig::new(false)), |o| {
         let optional = o.config.agent_profiles.get("fake").unwrap().clone();
@@ -2489,6 +2549,7 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
             max_active_tasks: 1,
             repositories: vec!["consumer".into()],
             ci_log_context: Default::default(),
+            retries: Default::default(),
             handlers: vec![],
         });
         let project = o.config.projects.get_mut("roles").unwrap();
@@ -2512,6 +2573,8 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
                 last_task_id: None,
                 runs: 1,
                 paused: number == 1,
+
+                hold: None,
                 status: if number == 2 {
                     "Source PR is closed or merged".into()
                 } else {

@@ -22,9 +22,6 @@ use crate::{
 };
 
 impl Orchestrator {
-    /// Marks the `task.needs_human` events that [`Self::recheck_failed_source_checks`] may release.
-    const FAILED_CHECKS_HOLD: &str = "failed_checks";
-
     fn source_ci_interval(&self, _task: &Task) -> SignedDuration {
         // Delivery checks have their own cadence, independent of repository-wide discovery.
         SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS)
@@ -65,6 +62,7 @@ impl Orchestrator {
                     // Only preflight reads reach here. Respect persisted forge backoff and try on
                     // a later scheduled check; never convert an API error into successful CI.
                 }
+                ref error if error.is_temporary() => {}
                 _ => self.needs_human(
                     task,
                     &attempt,
@@ -127,100 +125,65 @@ impl Orchestrator {
         publishing.state = TaskState::Working;
         if let Err(error) = self.publish_source_result(&publishing, attempt, &job, &record, &result)
         {
-            self.needs_human(
+            self.delivery_failed(
                 &publishing,
                 attempt,
+                &error,
                 &format!("Automatic publication interrupted: {error}"),
             )?;
         }
         Ok(())
     }
 
-    /// Hold automatic delivery after failed checks on the assessed head. The hold is recheckable
-    /// only when no earlier source write has an unconfirmed outcome: the checks gate runs before an
-    /// approval is planned and after it is published, but an explicit retry also reaches it after
-    /// a lost approval or merge response, which must stay with a person.
+    /// Hold automatic delivery after failed checks on the assessed head, rechecking it on the same
+    /// cadence. An approval or merge with a lost response does not need a person: redelivery looks
+    /// it up, and both are bound to this head.
     pub(crate) fn hold_for_failed_checks(&mut self, task: &Task, attempt: &Attempt) -> Result<()> {
         let reason = OrchestratorError::ChecksFailed.to_string();
-        let events = self.db.list_events(&task.id)?;
-        let unconfirmed = events
-            .iter()
-            .any(|event| event.kind == "source.merge_planned")
-            || (events
-                .iter()
-                .any(|event| event.kind == "assessment.approval_planned")
-                && !events
-                    .iter()
-                    .any(|event| event.kind == "assessment.published"));
-        let current = self.db.get_task(&task.id)?;
-        if unconfirmed || current.state.is_terminal() {
-            return self.needs_human(
-                task,
-                attempt,
-                &format!(
-                    "{reason}. An earlier approval or merge is unconfirmed; inspect the source"
-                ),
-            );
-        }
-        let head = source_of(task)?.map(|source| source.input.commit);
-        self.pause_task_source(task, &reason)?;
-        self.db.hold_for_source_check(
-            &task.id,
-            &attempt.id,
-            "orchestrator",
-            serde_json::json!({"reason": reason, "recheck": Self::FAILED_CHECKS_HOLD, "head": head}),
-            Timestamp::now() + self.source_ci_interval(task),
-        )?;
-        Ok(())
+        let mut hold = self.new_hold(task, HoldReason::FailedChecks, reason.as_str())?;
+        hold.releases = vec![HoldRelease::GreenChecks, HoldRelease::NewHead];
+        hold.next_at = Some(Timestamp::now() + self.source_ci_interval(task));
+        let payload = serde_json::json!({"reason": reason, "hold": hold.reason, "head": hold.head});
+        self.record_hold(
+            task,
+            attempt,
+            TaskState::NeedsHuman,
+            "task.needs_human",
+            payload,
+            &hold,
+        )
     }
 
-    /// Release only the latest hold recorded by [`Self::hold_for_failed_checks`]. A later hold, an
-    /// explicit pause, a human resume or a newer evaluation leaves recovery to a person.
+    /// Recheck a due hold recorded by [`Self::hold_for_failed_checks`]. A later hold or explicit
+    /// pause replaces it, which leaves recovery to a person.
     pub(crate) fn recheck_failed_source_checks(
         &mut self,
         task: &Task,
         now: Timestamp,
-    ) -> Result<TaskState> {
-        if task.state != TaskState::NeedsHuman {
-            return Ok(task.state);
-        }
-        let events = self.db.list_events(&task.id)?;
-        let Some(hold) = events
-            .iter()
-            .rev()
-            .find(|event| event.kind == "task.needs_human")
-        else {
-            return Ok(task.state);
+    ) -> Result<()> {
+        // Reserve the next check before contacting the forge, so restarts cannot hot-loop.
+        let source = source_of(task)?
+            .ok_or_else(|| OrchestratorError::Invalid("missing source identity".into()))?;
+        let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+        let Some(hold) = &mut tracked.hold else {
+            return Ok(());
         };
-        if hold.payload["recheck"] != Self::FAILED_CHECKS_HOLD
-            || events
-                .iter()
-                .any(|event| event.id > hold.id && event.kind == "discovery.paused")
-            || !self.db.claim_held_source_check(
-                &task.id,
-                now,
-                now + self.source_ci_interval(task),
-            )?
-        {
-            return Ok(task.state);
-        }
+        hold.next_at = Some(now + self.source_ci_interval(task));
+        self.db.save_pull_request_source(&tracked)?;
         let attempt = self
             .db
             .latest_attempt(&task.id)?
             .ok_or_else(|| OrchestratorError::Invalid("missing held attempt".into()))?;
         match self.recheck_failed_source_checks_inner(task, &attempt) {
-            Ok(()) => {}
-            Err(OrchestratorError::Forge(_) | OrchestratorError::Store(_)) => {
-                // Keep the hold and its schedule; a later check sees the current forge state.
-            }
+            Ok(()) => Ok(()),
+            // Keep the hold and its schedule; a later check sees the current forge state.
+            Err(OrchestratorError::Forge(_) | OrchestratorError::Store(_)) => Ok(()),
             Err(error) => self.needs_human(
                 task,
                 &attempt,
                 &format!("Automatic check recovery stopped: {error}"),
-            )?,
+            ),
         }
-        self.persist_forge_backoffs()?;
-        Ok(self.db.get_task(&task.id)?.state)
     }
 
     fn recheck_failed_source_checks_inner(&mut self, task: &Task, attempt: &Attempt) -> Result<()> {
@@ -257,7 +220,7 @@ impl Orchestrator {
                 tracked,
                 &source.input.commit,
                 &current.head_commit,
-                Some(Self::FAILED_CHECKS_HOLD),
+                Some("failed_checks"),
             );
         }
         if current.checks != ChecksState::Success {

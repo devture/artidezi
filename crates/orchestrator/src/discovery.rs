@@ -124,7 +124,7 @@ impl Orchestrator {
                     continue;
                 }
                 source.closed = true;
-                source.paused = false;
+                source.release_hold();
                 source.status = "Project removed; tracking retired".into();
                 if let Some(task_id) = &source.last_task_id {
                     let task = self.db.get_task(task_id)?;
@@ -322,6 +322,7 @@ impl Orchestrator {
             runs: 0,
             paused: false,
             status: "observed".into(),
+            hold: None,
             follow_up: None,
             target_conflict: None,
             target_conflict_waived_head: None,
@@ -360,7 +361,7 @@ impl Orchestrator {
                     // The reopened revision starts a new budget; immutable task source references
                     // retain the previous lifecycle's evidence and publication history.
                     source.runs = 0;
-                    source.paused = false;
+                    source.release_hold();
                     source.last_task_id = None;
                 }
             }
@@ -370,12 +371,19 @@ impl Orchestrator {
             Ok(Some(task)) => report.queued.push(task.id),
             Ok(None) => self.db.save_pull_request_source(&source)?,
             Err(error) => {
-                source.paused = !matches!(
-                    error,
-                    OrchestratorError::Forge(artidezi_forge::ForgeError::RetryAfter { .. })
-                );
-                source.status = format!("Preparation failed: {error}");
-                if !source.paused {
+                let status = format!("Preparation failed: {error}");
+                // A temporary failure must not stop the change; a later try reads it afresh.
+                let deferred = error.is_temporary()
+                    || matches!(
+                        error,
+                        OrchestratorError::Forge(artidezi_forge::ForgeError::RetryAfter { .. })
+                    );
+                if deferred {
+                    source.status = status;
+                } else {
+                    source.place_hold(Hold::new(HoldReason::Intake, status));
+                }
+                if deferred {
                     source.follow_up = Some(PullRequestFollowUp {
                         at: now + SignedDuration::from_secs(FOLLOW_UP_INTERVAL_SECONDS),
                         reason: PullRequestFollowUpReason::Retry,
@@ -415,9 +423,8 @@ impl Orchestrator {
                 continue;
             };
             if source.forge != repository.forge || source.remote != repository.remote {
-                source.paused = true;
                 source.follow_up = None;
-                source.status = "Watched repository identity changed; restore configuration or explicitly migrate tracking".into();
+                source.place_hold(Hold::new(HoldReason::Intake, "Watched repository identity changed; restore configuration or explicitly migrate tracking"));
                 self.db.save_pull_request_source(&source)?;
                 continue;
             }
@@ -478,7 +485,10 @@ impl Orchestrator {
             source.status = "Source PR is closed or merged".into();
             if let Some(id) = &source.last_task_id {
                 let task = self.db.get_task(id)?;
-                if task.state == TaskState::WaitingForCi {
+                if matches!(
+                    task.state,
+                    TaskState::WaitingForCi | TaskState::WaitingToRetry
+                ) {
                     // The scheduled delivery check reconciles an accepted approval/merge receipt
                     // before deciding whether closure needs attention. Discovery must not erase it.
                     return Ok(None);
@@ -529,16 +539,17 @@ impl Orchestrator {
         }
         let repository = &self.config.projects[&source.project].repositories[&source.repository_id];
         if source.forge != repository.forge || source.remote != repository.remote {
-            source.paused = true;
-            source.status = "Watched repository identity changed; restore configuration or explicitly migrate tracking".into();
+            source.place_hold(Hold::new(HoldReason::Intake, "Watched repository identity changed; restore configuration or explicitly migrate tracking"));
             return Ok(None);
         }
         if pull.target_branch != repository.branch
             || handler
                 .is_none_or(|h| h.id != source.handler_id || h.action == PullRequestAction::Ignore)
         {
-            source.paused = true;
-            source.status = "Routing changed; explicit resume required".into();
+            source.place_hold(Hold::new(
+                HoldReason::Intake,
+                "Routing changed; explicit resume required",
+            ));
             return Ok(None);
         }
         let handler = handler.expect("checked handler");
@@ -551,6 +562,16 @@ impl Orchestrator {
                     source.status = "Source changed; waiting for delivery reconciliation".into();
                 } else {
                     source.status = "Waiting for CI; delivery will continue automatically".into();
+                }
+                return Ok(None);
+            }
+            if task.state == TaskState::WaitingToRetry {
+                // Delivery retries own this change; a new head only brings the next one forward.
+                if source_of(&task)?.is_some_and(|s| s.input.commit != pull.head_commit)
+                    && let Some(hold) = &mut source.hold
+                    && hold.reason == HoldReason::Delivery
+                {
+                    hold.next_at = Some(now);
                 }
                 return Ok(None);
             }
@@ -580,16 +601,29 @@ impl Orchestrator {
                 return Ok(None);
             }
             if task.state == TaskState::NeedsHuman {
-                source.paused = true;
-                source.status = "The last evaluation needs human input".into();
+                let lost = self.db.latest_attempt(id)?.is_some_and(|attempt| {
+                    matches!(attempt.state, AttemptState::Lost | AttemptState::Invalid)
+                });
+                let reason = if lost {
+                    HoldReason::FailedRun
+                } else {
+                    HoldReason::Unclassified
+                };
+                source.place_hold(self.new_hold(
+                    &task,
+                    reason,
+                    "The last evaluation needs human input",
+                )?);
                 return Ok(None);
             }
             if task.state == TaskState::Working {
                 self.db
                     .set_task_state(id, TaskState::NeedsHuman, "discovery")?;
-                source.paused = true;
-                source.status =
-                    "Interrupted result processing; inspect the task before resuming".into();
+                source.place_hold(self.new_hold(
+                    &task,
+                    HoldReason::FailedRun,
+                    "Interrupted result processing; inspect the task before resuming",
+                )?);
                 return Ok(None);
             }
             if task.state == TaskState::Done
@@ -653,8 +687,10 @@ impl Orchestrator {
             }
         }
         if source.runs >= discovery.max_runs_per_pull_request {
-            source.paused = true;
-            source.status = "Automatic evaluation budget reached; explicit resume required".into();
+            source.place_hold(Hold::new(
+                HoldReason::Budget,
+                "Automatic evaluation budget reached; explicit resume required",
+            ));
             return Ok(None);
         }
         let active = self
@@ -969,7 +1005,7 @@ impl Orchestrator {
         let mut updated = source.clone();
         updated.last_task_id = Some(task.id.clone());
         updated.runs += 1;
-        updated.paused = false;
+        updated.release_hold();
         updated.target_conflict = None;
         // A waiver covers one requested evaluation, not later returns to the same head.
         updated.target_conflict_waived_head = None;
@@ -1034,11 +1070,16 @@ impl Orchestrator {
     /// Stop queued automatic work; a currently leased attempt may finish without reactivation.
     pub fn pause_pull_request(&mut self, id: &str, actor: &str) -> Result<TrackedPullRequest> {
         let mut source = self.db.get_pull_request_source(id)?;
-        source.paused = true;
-        source.status = "Automatic assessments paused by a human".into();
+        source.place_hold(Hold::new(
+            HoldReason::OperatorPause,
+            "Automatic assessments paused by a human",
+        ));
         self.db.save_pull_request_source(&source)?;
         if let Some(task_id) = &source.last_task_id
-            && self.db.get_task(task_id)?.state == TaskState::WaitingForCi
+            && matches!(
+                self.db.get_task(task_id)?.state,
+                TaskState::WaitingForCi | TaskState::WaitingToRetry
+            )
         {
             self.db
                 .set_task_state(task_id, TaskState::NeedsHuman, actor)?;
@@ -1145,7 +1186,7 @@ impl Orchestrator {
             }
         }
         source.runs = 0;
-        source.paused = false;
+        source.release_hold();
         // Retain task history through immutable source references, but allow explicit same-head retry.
         source.last_task_id = None;
         source.status = "Resumed by a human; waiting for the next eligible scan".into();
@@ -1239,7 +1280,7 @@ impl Orchestrator {
         self.require_resolved_source_proposals(task)?;
         let mut source = source;
         source.runs = 0;
-        source.paused = false;
+        source.release_hold();
         source.handler_id = handler.id.clone();
         source.observed_head = pull.head_commit.0.clone();
         source.head_observed_at = Timestamp::now();
@@ -1256,11 +1297,15 @@ impl Orchestrator {
             .expect("atomically queued task"))
     }
 
-    pub(crate) fn pause_task_source(&self, task: &Task, reason: &str) -> Result<()> {
+    pub(crate) fn pause_task_source(
+        &self,
+        task: &Task,
+        reason: HoldReason,
+        message: &str,
+    ) -> Result<()> {
         if let Some(source) = source_of(task)? {
             let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-            tracked.paused = true;
-            tracked.status = reason.into();
+            tracked.place_hold(self.new_hold(task, reason, message)?);
             self.db.save_pull_request_source(&tracked)?;
         }
         Ok(())
@@ -1313,9 +1358,16 @@ impl Orchestrator {
                 self.db
                     .set_task_state(&task.id, TaskState::Done, "discovery")?
             }
-            Outcome::NeedsHuman | Outcome::Failed => {
-                self.needs_human(task, attempt, "shadow assessment needs human input")?
-            }
+            outcome @ (Outcome::NeedsHuman | Outcome::Failed) => self.hold_for_person(
+                task,
+                attempt,
+                if outcome == Outcome::Failed {
+                    HoldReason::FailedRun
+                } else {
+                    HoldReason::Question
+                },
+                "shadow assessment needs human input",
+            )?,
         }
         Ok(())
     }

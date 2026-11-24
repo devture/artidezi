@@ -233,12 +233,13 @@ pub(in super::super) fn incoming_changes(
             && !(label == "Ready for review"
                 && source.status == "Published adaptations await review")
         {
-            write!(
-                body,
-                "<p class=\"source-reason muted\">{}</p>",
-                e(&source_status(source, Some(settle_seconds)))
-            )
-            .unwrap();
+            let reason = match &source.hold {
+                Some(hold) if hold.reason == HoldReason::Delivery => {
+                    retry_line(hold, &token.access.timezone)
+                }
+                _ => e(&source_status(source, Some(settle_seconds))).to_string(),
+            };
+            write!(body, "<p class=\"source-reason muted\">{reason}</p>").unwrap();
         }
         body.push_str("</div><div class=\"task-row-end source-end\">");
         if source.paused
@@ -362,6 +363,13 @@ fn evaluation_status(
             "clock",
             "Delivery continues automatically when checks pass and the assessment is still current",
         )
+    } else if task.is_some_and(|t| t.state == TaskState::WaitingToRetry) {
+        (
+            "Waiting to retry",
+            "waiting_to_retry",
+            "clock",
+            "A temporary failure interrupted delivery; it is tried again automatically",
+        )
     } else if task.is_some_and(|t| t.state == TaskState::AwaitingReview) {
         (
             "Ready for review",
@@ -468,6 +476,7 @@ mod tests {
                 last_task_id: Some("tsk_example".into()),
                 runs: 1,
                 paused: false,
+                hold: None,
                 status: "Waiting for settle window".into(),
                 follow_up: None,
                 target_conflict: None,
@@ -497,6 +506,11 @@ mod tests {
         task.state = TaskState::Done;
         assert_eq!(evaluation_status(&source, Some(&task), true).0, "Paused");
         source.paused = false;
+        task.state = TaskState::WaitingToRetry;
+        assert_eq!(
+            evaluation_status(&source, Some(&task), true).0,
+            "Waiting to retry"
+        );
         task.state = TaskState::WaitingForCi;
         assert_eq!(
             evaluation_status(&source, Some(&task), true).0,

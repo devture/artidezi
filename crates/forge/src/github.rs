@@ -182,7 +182,7 @@ impl GithubReader {
                 || expected.is_some_and(|count| count != batch.total_count)
                 || (!status_state.is_empty() && status_state != batch.state)
             {
-                return Err(ForgeError::Other(
+                return Err(ForgeError::Temporary(
                     "GitHub commit statuses changed during inspection; retry".into(),
                 ));
             }
@@ -208,7 +208,7 @@ impl GithubReader {
             if expected.is_some_and(|count| count != batch.total_count)
                 || batch.check_runs.iter().any(|run| run.head_sha != head)
             {
-                return Err(ForgeError::Other(
+                return Err(ForgeError::Temporary(
                     "GitHub check runs changed during inspection; retry".into(),
                 ));
             }
@@ -237,7 +237,7 @@ impl GithubReader {
                 .len()
                 != check_runs.len()
         {
-            return Err(ForgeError::Other(
+            return Err(ForgeError::Temporary(
                 "GitHub checks changed during pagination; duplicate records found".into(),
             ));
         }

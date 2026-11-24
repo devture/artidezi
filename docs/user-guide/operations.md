@@ -246,6 +246,7 @@ Incoming changes lists before submitting it again: a client timeout does not can
 | Task stays queued | Correct pool, running worker, supported schema and installed harness version |
 | Discovered PR waits | Author/branch match, draft state, settle window, checks, capacity and source hold |
 | PR never re-evaluates | Already evaluated head, exhausted budget, needs-human/failure hold; inspect before explicit resume. A failed-checks delivery hold releases itself once checks pass or the head changes |
+| Task waits to retry | The cause shown on the task: forge status, network, rate limit or a restart during delivery; nothing to do unless retries run out |
 | Needs-human after a patch | Actual verification records, allowed paths, source freshness and publication ownership/conflicts |
 | Logged out unexpectedly | Check session expiry, password reset, account disable or cleared browser cookies |
 

@@ -180,7 +180,7 @@ try {
   assert(await evaluate("document.querySelector('.task-board').getBoundingClientRect().top < 350"), 'The task list should start near the top');
   assert.equal(await evaluate("document.querySelectorAll('.filter-count').length"), 7, 'Each task filter needs a counter');
   assert.equal(await evaluate("document.querySelectorAll('.filter-tab > .icon').length"), 7, 'Each task filter has a status icon');
-  assert(await evaluate("document.querySelector('.filter-tab[value=waiting]').textContent.includes('Waiting for CI')"), 'CI waiting has its own filter');
+  assert(await evaluate("document.querySelector('.filter-tab[value=waiting]').textContent.includes('Waiting')"), 'Waiting for CI or a retry has its own filter');
   const beforeHover = await evaluate("JSON.stringify(document.querySelector('.filter-tab').getBoundingClientRect().toJSON())");
   const hover = await evaluate("({x: document.querySelector('.filter-tab').getBoundingClientRect().x + 15, y: document.querySelector('.filter-tab').getBoundingClientRect().y + 15})");
   await call('Input.dispatchMouseEvent', {type: 'mouseMoved', ...hover});

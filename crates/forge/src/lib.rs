@@ -22,8 +22,16 @@ use artidezi_git::cache::HttpsCredentials;
 pub enum ForgeError {
     #[error("GitHub credential was rejected or expired; verify the App installation and key")]
     AuthenticationRejected,
+    /// `rate_limited` distinguishes an advised wait from a refusal that GitHub reports the same way
+    /// (HTTP 403), where waiting alone does not help.
     #[error("GitHub permission/rate limit: retry after {retry_at}")]
-    RetryAfter { retry_at: Timestamp },
+    RetryAfter {
+        retry_at: Timestamp,
+        rate_limited: bool,
+    },
+    /// The forge could not be reached or failed on its side. A write may still have been applied.
+    #[error("{0}")]
+    Temporary(String),
     #[error("{entity} {id} not found")]
     NotFound { entity: &'static str, id: String },
     #[error("head moved: expected {expected}, found {actual}")]
@@ -42,6 +50,39 @@ pub enum ForgeError {
 }
 
 pub type Result<T> = std::result::Result<T, ForgeError>;
+
+impl ForgeError {
+    /// Whether the same operation can succeed later without anyone changing anything.
+    pub fn is_temporary(&self) -> bool {
+        matches!(
+            self,
+            Self::Temporary(_)
+                | Self::RetryAfter {
+                    rate_limited: true,
+                    ..
+                }
+                | Self::Git(artidezi_git::GitError::Temporary(_))
+        )
+    }
+}
+
+/// HTTP statuses that report a failure on the server's side or a request for patience.
+fn temporary_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500..=599)
+}
+
+/// Whether a request failed on the way: unreachable host, timeout or dropped connection.
+fn connection_failed(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Timeout(_)
+        | ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::Protocol(_) => true,
+        // Invalid certificates surface as malformed data rather than as a lost connection.
+        ureq::Error::Io(error) => error.kind() != std::io::ErrorKind::InvalidData,
+        _ => false,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MergeRequestState {

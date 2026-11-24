@@ -76,7 +76,9 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | Previously closed source reopens with a new head | Renew budget and clear pause/latest-task link only after the prior task and attempt are terminal and all adaptations are resolved |
 | New eligible source head that conflicts with its target (default `target_conflicts`) | No task or budget charge; record the head, target and paths and wait for either to move |
 | New eligible source head | Queue within project capacity and the persisted source budget |
-| Failed/lost/needs-human/interrupted work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
+| Failed/lost/needs-human work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
+| Delivery interrupted by a temporary failure or restart | No new work; the [delivery retry](lifecycle.md#delivery-retries) owns the source, and a new head brings it forward |
+| Temporary forge or Git failure while preparing | Try again in two minutes without a hold |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |
 | Published adaptations and a proven equivalent source rebase | Keep proposals awaiting review; no forge writes, new task or budget charge |
 | Published adaptations superseded by a new head of the still-open source | Comment on and close those proposals, then retire the task the same way |
@@ -189,7 +191,8 @@ transitions; the real Forgejo suite verifies its PR-ref behavior.
 
 Publish mode uses [source publication](../../crates/orchestrator/src/source_publish.rs): current
 source, target/context and authority checks, durable plans, zero-lease branch creation, owned PR
-receipts and COMMENT review deduplication. Incomplete publication is held for explicit retry.
+receipts and COMMENT review deduplication. Incomplete publication is retried after temporary failures
+and restarts, and otherwise held for explicit retry.
 Adaptation titles name the source PR (`Adapt #3: <first commit subject>`) and are bounded to fit
 Forgejo's byte limit after mention sanitizing. Plans recorded by an older release replay their
 stored title on retry; proposals already open keep it, and later adaptations use the new form.
@@ -204,8 +207,8 @@ failed/needs-human results and explicit operator pauses retain their holds. CI-w
 reconciliation uses the same guard; discovery leaves that decision to the delivery reconciler.
 Unpublished results keep these rules even for equivalent rebases. Equivalence preserves an existing
 adaptation delivery; it does not authorize publishing a verdict for a commit the worker did not assess.
-A delivery hold for failed checks also retires on a new head, even after its approval was published,
-because it is recheckable only when no approval or merge outcome is unconfirmed; see [GitHub internals](github-integration.md#safe-source-actions).
+A delivery hold for failed checks and a waiting delivery retry also retire on a new head, even after an
+approval was published or a merge was planned, because both are bound to the assessed head; see [GitHub internals](github-integration.md#safe-source-actions).
 Awaiting proposals suppress new evaluations. When the source head moves, the delivery reconciler and
 held-task recovery first try to preserve the existing adaptations. The controller fetches the configured
 target branch and forge PR-head ref into that repository's bare cache and checks both against the

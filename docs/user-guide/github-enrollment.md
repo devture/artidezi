@@ -202,10 +202,11 @@ credentials. GitHub Enterprise and arbitrary custom API endpoints are not suppor
 
 The controller persists server-advised backoff across restarts. **Scan now** cannot bypass it.
 Authentication/permission failures are visible as scan errors, never fabricated source closure.
-Preparation failures may pause a source; inspect it before resuming. A rate-limited preparation can
-retry on a later eligible scan. If freshness cannot be checked after a completed worker result, the
-task requests human input rather than treating stale evidence as current. Publication failures pause
-the source; use the explicit retry described below. Eligible unchanged approvals/merges with pending
+Preparation failures may pause a source; inspect it before resuming. A preparation that hit a rate
+limit or an outage is tried again. If freshness cannot be checked after a completed worker result, the
+task [retries delivery](pr-discovery.md#automatic-delivery-retries) when the cause is temporary and
+otherwise requests human input, rather than treating stale evidence as current. Other publication failures
+pause the source; use the explicit retry described below. Eligible unchanged approvals/merges with pending
 CI instead wait automatically, as described under [safe updates](#approve-or-merge-safe-updates).
 
 The [integration internals](../architecture/github-integration.md) describe the boundaries and
@@ -236,11 +237,12 @@ links remain readable; raw HTML in evidence notes is displayed as text, and ment
 
 The source head, eligibility, target/context commits, repository identity and configured write
 scope are checked before each effect. Publication is not atomic across Git and multiple API calls:
-a branch or PR may exist when a later step fails. The task then needs attention. **Retry publication**
+a branch or PR may exist when a later step fails. After a temporary failure or a restart during
+delivery, the task [retries by itself](pr-discovery.md#automatic-delivery-retries); otherwise it needs
+attention. **Retry publication**
 (or `POST /admin/v1/tasks/{id}/retry-publication` with `{"actor":"admin"}`) uses the same validated
 result and checks existing receipts before writing; it does not run another worker. Closed, edited,
-foreign or moved proposals are not overwritten or duplicated. A restart during delivery exposes
-the same retry action. A stale source/base requires a fresh evaluation instead.
+foreign or moved proposals are not overwritten or duplicated. A stale source/base requires a fresh evaluation instead.
 
 When a validated proposal changes one of the forge's workflow directories (`.github/workflows` on
 GitHub)—for example, a library test matrix, application build, or deployment verification job—ordinary
@@ -259,7 +261,7 @@ Read `attempt_id` and `attempt_record.sha256` from `GET /admin/v1/tasks/{task_id
 reason are recorded in `publication.workflow_authorized`, bound to that immutable attempt record.
 The endpoint immediately uses normal publication retry; it does not run the worker again. A wrong
 attempt or digest is rejected. A later evaluation needs its own authorization. If a forge response
-is lost after the grant, use ordinary **Retry publication** to reconcile the existing branch and PR.
+is lost after the grant, ordinary delivery retries reconcile the existing branch and PR.
 The controller still checks current source, repository scope, allowed paths, configured publication
 effects and proposal ownership before effects. The App must have Workflows write permission for the
 selected repository, but ordinary source evaluations continue to receive tokens without it.
@@ -334,15 +336,15 @@ Changing policy never promotes a stored comment-only or dry-run task; start a fr
 2 minutes, subject to maintenance scheduling and forge backoff, without holding a worker or starting another evaluation.
 The wait and its next check survive restarts. Before approval/merge it repeats source/context
 freshness, review and authority checks. Pausing evaluations or closing the task stops automatic
-delivery. Failed checks, changed inputs or permissions, and reviewer objections need attention;
-subsequent green checks do not silently release those holds. Missing/all-skipped CI remains waiting
+delivery. Changed inputs or permissions and reviewer objections need attention. Failed checks hold
+the task too, until they pass on the same head or the head moves. Missing/all-skipped CI remains waiting
 until usable checks arrive or the task is paused/closed. Forge rate-limit backoff is respected.
 
-**Retry publication** remains available for interrupted delivery and other held valid results.
+**Retry publication** remains available for held valid results, and to retry a waiting delivery now.
 Held tasks don't enter CI waiting by themselves; an explicit retry may, if pending CI is then the
 only blocker. A failed controller gate needs inspection or a new
 assessment. A lost API
-response is reconciled against the exact bot-owned approval. A planned approval with no matching
-receipt requires inspection and a fresh evaluation; retry does not recreate a potentially deleted
-review. An already merged source is recorded
+response is reconciled against the exact bot-owned approval. A planned approval that was never
+confirmed is posted again only while the forge shows no trace of it. A confirmed approval that is
+missing, edited or dismissed is never recreated; it requires inspection and a fresh evaluation. An already merged source is recorded
 without sending another merge or claiming who merged it when that cannot be established.

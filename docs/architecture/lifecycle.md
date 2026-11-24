@@ -31,6 +31,7 @@ These are separate identities because completing an assessment must not erase it
 | --- | --- |
 | `working` | Queued/running or processing an attempt |
 | `waiting_for_ci` | Accepted unchanged source assessment waits for CI before automatic approval/merge |
+| `waiting_to_retry` | A temporary failure interrupted delivery of a validated result; it is tried again |
 | `awaiting_review` | Published proposal(s) await review/merge |
 | `needs_human` | A question, invalid/failed result or uncertain delivery requires attention |
 | `done` | Delivery completed, or a shadow assessment was recorded; terminal |
@@ -60,8 +61,39 @@ and current forge state. Tag proposals from the agent are advisory and constrain
 
 All repository series/checks are validated before starting publication. Cross-repository forge writes
 are nevertheless not atomic. A failure after one PR is created preserves that progress and moves the
-task to human attention. Do not assume retrying an arbitrary failed HTTP call is safe. Reconciliation
-and ownership checks matter before any retry of a forge side effect.
+task to a delivery retry or human attention. Do not assume retrying an arbitrary failed HTTP call is
+safe. Reconciliation and ownership checks matter before any retry of a forge side effect.
+
+## Holds
+
+A stuck change carries one `Hold` in its tracking record; a manual task waiting to retry carries it
+in `task_holds`. It says why (`reason`), what can release it (`releases`: a time, green checks, a new
+head, or only a person when empty), the assessed head and target, retries used and when to look again.
+`TrackedPullRequest::place_hold` and `release_hold` change it together with `paused`. An operator's
+pause is a reason of its own that no other hold replaces and no automation releases. `hold_task`
+stores the hold, task state and audit event in one transaction.
+
+[`process_holds`](../../crates/orchestrator/src/holds.rs) is the maintenance step that acts on due
+holds: delivery retries and the recheck of failed checks. At startup, holds from older releases are
+classified where their stored events make that certain; the rest stay `unclassified` for a person.
+
+### Delivery retries
+
+`ForgeError::Temporary`, a rate-limited `RetryAfter` and `GitError::Temporary` mark failures that time
+can fix: server-side HTTP statuses, timeouts, refused or dropped connections and reads that raced
+with a change. GitHub answers both missing permissions and rate limits with 403; only the latter is
+temporary. `delivery_failed` turns such an error into `waiting_to_retry` with a delivery hold, or into
+a hold for a person once the limit is reached or for any other error. Used retries are the
+`delivery.retry_scheduled` events of the attempt since a person last requested a retry, so they
+survive restarts. Before any effect, a retry returns the task to `working` and records
+`delivery.retry_started`; a crash after that is the next interrupted delivery, scheduled at startup.
+
+A retry runs the ordinary outcome code again: frozen plans, current gates, then lookups. A moved head
+leads to a fresh assessment. A planned approval or merge names its commit and cannot act on another
+one; a proposal whose receipt was lost is recorded only if it equals its plan, and then closed as
+superseded. Manual merge-request tasks refuse to recreate a proposal that someone decided on since.
+Direct pushes are not repeated. Adaptation merges keep `awaiting_review` and count their
+`adaptation.merge_planned` events at the same head instead.
 
 ## Proposal branch cleanup
 
@@ -196,7 +228,8 @@ This change adds neither parallel imports/publications nor worker execution conc
 SQLite provides transactional state changes, but Git/artifact writes and remote forge operations
 are not one global transaction. Source task/attempt/tracking insertion is atomic; staged
 artifacts can remain after interrupted preparation. Startup applies migrations and retains audit
-history. Interrupted result application, lost leases and partial delivery must surface for inspection.
+history. Interrupted result application is retried where delivery is repeatable; lost leases and
+partial delivery otherwise surface for inspection.
 The implementation assumes one active orchestrator for a data directory; multiple replicas and a
 transactional external effect queue are not implemented.
 
@@ -205,8 +238,8 @@ transactional external effect queue are not implemented.
 Source tasks use the handler's frozen dry-run or publish mode. Publish mode supports COMMENT
 reviews, adaptation PRs (human-reviewed unless the handler opts into merging them once checks pass)
 and explicitly configured unchanged-source approval/merge.
-Durable plans precede Git/API effects. A process restart during incomplete delivery holds it for
-explicit retry. A task explicitly in `waiting_for_ci` retains its scheduled check and can resume
+Durable plans precede Git/API effects. A process restart during incomplete delivery schedules a
+[delivery retry](#delivery-retries), or holds it for a person where delivery is not repeatable. A task explicitly in `waiting_for_ci` retains its scheduled check and can resume
 the accepted result automatically without another worker. If the head changes before any
 publication activity, the superseded-result recovery described above can instead retire it
 and let discovery assess the new revision. A hold for failed checks at approval/merge is rechecked:

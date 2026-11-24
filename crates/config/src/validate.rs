@@ -476,6 +476,14 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             {
                 problems.push(problem(format!("{ctx}: PR discovery needs an interval >= 10 seconds, positive limits, repositories and handlers")));
             }
+            let retries = discovery.retries.delivery;
+            if retries.max > 20
+                || !(1..=10).contains(&retries.multiplier)
+                || !(10..=86_400).contains(&retries.initial_delay_seconds)
+                || !(retries.initial_delay_seconds..=86_400).contains(&retries.max_delay_seconds)
+            {
+                problems.push(problem(format!("{ctx}: retries.delivery needs max 0-20, multiplier 1-10 and 10 <= initial_delay_seconds <= max_delay_seconds <= 86400")));
+            }
             let mut ids = BTreeSet::new();
             let mut catch_all = false;
             for handler in &discovery.handlers {

@@ -33,6 +33,7 @@ impl Orchestrator {
             let task = self.db.get_task(&attempt.task_id)?;
             self.pause_task_source(
                 &task,
+                HoldReason::FailedRun,
                 "Validation of the worker result did not finish; inspect it before resuming",
             )?;
             self.db.record_event(
@@ -100,16 +101,13 @@ impl Orchestrator {
                 Err(error) => report.errors.push(format!("artifact cleanup: {error}")),
             }
         }
+        // Before anything that places holds, so that one pass never retries its own failure.
+        let holds = self.process_holds(now)?;
+        report.reconciled.extend(holds.moved);
+        report.errors.extend(holds.errors);
         for task in self.db.list_tasks(Some(TaskState::WaitingForCi))? {
             match self.resume_source_ci(&task, now) {
                 Ok(state) => report.reconciled.push((task.id, state)),
-                Err(e) => report.errors.push(format!("{}: {e}", task.id)),
-            }
-        }
-        for task in self.db.list_tasks(Some(TaskState::NeedsHuman))? {
-            match self.recheck_failed_source_checks(&task, now) {
-                Ok(state) if state != task.state => report.reconciled.push((task.id, state)),
-                Ok(_) => {}
                 Err(e) => report.errors.push(format!("{}: {e}", task.id)),
             }
         }
@@ -226,7 +224,7 @@ impl Orchestrator {
     /// A human closes a task without delivery. Any running attempt is cancelled.
     pub fn close_task(&mut self, task_id: &str, actor: &str) -> Result<Task> {
         let task = self.db.get_task(task_id)?;
-        self.pause_task_source(&task, "Paused by a human")?;
+        self.pause_task_source(&task, HoldReason::OperatorPause, "Paused by a human")?;
         if let Some(latest) = self.db.latest_attempt(task_id)?
             && !latest.state.is_terminal()
         {

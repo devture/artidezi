@@ -109,7 +109,10 @@ impl Orchestrator {
     pub(crate) fn retry_manual_publication(&mut self, task_id: &str, actor: &str) -> Result<Task> {
         let mut task = self.db.get_task(task_id)?;
         if task.kind != TaskKind::Manual
-            || task.state != TaskState::NeedsHuman
+            || !matches!(
+                task.state,
+                TaskState::NeedsHuman | TaskState::WaitingToRetry
+            )
             || !matches!(
                 task.delivery_mode,
                 DeliveryMode::MergeRequest | DeliveryMode::MergeRequestWithAutomerge
@@ -156,9 +159,10 @@ impl Orchestrator {
         self.db.set_task_state(task_id, TaskState::Working, actor)?;
         task.state = TaskState::Working;
         if let Err(error) = self.publish_proposal(&task, &attempt, &job, &record, &result) {
-            self.needs_human(
+            self.delivery_failed(
                 &task,
                 &attempt,
+                &error,
                 &format!("publication retry failed: {error}"),
             )?;
         }
@@ -238,30 +242,29 @@ impl Orchestrator {
                     "approve_untouched is not yet wired to a merge effect",
                 )
             }
-            Outcome::NeedsHuman => self.needs_human(task, attempt, "agent asked for human input"),
-            Outcome::Failed => self.needs_human(task, attempt, "agent reported failure"),
+            Outcome::NeedsHuman => self.hold_for_person(
+                task,
+                attempt,
+                HoldReason::Question,
+                "agent asked for human input",
+            ),
+            Outcome::Failed => self.hold_for_person(
+                task,
+                attempt,
+                HoldReason::FailedRun,
+                "agent reported failure",
+            ),
         }
     }
 
+    /// Delivery stopped and only a person can decide what happens next.
     pub(crate) fn needs_human(
         &mut self,
         task: &Task,
         attempt: &Attempt,
         reason: &str,
     ) -> Result<()> {
-        self.pause_task_source(task, reason)?;
-        self.db.record_event(
-            Some(&task.id),
-            Some(&attempt.id),
-            "orchestrator",
-            "task.needs_human",
-            serde_json::json!({"reason": reason}),
-        )?;
-        if task.state != TaskState::NeedsHuman && !task.state.is_terminal() {
-            self.db
-                .set_task_state(&task.id, TaskState::NeedsHuman, "orchestrator")?;
-        }
-        Ok(())
+        self.hold_for_person(task, attempt, HoldReason::DeliveryStopped, reason)
     }
 
     /// Re-creates the series with the bot identity in the cache and returns the new head plus the
@@ -457,13 +460,14 @@ impl Orchestrator {
     }
 
     /// Recorded before any push, so that a retry reuses the same commits and recognizes them.
+    /// The last value tells whether an earlier try already planned this publication.
     fn plan_manual_publication(
         &mut self,
         task: &Task,
         attempt: &Attempt,
         resolved: &ResolvedRepository,
         collection: &RepositoryCollection,
-    ) -> Result<(CommitSha, String)> {
+    ) -> Result<(CommitSha, String, bool)> {
         let previous = self.db.list_events(&task.id)?.into_iter().find(|event| {
             event.kind == "manual_publication.planned"
                 && event.attempt_id.as_deref() == Some(&attempt.id)
@@ -472,7 +476,7 @@ impl Orchestrator {
         if let Some(event) = previous {
             let field = |name: &str| event.payload[name].as_str().map(str::to_owned);
             if let (Some(head), Some(cache_ref)) = (field("head"), field("cache_ref")) {
-                return Ok((CommitSha(head), cache_ref));
+                return Ok((CommitSha(head), cache_ref, true));
             }
         }
         let (head, cache_ref) = self.recreate_in_cache(resolved, collection, &attempt.id)?;
@@ -483,7 +487,7 @@ impl Orchestrator {
             "manual_publication.planned",
             serde_json::json!({"repository": collection.id, "head": head, "cache_ref": cache_ref}),
         )?;
-        Ok((head, cache_ref))
+        Ok((head, cache_ref, false))
     }
 
     fn check_proposal_revision(
@@ -543,8 +547,23 @@ impl Orchestrator {
             return Ok(false);
         }
 
-        let (new_head, publish_ref) =
+        let (new_head, publish_ref, planned_before) =
             self.plan_manual_publication(task, attempt, &resolved, collection)?;
+        // An earlier try may have created the proposal without learning so. If someone merged or
+        // closed it since, pushing again would recreate what they already decided on.
+        if planned_before && existing.is_none() {
+            let decided = self
+                .forge(&resolved.forge)?
+                .proposals_for_branch(&resolved.remote, &branch)?
+                .iter()
+                .any(|info| info.state != ForgeMrState::Open && info.head_commit == new_head);
+            if decided {
+                return Err(OrchestratorError::Invalid(format!(
+                    "{}: the proposal from an interrupted publication was already merged or closed",
+                    collection.id
+                )));
+            }
+        }
         let remote_head = self
             .forge(&resolved.forge)?
             .branch_head_optional(&resolved.remote, &branch)?;

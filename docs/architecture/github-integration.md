@@ -159,16 +159,20 @@ checks are treated as before. The adapters enforce the same rule independently: 
 and author, lets them approve (or, for merge handlers, merge) a source with no checks. Worker risk ratings, evidence and questions are retained as
 audit context; they are not a second independent veto over the configured action.
 
-An `assessment.approval_planned` event precedes APPROVE. Retry accepts exactly one matching bot,
-commit, body and APPROVED state; edited, dismissed or missing approvals are not recreated. The
+An `assessment.approval_planned` event precedes APPROVE. Retry accepts only reviews matching bot,
+commit, body and APPROVED state; edited or dismissed approvals are not recreated. The
 expected body is the planned one, so checks that appear after a check-less approval do not make it
 look foreign.
-If a planned approval has no matching receipt, explicit retry stops; inspect before a new evaluation. A
+A planned approval without a receipt is posted again only if it was never confirmed by
+`assessment.published` and neither its marker nor another unmarked review of the bot at that commit
+exists; otherwise retry stops for inspection. If the first one surfaces late, two identical approvals
+count as one. A
 `source.merge_planned` event precedes the merge API call, which includes the expected head SHA.
 A successful response records `source.merge_accepted`. A matching merged source plus the exact owned
 approval records `source.merge_observed` and completes without another write. This also handles
 another actor merging immediately after approval and lost approval/merge responses. Observing the
-merge does not assert the actor when the receipt was lost. Paused/superseded tasks cannot recover
+merge does not assert the actor when the receipt was lost. A lost response of a merge that did not
+happen leads to another call at the same expected head. Paused/superseded tasks cannot recover
 or publish without the existing explicit retry path.
 
 The merge endpoint has no expected-base parameter; APPROVE has no atomic expected-head condition.
@@ -176,7 +180,8 @@ Read/effect races remain, so repository required checks, up-to-date rules and st
 must enforce the operator's final policy. Do not grant the App bypass permission. Missing CI stays
 pending, errors never become green checks, and an empty check set qualifies only under the opt-in
 above. ArtiDezi neither changes protection nor falls back to
-another merge method. Failed gates hold the task for inspection/retry. Pending checks on an otherwise
+another merge method. Failed gates hold the task for inspection/retry; temporary failures schedule a
+[delivery retry](lifecycle.md#delivery-retries). Pending checks on an otherwise
 eligible unchanged result use a distinct `waiting_for_ci` state. Failed checks hold the task too,
 but that hold is rechecked (below).
 
@@ -185,22 +190,18 @@ next-check deadline atomically in SQLite (`source_ci_waits`). Maintenance reserv
 before forge reads, on a fixed 2-minute cadence. Repeated pending checks
 do not add duplicate activity events. Waiting occupies no worker or active-evaluation slot; discovery
 does not create another task for that source. Removed projects/rules are still checked and held.
-Preflight repeats authority, source/context freshness and review checks. Forge backoff keeps the
-task waiting; other read failures require attention. A known successful CI preflight changes the
+Preflight repeats authority, source/context freshness and review checks. Forge backoff and temporary
+read failures keep the task waiting; other failures require attention. A known successful CI preflight changes the
 task to `working` before effectful delivery, which repeats the existing gates and reconciles exact
-receipts. If checks become pending again, delivery can return to waiting. Ambiguous write failures
-remain explicit recovery, including crashes after entering `working`. Human pause/close, fresh
-evaluation or any other departure from waiting deletes the scheduled check. Human holds
-are never promoted automatically, with one exception.
+receipts. If checks become pending again, delivery can return to waiting. Lost write responses and
+crashes after entering `working` become delivery retries. Human pause/close, fresh
+evaluation or any other departure from waiting deletes the scheduled check.
 
-The source-action gate reports failed checks as a distinct error. During first delivery that gate
-runs before an approval is planned and again after it is published. An explicit retry can also
-reach it after a lost approval or merge response, so a planned approval without a published receipt,
-or any planned merge, keeps an ordinary hold. Otherwise the controller pauses the source and, in one
-transaction, records a `task.needs_human` event marked `"recheck": "failed_checks"`, enters
-`needs_human` and schedules a `source_ci_waits` deadline for the held task. Maintenance claims that deadline on the same cadence
-only while the marked event is the task's latest hold, no `discovery.paused` event follows it and
-the source still links and pauses for this task. If the frozen head's checks are green, it records
+The source-action gate reports failed checks as a distinct error. It runs before an approval is
+planned, again after it is published, and on every retry. The controller records a `failed_checks`
+[hold](lifecycle.md#holds), released by green checks or a new head, and enters `needs_human`.
+Maintenance rechecks it on the same cadence while it is the source's current hold; a later hold or
+pause replaces it. If the frozen head's checks are green, it records
 `delivery.checks_recovered` and runs the ordinary publication retry, which repeats every gate and
 reuses an exact existing approval. If the head moved and no reviewer's latest decision requests
 changes, it closes the task through the superseded-result path (`assessment.superseded` with `"cause": "failed_checks"`) so discovery assesses the new head

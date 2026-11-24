@@ -332,7 +332,7 @@ fn notice(value: &str) -> String {
 fn status_icon(state: TaskState) -> &'static str {
     match state {
         TaskState::Working => "clock",
-        TaskState::WaitingForCi => "clock",
+        TaskState::WaitingForCi | TaskState::WaitingToRetry => "clock",
         TaskState::AwaitingReview => "eye",
         TaskState::NeedsHuman => "alert",
         TaskState::Done => "check",
@@ -345,6 +345,10 @@ fn status(task: &Task) -> String {
         TaskState::WaitingForCi => (
             "Waiting for CI",
             "Delivery continues automatically when checks pass and the assessment is still current.",
+        ),
+        TaskState::WaitingToRetry => (
+            "Waiting to retry",
+            "A temporary failure interrupted delivery; it is tried again automatically.",
         ),
         TaskState::AwaitingReview => (
             "Ready for review",
@@ -397,6 +401,35 @@ pub(super) fn time_zone(name: &str) -> Option<TimeZone> {
         .get(name)
         .ok()
         .filter(|zone| zone.iana_name() == Some(name))
+}
+
+/// When a held delivery is tried again and what interrupted it.
+fn retry_line(hold: &Hold, timezone: &str) -> String {
+    let when = hold.next_at.map_or_else(String::new, |at| {
+        let zone = time_zone(timezone).unwrap_or(TimeZone::UTC);
+        let local = at.as_jiff().to_zoned_datetime(zone.clone());
+        let today = Timestamp::now().as_jiff().to_zoned_datetime(zone);
+        let format = if local.date() == today.date() {
+            "%H:%M %Z"
+        } else {
+            "%b %-d, %H:%M %Z"
+        };
+        format!(
+            r#" at <time datetime="{}" title="{}">{}</time>"#,
+            at.to_rfc3339(),
+            e(&format!(
+                "{} ({timezone})",
+                local.strftime("%Y-%m-%d %H:%M:%S %Z UTC%:z")
+            )),
+            e(&local.strftime(format).to_string())
+        )
+    });
+    format!(
+        "Retrying{when} ({} of {}): {}",
+        hold.retries,
+        hold.max_retries,
+        e(&hold.message)
+    )
 }
 
 fn time(at: &Timestamp, timezone: &str) -> String {
@@ -571,7 +604,10 @@ pub(super) fn account(
 fn matches_filter(task: &Task, filter: &str) -> bool {
     match filter {
         "active" => task.state == TaskState::Working,
-        "waiting" => task.state == TaskState::WaitingForCi,
+        "waiting" => matches!(
+            task.state,
+            TaskState::WaitingForCi | TaskState::WaitingToRetry
+        ),
         "review" => task.state == TaskState::AwaitingReview,
         "attention" => task.state == TaskState::NeedsHuman,
         "done" => task.state == TaskState::Done,
@@ -698,11 +734,7 @@ pub(super) fn tasks(
     for (key, label, symbol) in [
         ("", "All tasks", "tasks"),
         ("active", "In progress", status_icon(TaskState::Working)),
-        (
-            "waiting",
-            "Waiting for CI",
-            status_icon(TaskState::WaitingForCi),
-        ),
+        ("waiting", "Waiting", status_icon(TaskState::WaitingForCi)),
         (
             "review",
             "Ready for review",
@@ -1040,6 +1072,13 @@ pub(super) fn detail(
         !task.state.is_terminal()
     )
     .unwrap();
+    if let Some(hold) = detail
+        .hold
+        .as_ref()
+        .filter(|hold| hold.reason == HoldReason::Delivery)
+    {
+        write!(body, r#"<section class="task-attention" role="status"><h2>Delivery continues automatically</h2><p>{}</p></section>"#, retry_line(hold, &token.access.timezone)).unwrap();
+    }
     if task.state == TaskState::NeedsHuman
         && let Some(view) = detail.attempts.last()
     {
@@ -1185,7 +1224,10 @@ pub(super) fn detail(
         .unwrap();
     } else if detail.can_write && task.kind == artidezi_store::model::TaskKind::PullRequest {
         if task.delivery_mode == DeliveryMode::MergeRequest
-            && task.state == TaskState::NeedsHuman
+            && matches!(
+                task.state,
+                TaskState::NeedsHuman | TaskState::WaitingToRetry
+            )
             && detail.attempts.last().is_some_and(|a| {
                 a.attempt.state == artidezi_store::model::AttemptState::Valid
                     && matches!(
@@ -1237,6 +1279,11 @@ pub(super) fn detail(
             "attempt.transient_retry_queued" => {
                 "Automatic retry scheduled after a temporary model failure".into()
             }
+            "delivery.retry_scheduled" => format!(
+                "Delivery retry {} of {} scheduled after a temporary failure",
+                event.payload["retry"], event.payload["max_retries"]
+            ),
+            "delivery.retry_started" => "Retrying delivery".into(),
             "publication.planned" => "Publication prepared".into(),
             "publication.ci_passed" => "CI passed; continuing delivery".into(),
             "publication.retry_requested" => "Publication retry requested".into(),
@@ -1252,11 +1299,15 @@ pub(super) fn detail(
                 Some("working") if event.payload["from"] == "waiting_for_ci" => {
                     "Continuing delivery".into()
                 }
+                Some("working") if event.payload["from"] == "waiting_to_retry" => {
+                    "Continuing delivery".into()
+                }
                 Some("working") => "Task queued for work".into(),
                 Some("awaiting_review") => "Proposal ready for review".into(),
                 Some("waiting_for_ci") => {
                     "Waiting for CI; delivery will continue automatically".into()
                 }
+                Some("waiting_to_retry") => "Waiting to retry delivery".into(),
                 Some("needs_human") => "Your input is needed".into(),
                 Some("done") if task.delivery_mode == DeliveryMode::Shadow => {
                     "Evaluation recorded without publication".into()
@@ -1298,7 +1349,8 @@ pub(super) fn detail(
                 ("success", "check")
             }
             (_, "awaiting_review") => ("attention", "eye"),
-            ("attempt.leased", _) | (_, "working" | "waiting_for_ci" | "leased" | "queued") => {
+            ("attempt.leased", _)
+            | (_, "working" | "waiting_for_ci" | "waiting_to_retry" | "leased" | "queued") => {
                 ("progress", "clock")
             }
             _ => ("neutral", "tasks"),

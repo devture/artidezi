@@ -871,6 +871,8 @@ struct Detail {
     selected_attempt: u32,
     source: Option<artidezi_config::resolve::PullRequestSource>,
     tracking: Option<TrackedPullRequest>,
+    /// Why this task is stuck, if it is.
+    hold: Option<Hold>,
     task: Task,
     attempts: Vec<AttemptView>,
     merge_requests: Vec<PublishedMergeRequest>,
@@ -985,8 +987,21 @@ async fn load_detail(
             .as_ref()
             .map(|s| o.db.get_pull_request_source(&s.tracking_id))
             .transpose()?;
+        let hold = match &tracking {
+            Some(tracking) => tracking
+                .hold
+                .clone()
+                .filter(|hold| hold.task_id.as_ref() == Some(&task.id)),
+            None => {
+                o.db.list_task_holds()?
+                    .into_iter()
+                    .find(|(task_id, _)| *task_id == task.id)
+                    .map(|(_, hold)| hold)
+            }
+        };
         Ok(Detail {
             can_write,
+            hold,
             selected_attempt,
             source,
             tracking,

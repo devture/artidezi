@@ -266,7 +266,7 @@ fn waiting_never_bypasses_failures_changed_inputs_policy_or_human_intervention()
 }
 
 #[test]
-fn waiting_respects_backoff_and_lost_write_responses_still_need_explicit_recovery() {
+fn waiting_respects_backoff_and_a_lost_write_response_is_looked_up_without_another_write() {
     let (mut w, f, id) = wait(true, false);
     w.orchestrator
         .db
@@ -288,15 +288,16 @@ fn waiting_respects_backoff_and_lost_write_responses_still_need_explicit_recover
     }
     let now = Timestamp::now() + SignedDuration::from_secs(601);
     w.orchestrator.tick_at(now).unwrap();
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    assert!(!held_source(&w).paused);
+    assert!(!f.state.lock().unwrap().merged);
     reopen(&mut w, &f);
     w.orchestrator
         .tick_at(now + SignedDuration::from_secs(601))
         .unwrap();
-    assert!(!f.state.lock().unwrap().merged);
-    assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
-    w.orchestrator.retry_publication(&id, "human").unwrap();
     assert_eq!(task_state(&w, &id), TaskState::Done);
+    assert_eq!(held_source(&w).hold, None);
+    assert!(f.state.lock().unwrap().merged);
     assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
 }
 
@@ -541,34 +542,34 @@ fn failed_checks_recovery_respects_explicit_pauses_and_new_objections() {
     }
 }
 
-/// A lost approval response is an unconfirmed write. Failed checks on a later retry must not turn
-/// it into a self-releasing hold, even when the source moves to a new head.
+/// An approval whose response was lost is bound to its head. Failed checks on the retry hold it like
+/// any other approval: a new head is assessed afresh, without posting or merging anything.
 #[test]
-fn failed_checks_after_an_unconfirmed_approval_stay_with_a_person() {
+fn failed_checks_after_an_unconfirmed_approval_reassess_a_new_head() {
     let (mut w, f) = safe_world(true);
     let id = scan(&mut w).remove(0);
     f.state.lock().unwrap().lose_review_response = true;
     w.work(&safe_result(&w, Some("low"), true));
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     f.state.lock().unwrap().conclusion = "failure".into();
-    w.orchestrator.retry_publication(&id, "human").unwrap();
+    let now = Timestamp::now();
+    w.orchestrator
+        .tick_at(now + SignedDuration::from_secs(601))
+        .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    let source = held_source(&w);
-    assert!(source.paused);
-    assert!(source.status.contains("unconfirmed"), "{}", source.status);
+    let hold = held_source(&w).hold.unwrap();
+    assert_eq!(hold.reason, HoldReason::FailedChecks);
 
     move_source_head(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
-    let now = Timestamp::now();
-    for step in 1..=3 {
-        reopen(&mut w, &f);
-        w.orchestrator
-            .tick_at(now + SignedDuration::from_secs(601 * step))
-            .unwrap();
-    }
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    assert!(held_source(&w).paused);
+    reopen(&mut w, &f);
+    w.orchestrator
+        .tick_at(now + SignedDuration::from_secs(1202))
+        .unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
     assert_eq!(w.orchestrator.db.list_attempts(&id).unwrap().len(), 1);
+    assert_eq!(held_source(&w).hold, None);
+    assert_eq!(held_source(&w).runs, 2);
     let s = f.state.lock().unwrap();
     assert!(!s.merged);
     assert_eq!(s.reviews.len(), 1);
@@ -630,9 +631,10 @@ fn repeated_failed_checks_cycles_on_one_task_deliver_once() {
     assert_eq!(s.requests.iter().filter(|r| r.method == "PUT").count(), 1);
 }
 
-/// A planned merge without a receipt is unconfirmed. Failed checks on retry keep an ordinary hold.
+/// A planned merge can only act on its exact head. Failed checks on retry are rechecked, and green
+/// checks merge that head once.
 #[test]
-fn failed_checks_after_an_unconfirmed_merge_stay_with_a_person() {
+fn failed_checks_after_an_unconfirmed_merge_still_recover() {
     let (mut w, f) = safe_world(true);
     let id = scan(&mut w).remove(0);
     let head = f.state.lock().unwrap().head.clone();
@@ -654,17 +656,17 @@ fn failed_checks_after_an_unconfirmed_merge_stay_with_a_person() {
     }
     w.orchestrator.retry_publication(&id, "human").unwrap();
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    assert!(held_source(&w).status.contains("unconfirmed"));
-    move_source_head(&w, &f);
+    assert_eq!(
+        held_source(&w).hold.unwrap().reason,
+        HoldReason::FailedChecks
+    );
     f.state.lock().unwrap().conclusion = "success".into();
-    let now = Timestamp::now();
-    for step in 1..=3 {
-        reopen(&mut w, &f);
-        w.orchestrator
-            .tick_at(now + SignedDuration::from_secs(601 * step))
-            .unwrap();
-    }
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    assert!(held_source(&w).paused);
-    assert!(!f.state.lock().unwrap().merged);
+    reopen(&mut w, &f);
+    w.orchestrator
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+        .unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::Done);
+    let s = f.state.lock().unwrap();
+    assert!(s.merged);
+    assert_eq!(s.reviews.len(), 1);
 }

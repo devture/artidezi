@@ -243,9 +243,45 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         max_active_tasks: 1,
         repositories: vec![source_id],
         ci_log_context: Default::default(),
+        retries: Default::default(),
         handlers: vec![handler.clone()],
     });
     assert!(artidezi_config::validate(&config).is_empty());
+    let retries = |yaml: &str| serde_json::from_str::<artidezi_config::model::Retries>(yaml);
+    let defaults = retries("{}").unwrap().delivery;
+    assert_eq!(
+        (0..8)
+            .map(|used| defaults.delay_seconds(used) / 60)
+            .collect::<Vec<_>>(),
+        [2, 4, 8, 16, 32, 60, 60, 60]
+    );
+    assert_eq!(defaults.delay_seconds(u32::MAX), 3600);
+    let partial = retries(r#"{"delivery":{"max":0}}"#).unwrap().delivery;
+    assert_eq!((partial.max, partial.initial_delay_seconds), (0, 120));
+    assert!(retries(r#"{"delivery":{"delay":1}}"#).is_err());
+    for (change, valid) in [
+        (r#"{"delivery":{"max":0}}"#, true),
+        (r#"{"delivery":{"max":21}}"#, false),
+        (r#"{"delivery":{"initial_delay_seconds":1}}"#, false),
+        (r#"{"delivery":{"multiplier":0}}"#, false),
+        (r#"{"delivery":{"max_delay_seconds":60}}"#, false),
+        (r#"{"delivery":{"max_delay_seconds":90000}}"#, false),
+    ] {
+        let mut changed = config.clone();
+        changed
+            .projects
+            .get_mut(&project_name)
+            .unwrap()
+            .pull_requests
+            .as_mut()
+            .unwrap()
+            .retries = retries(change).unwrap();
+        assert_eq!(
+            artidezi_config::validate(&changed).is_empty(),
+            valid,
+            "{change}"
+        );
+    }
     config
         .projects
         .get_mut(&project_name)
@@ -691,6 +727,7 @@ fn publication_requires_both_a_handler_opt_in_and_project_effect() {
         max_active_tasks: 1,
         repositories: vec![repo],
         ci_log_context: Default::default(),
+        retries: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             target_conflicts: Default::default(),
@@ -766,6 +803,7 @@ fn github_merge_handler_config() -> artidezi_config::Config {
         max_active_tasks: 1,
         repositories: vec![repo],
         ci_log_context: Default::default(),
+        retries: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             target_conflicts: Default::default(),

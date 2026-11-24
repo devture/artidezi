@@ -501,7 +501,12 @@ impl Orchestrator {
         }
         self.require_source_fresh(task, &policy, !automatic)?;
         if result.outcome == Outcome::Failed {
-            return self.needs_human(task, attempt, "agent reported failure; nothing published");
+            return self.hold_for_person(
+                task,
+                attempt,
+                HoldReason::FailedRun,
+                "agent reported failure; nothing published",
+            );
         }
         if result.outcome == Outcome::Proposal {
             let workflow_repositories = self.protected_repositories(&policy, record, result)?;
@@ -647,9 +652,9 @@ impl Orchestrator {
             body = planned.to_owned();
         }
         let forge = self.forge(&repo.forge)?;
-        let matching: Vec<_> = forge
-            .list_reviews(&repo.remote, source.number)?
-            .into_iter()
+        let reviews = forge.list_reviews(&repo.remote, source.number)?;
+        let matching: Vec<_> = reviews
+            .iter()
             .filter(|r| {
                 Some(&r.author_login) == source.publisher_login.as_ref() && r.body.contains(&marker)
             })
@@ -658,11 +663,24 @@ impl Orchestrator {
             [] => {
                 self.require_source_fresh(task, &policy, !automatic)?;
                 if automatic {
-                    if self
-                        .db
-                        .list_events(&task.id)?
+                    // A planned approval without a confirmation may have been lost on the way; it is
+                    // posted again only while the forge shows no trace of it. Once confirmed, its
+                    // absence is someone's decision.
+                    let events = self.db.list_events(&task.id)?;
+                    let planned = events
                         .iter()
-                        .any(|e| e.kind == "assessment.approval_planned")
+                        .any(|e| e.kind == "assessment.approval_planned");
+                    let confirmed = events.iter().any(|e| {
+                        e.kind == "assessment.published" && e.payload["state"] == "approved"
+                    });
+                    if planned
+                        && (confirmed
+                            || reviews.iter().any(|r| {
+                                r.body.contains(&marker)
+                                    || (Some(&r.author_login) == source.publisher_login.as_ref()
+                                        && r.head_commit == source.input.commit
+                                        && !r.body.contains("<!-- artidezi:assessment:"))
+                            }))
                     {
                         return Err(invalid(
                             "A prior approval was planned but its matching receipt is missing; inspect the source before a new evaluation",
@@ -694,12 +712,15 @@ impl Orchestrator {
                     )?
                 }
             }
-            [review]
-                if review.head_commit == source.input.commit
-                    && review.body == body
-                    && review.state == expected_state =>
+            // Usually one; a lost response that surfaced after it was posted again leaves several.
+            [review, ..]
+                if matching.iter().all(|review| {
+                    review.head_commit == source.input.commit
+                        && review.body == body
+                        && review.state == expected_state
+                }) =>
             {
-                review.clone()
+                (*review).clone()
             }
             _ => {
                 return Err(invalid(
@@ -741,16 +762,15 @@ impl Orchestrator {
                 if self.recover_completed_source_action(task, attempt, &policy)? {
                     return Ok(());
                 }
-                return Err(invalid(
-                    "The forge accepted the merge but its final state is not yet confirmed; retry publication",
-                ));
+                return Err(OrchestratorError::MergeUnconfirmed);
             }
         }
         self.require_source_fresh(task, &policy, !automatic)?;
         if result.outcome == Outcome::NeedsHuman {
-            return self.needs_human(
+            return self.hold_for_person(
                 task,
                 attempt,
+                HoldReason::Question,
                 "assessment published; maintainer input required",
             );
         }
@@ -888,7 +908,7 @@ impl Orchestrator {
                     && r.state == artidezi_forge::ReviewState::Approved
             })
             .collect();
-        if matches.len() != 1 {
+        if matches.is_empty() {
             return Ok(false);
         }
         self.db.record_event(Some(&task.id), Some(&attempt.id), "forge", "source.merge_observed",
@@ -986,6 +1006,59 @@ impl Orchestrator {
             ));
         }
         self.require_source_fresh(task, policy, true)?;
+        self.record_source_proposal(task, attempt, repo, plan, &info)
+    }
+
+    /// Record receipts for proposals whose creation response was lost, when the forge shows exactly
+    /// the planned proposal. Anything else stays unresolved.
+    pub(crate) fn recover_source_proposal_receipts(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        policy: &ResolvedProjectPolicy,
+    ) -> Result<()> {
+        for event in self.db.list_events(&task.id)? {
+            if event.kind != "publication.planned"
+                || event.attempt_id.as_deref() != Some(&attempt.id)
+            {
+                continue;
+            }
+            let plan: ProposalPlan =
+                serde_json::from_value(event.payload).map_err(|e| invalid(&e.to_string()))?;
+            if self
+                .db
+                .get_merge_request(&task.id, &plan.repository)?
+                .is_some()
+            {
+                continue;
+            }
+            let repo = &policy.repositories[&plan.repository];
+            let found = self
+                .forge(&repo.forge)?
+                .proposals_for_branch(&repo.remote, &plan.branch)?;
+            if let [info] = found.as_slice()
+                && info.state == RemoteState::Open
+                && info.author_login == self.config.forges[&repo.forge].bot_login
+                && info.source_branch == plan.branch
+                && info.target_branch == repo.branch
+                && info.head_commit == plan.head
+                && info.title == plan.title
+                && info.body == plan.body
+            {
+                self.record_source_proposal(task, attempt, repo, &plan, info)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record_source_proposal(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        repo: &ResolvedRepository,
+        plan: &ProposalPlan,
+        info: &artidezi_forge::MergeRequestInfo,
+    ) -> Result<()> {
         self.db.upsert_merge_request(&PublishedMergeRequest {
             task_id: task.id.clone(),
             repository_id: plan.repository.clone(),
@@ -1086,6 +1159,7 @@ impl Orchestrator {
                 .all(|mr| mr.state == MergeRequestState::Merged)
         {
             let preserved = self.preserve_equivalent_adaptation(task, policy, &current)?;
+            self.clear_delivery_hold(task)?;
             if task.state == TaskState::NeedsHuman {
                 self.db
                     .set_task_state(&task.id, TaskState::Working, "orchestrator")?;
@@ -1096,7 +1170,7 @@ impl Orchestrator {
                 // delivery of the existing adaptation, not publication against the new source.
                 let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
                 if task.state == TaskState::NeedsHuman {
-                    tracked.paused = false;
+                    tracked.release_hold();
                     tracked.follow_up = None;
                 }
                 if tracked.observed_head == current.head_commit.as_str() {
@@ -1131,7 +1205,7 @@ impl Orchestrator {
             self.db
                 .set_task_state(&task.id, TaskState::AwaitingReview, "orchestrator")?;
             let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-            tracked.paused = false;
+            tracked.release_hold();
             tracked.follow_up = None;
             tracked.status = "Published adaptations await review".into();
             self.db.save_pull_request_source(&tracked)?;
@@ -1234,8 +1308,10 @@ impl Orchestrator {
         let Some(source) = source_of(&task)? else {
             return self.retry_manual_publication(task_id, actor);
         };
-        if task.state != TaskState::NeedsHuman
-            || task.delivery_mode != DeliveryMode::MergeRequest
+        if !matches!(
+            task.state,
+            TaskState::NeedsHuman | TaskState::WaitingToRetry
+        ) || task.delivery_mode != DeliveryMode::MergeRequest
             || source.publisher_login.is_none()
         {
             return Err(invalid("only held publication tasks can retry publication"));
@@ -1275,7 +1351,7 @@ impl Orchestrator {
         let policy: ResolvedProjectPolicy =
             serde_json::from_str(&task.policy_snapshot).map_err(|e| invalid(&e.to_string()))?;
         self.require_source_authority(&task, &policy)?;
-        tracked.paused = false;
+        tracked.release_hold();
         self.db.save_pull_request_source(&tracked)?;
         self.db.record_event(
             Some(task_id),
@@ -1287,13 +1363,16 @@ impl Orchestrator {
         self.db.set_task_state(task_id, TaskState::Working, actor)?;
         task.state = TaskState::Working;
         if let Err(error) = self.publish_source_result(&task, &attempt, &job, &record, &result) {
-            self.needs_human(
+            self.delivery_failed(
                 &task,
                 &attempt,
+                &error,
                 &format!("publication retry withheld: {error}"),
             )?;
             self.persist_forge_backoffs()?;
-            return Err(error);
+            if self.db.get_task(task_id)?.state != TaskState::WaitingToRetry {
+                return Err(error);
+            }
         }
         self.persist_forge_backoffs()?;
         Ok(self.db.get_task(task_id)?)

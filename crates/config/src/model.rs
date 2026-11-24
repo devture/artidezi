@@ -321,7 +321,56 @@ pub struct PullRequestDiscovery {
     /// Explicit project ceiling for sending selected CI log text to the model and durable store.
     #[serde(default)]
     pub ci_log_context: PullRequestCiLogContext,
+    /// What ArtiDezi tries again by itself before asking a person.
+    #[serde(default, skip_serializing_if = "Retries::is_default")]
+    pub retries: Retries,
     pub handlers: Vec<PullRequestHandler>,
+}
+
+/// Automatic retries. They neither count against `max_runs_per_pull_request` nor skip any gate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Retries {
+    /// Delivering a validated result again after a temporary forge or Git failure, or a restart.
+    pub delivery: DeliveryRetries,
+}
+
+impl Retries {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Delivery retries of one validated result. `max: 0` asks a person right away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeliveryRetries {
+    pub max: u32,
+    pub initial_delay_seconds: u32,
+    pub multiplier: u32,
+    pub max_delay_seconds: u32,
+}
+
+impl Default for DeliveryRetries {
+    fn default() -> Self {
+        Self {
+            max: 8,
+            initial_delay_seconds: 120,
+            multiplier: 2,
+            max_delay_seconds: 3600,
+        }
+    }
+}
+
+impl DeliveryRetries {
+    /// The wait before a retry, given how many were used before it.
+    pub fn delay_seconds(&self, used: u32) -> u32 {
+        self.multiplier
+            .checked_pow(used)
+            .and_then(|factor| self.initial_delay_seconds.checked_mul(factor))
+            .unwrap_or(self.max_delay_seconds)
+            .min(self.max_delay_seconds)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

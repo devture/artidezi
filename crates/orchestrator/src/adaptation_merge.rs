@@ -5,13 +5,14 @@
 //!
 //! A handler with `adaptation_action: merge` lets the reconcile pass merge the adaptations of an
 //! unchanged source once every one of them has successful checks and nobody requests changes.
-//! Anything unexpected leaves the adaptations with a person: a failed or refused merge is not
-//! retried automatically for that head.
+//! A temporary failure or an interrupted merge is tried again for the same head, after looking for
+//! a merge that happened anyway. Anything else unexpected leaves the adaptations with a person: a
+//! refused merge is not retried automatically for that head.
 
 use crate::{Orchestrator, Result};
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::{AdaptationAction, PullRequestMode};
-use artidezi_contract::time::Timestamp;
+use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{ChecksState, ExpectedProposal, MergeMethod};
 use artidezi_store::model::*;
 
@@ -132,19 +133,35 @@ impl Orchestrator {
             return Ok(());
         }
         let frozen = policy.source_pull_request.as_ref().unwrap();
-        // A plan for an adaptation's current head was merged (and is no longer open), refused or
-        // interrupted by a crash. The latter two are left to a person rather than tried again.
+        // A plan for an adaptation that is still open at the planned head was refused, failed
+        // temporarily or was interrupted. Merging is bound to that head, so only refusals are final.
+        let limits = self.delivery_retries(task);
         let events = self.db.list_events(&task.id)?;
-        let interrupted = proposals.iter().any(|mr| {
-            mr.state == MergeRequestState::Open
-                && events.iter().any(|e| {
-                    e.kind == "adaptation.merge_planned"
-                        && e.payload["repository"] == mr.repository_id.as_str()
-                        && e.payload["number"] == mr.number
-                        && e.payload["head"] == mr.head_commit.as_str()
-                })
-        });
-        if interrupted {
+        let mut earlier_tries = Vec::new();
+        for mr in proposals
+            .iter()
+            .filter(|mr| mr.state == MergeRequestState::Open)
+        {
+            let tries = adaptation_merge_tries(&events, mr);
+            if tries.refused || tries.count > limits.max {
+                earlier_tries.clear();
+                earlier_tries.push(None);
+                break;
+            }
+            if let Some(at) = tries.last {
+                let delay = limits.delay_seconds(tries.count - 1);
+                earlier_tries.push(Some(at + SignedDuration::from_secs(i64::from(delay))));
+            }
+        }
+        if earlier_tries
+            .iter()
+            .flatten()
+            .any(|at| *at > Timestamp::now())
+        {
+            return Ok(());
+        }
+        self.clear_delivery_hold(task)?;
+        if earlier_tries.contains(&None) {
             let mut tracked = self.db.get_pull_request_source(&frozen.tracking_id)?;
             let status =
                 "Automatic adaptation merge did not complete; published adaptations await review";
@@ -168,6 +185,7 @@ impl Orchestrator {
             }
             let mr = &mut proposals[index];
             let repo = policy.repositories[&mr.repository_id].clone();
+            self.forge(&repo.forge)?;
             let payload = serde_json::json!({
                 "repository": mr.repository_id,
                 "number": mr.number,
@@ -206,7 +224,9 @@ impl Orchestrator {
                 }
                 Err(error) => {
                     let mut payload = payload;
+                    let temporary = error.is_temporary();
                     payload["error"] = error.to_string().into();
+                    payload["temporary"] = temporary.into();
                     self.db.record_event(
                         Some(&task.id),
                         Some(&attempt.id),
@@ -215,6 +235,23 @@ impl Orchestrator {
                         payload,
                     )?;
                     let mut tracked = self.db.get_pull_request_source(&frozen.tracking_id)?;
+                    let tries = adaptation_merge_tries(&self.db.list_events(&task.id)?, mr);
+                    if temporary && tries.count <= limits.max {
+                        let delay = limits.delay_seconds(tries.count - 1);
+                        let mut hold = self.new_hold(
+                            task,
+                            HoldReason::Delivery,
+                            format!("{error} while merging the adaptation"),
+                        )?;
+                        hold.releases = vec![HoldRelease::Time];
+                        hold.retries = tries.count;
+                        hold.max_retries = limits.max;
+                        hold.next_at =
+                            Some(Timestamp::now() + SignedDuration::from_secs(i64::from(delay)));
+                        tracked.place_hold(hold);
+                        self.db.save_pull_request_source(&tracked)?;
+                        return Ok(());
+                    }
                     tracked.status =
                         "Automatic adaptation merge failed; published adaptations await review"
                             .into();
@@ -224,5 +261,33 @@ impl Orchestrator {
             }
         }
         Ok(())
+    }
+}
+
+struct MergeTries {
+    count: u32,
+    last: Option<Timestamp>,
+    refused: bool,
+}
+
+/// Earlier automatic merges of this adaptation at its recorded head.
+fn adaptation_merge_tries(events: &[Event], mr: &PublishedMergeRequest) -> MergeTries {
+    let of_this_head = |event: &&Event| {
+        event.payload["repository"] == mr.repository_id.as_str()
+            && event.payload["number"] == mr.number
+            && event.payload["head"] == mr.head_commit.as_str()
+    };
+    let planned = || {
+        events
+            .iter()
+            .filter(of_this_head)
+            .filter(|event| event.kind == "adaptation.merge_planned")
+    };
+    MergeTries {
+        count: planned().count() as u32,
+        last: planned().map(|event| event.at).max(),
+        refused: events.iter().filter(of_this_head).any(|event| {
+            event.kind == "adaptation.merge_failed" && event.payload["temporary"] != true
+        }),
     }
 }

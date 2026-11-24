@@ -36,6 +36,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0013_transient_recovery.sql"),
     include_str!("../migrations/0014_worker_offers.sql"),
     include_str!("../migrations/0015_proposal_branch_cleanup.sql"),
+    include_str!("../migrations/0016_task_holds.sql"),
 ];
 
 /// Brings the schema up to date in one transaction. `user_version` counts the applied migrations.
@@ -565,6 +566,7 @@ impl ConnectionDb {
         if next != TaskState::WaitingForCi {
             tx.execute("DELETE FROM source_ci_waits WHERE task_id = ?1", [id])?;
         }
+        tx.execute("DELETE FROM task_holds WHERE task_id = ?1", [id])?;
         Self::insert_event(
             &tx,
             Some(id),
@@ -622,66 +624,74 @@ impl ConnectionDb {
         self.claim_source_check_in(task_id, TaskState::WaitingForCi, now, next_check_at)
     }
 
-    /// Records a recheckable hold, its `needs_human` state and its recheck deadline in one
-    /// transaction, so a crash can never leave a marked hold without a scheduled check.
-    pub fn hold_for_source_check(
-        &mut self,
-        task_id: &str,
-        attempt_id: &str,
-        actor: &str,
-        hold: serde_json::Value,
-        next_check_at: Timestamp,
-    ) -> Result<()> {
-        let task = self.get_task(task_id)?;
-        if task.state != TaskState::NeedsHuman
-            && !task.state.can_transition_to(TaskState::NeedsHuman)
-        {
+    /// Records a hold, its task's state and its audit event in one transaction, so a crash cannot
+    /// leave a held task without its hold. A terminal task keeps its state.
+    pub fn hold_task(&mut self, hold: TaskHold<'_>, actor: &str) -> Result<()> {
+        let task = self.get_task(hold.task_id)?;
+        let moves = task.state != hold.state && !task.state.is_terminal();
+        if moves && !task.state.can_transition_to(hold.state) {
             return Err(StoreError::InvalidTransition {
                 entity: "task",
-                id: task_id.into(),
+                id: hold.task_id.into(),
                 from: task.state.as_str().into(),
-                to: TaskState::NeedsHuman.as_str().into(),
+                to: hold.state.as_str().into(),
             });
         }
         let tx = self.conn.transaction()?;
         Self::insert_event(
             &tx,
-            Some(task_id),
-            Some(attempt_id),
+            Some(hold.task_id),
+            Some(hold.attempt_id),
             actor,
-            "task.needs_human",
-            hold,
+            hold.event,
+            hold.payload,
         )?;
-        if task.state != TaskState::NeedsHuman {
+        if moves {
             tx.execute(
-                "UPDATE tasks SET state = 'needs_human', updated_at = ?2 WHERE id = ?1",
-                params![task_id, ts(Timestamp::now())],
+                "UPDATE tasks SET state = ?2, updated_at = ?3 WHERE id = ?1",
+                params![hold.task_id, hold.state.as_str(), ts(Timestamp::now())],
             )?;
             Self::insert_event(
                 &tx,
-                Some(task_id),
+                Some(hold.task_id),
                 None,
                 actor,
                 "task.state_changed",
-                serde_json::json!({"from": task.state, "to": TaskState::NeedsHuman}),
+                serde_json::json!({"from": task.state, "to": hold.state}),
             )?;
         }
         tx.execute(
-            "INSERT INTO source_ci_waits (task_id, next_check_at) VALUES (?1, ?2)
-             ON CONFLICT(task_id) DO UPDATE SET next_check_at = excluded.next_check_at",
-            params![task_id, ts(next_check_at)],
+            "DELETE FROM source_ci_waits WHERE task_id = ?1",
+            [hold.task_id],
         )?;
+        if let Some(source) = hold.source {
+            Self::save_source_in(&tx, source)?;
+        }
+        match hold.hold {
+            Some(record) => tx.execute(
+                "INSERT INTO task_holds (task_id, data) VALUES (?1, ?2)
+                 ON CONFLICT (task_id) DO UPDATE SET data = excluded.data",
+                params![hold.task_id, serde_json::to_string(record)?],
+            )?,
+            None => tx.execute("DELETE FROM task_holds WHERE task_id = ?1", [hold.task_id])?,
+        };
         tx.commit()?;
         Ok(())
     }
 
-    pub fn claim_held_source_check(
-        &mut self,
-        task_id: &str,
-        now: Timestamp,
-        next_check_at: Timestamp,
-    ) -> Result<bool> {
-        self.claim_source_check_in(task_id, TaskState::NeedsHuman, now, next_check_at)
+    /// Holds of tasks without an incoming change, by task.
+    pub fn list_task_holds(&self) -> Result<Vec<(String, Hold)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT task_id, data FROM task_holds ORDER BY task_id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (task_id, data) = row?;
+            Ok((task_id, serde_json::from_str(&data)?))
+        })
+        .collect()
     }
 
     fn claim_source_check_in(

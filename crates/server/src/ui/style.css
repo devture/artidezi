@@ -125,7 +125,7 @@ main#main { width: 100%; padding: 32px 36px; flex: 1; }
 .task-row { --row-background: #fff; --row-hover: #f5f9f7; display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--line); background: var(--row-background); transition: background .15s; }
 .task-row:last-child { border-bottom: 0; }
 .task-row:hover { background: var(--row-hover); }
-.task-row.row-tone-working, .task-row.row-tone-waiting_for_ci { --row-background: #f3f7fd; --row-hover: #eaf2fc; }
+.task-row.row-tone-working, .task-row.row-tone-waiting_for_ci, .task-row.row-tone-waiting_to_retry { --row-background: #f3f7fd; --row-hover: #eaf2fc; }
 .task-row.row-tone-awaiting_review { --row-background: #fff9eb; --row-hover: #fff3d9; }
 .task-row.row-tone-needs_human { --row-background: #fff5ef; --row-hover: #ffebdf; }
 .task-row.row-tone-done { --row-background: #f2f9f3; --row-hover: #e8f4ea; }
@@ -162,7 +162,7 @@ a.task-origin:hover { background: #dfdff2; text-decoration: underline; text-unde
 .delivery.merge_request { background: #e7f2ee; color: #2c6a54; }
 .delivery.merge_request_with_automerge { background: #eee9fa; color: #684995; }
 .delivery.direct_push_fast_forward { background: #fff0df; color: #8c501c; }
-.status.working, .status.waiting_for_ci { background: #e9f0fb; color: #345c91; }
+.status.working, .status.waiting_for_ci, .status.waiting_to_retry { background: #e9f0fb; color: #345c91; }
 .status.awaiting_review { background: #fff0d4; color: #83570e; }
 .status.needs_human { background: #fbeade; color: #934922; }
 .status.done { background: #eaf4ec; color: #336846; }

@@ -997,3 +997,45 @@ fn out_of_band_actions_runs_do_not_decide_pull_request_checks() {
     );
     assert!(forge.get_merge_request("org/app", 33).is_err());
 }
+
+#[test]
+fn only_outages_and_rate_limits_are_temporary() {
+    let path = "/repos/org/app/branches/main";
+    let failure = |reply: Reply| {
+        let fixture = fixture();
+        let forge = fixture.forge();
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .overrides
+            .insert(path.into(), reply);
+        forge.branch_head("org/app", "main").unwrap_err()
+    };
+    for status in [408, 500, 502, 503, 504] {
+        let error = failure(Reply::new(status, json!({})));
+        assert!(matches!(error, ForgeError::Temporary(_)), "{error}");
+        assert!(error.is_temporary());
+    }
+    for status in [401, 403, 404, 405, 409, 422] {
+        let error = failure(Reply::new(status, json!({"message":"Forbidden"})));
+        assert!(!error.is_temporary(), "{status}: {error}");
+    }
+    let mut limited = Reply::new(403, json!({}));
+    limited.headers.insert("retry-after".into(), "90".into());
+    for reply in [
+        limited,
+        Reply::new(429, json!({})),
+        Reply::new(
+            403,
+            json!({"message":"You have exceeded a secondary rate limit."}),
+        ),
+    ] {
+        assert!(failure(reply).is_temporary());
+    }
+    let fixture = fixture();
+    let forge = fixture.forge();
+    drop(fixture);
+    let error = forge.branch_head("org/app", "main").unwrap_err();
+    assert!(error.is_temporary(), "unreachable: {error}");
+}

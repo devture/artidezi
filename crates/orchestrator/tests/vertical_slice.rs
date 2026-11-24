@@ -1011,7 +1011,7 @@ fn manual_publication_retries_after_a_push_without_a_merge_request() {
 }
 
 #[test]
-fn manual_task_interrupted_after_validation_needs_a_human_on_restart() {
+fn manual_task_interrupted_after_validation_is_delivered_after_a_restart() {
     let mut w = World::new();
     let task = w
         .orchestrator
@@ -1031,13 +1031,30 @@ fn manual_task_interrupted_after_validation_needs_a_human_on_restart() {
 
     let mut forges: BTreeMap<String, Box<dyn ForgeAdapter>> = BTreeMap::new();
     forges.insert("fake".into(), Box::new(w.forge()));
-    let reopened =
+    let mut reopened =
         Orchestrator::open(w.orchestrator.config.clone(), &w.root.join("data"), forges).unwrap();
 
     assert_eq!(
         reopened.db.get_task(&task.id).unwrap().state,
-        TaskState::NeedsHuman
+        TaskState::WaitingToRetry
     );
+    let (held, hold) = reopened.db.list_task_holds().unwrap().remove(0);
+    assert_eq!((held, hold.reason), (task.id.clone(), HoldReason::Delivery));
+    let now = Timestamp::now();
+    reopened.tick_at(now).unwrap();
+    assert_eq!(
+        reopened.db.get_task(&task.id).unwrap().state,
+        TaskState::WaitingToRetry
+    );
+    reopened
+        .tick_at(now + SignedDuration::from_secs(601))
+        .unwrap();
+    assert_eq!(
+        reopened.db.get_task(&task.id).unwrap().state,
+        TaskState::AwaitingReview
+    );
+    assert!(reopened.db.list_task_holds().unwrap().is_empty());
+    assert_eq!(reopened.db.list_merge_requests(&task.id).unwrap().len(), 1);
 }
 
 #[test]

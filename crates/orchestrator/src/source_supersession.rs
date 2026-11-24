@@ -421,11 +421,11 @@ impl Orchestrator {
             tracked.head_observed_at = now;
         }
         if tracked.runs >= discovery.max_runs_per_pull_request {
-            tracked.paused = true;
             tracked.follow_up = None;
-            tracked.status = "Automatic evaluation budget reached after source head changed; explicit resume required".into();
+            tracked.release_hold();
+            tracked.place_hold(Hold::new(HoldReason::Budget, "Automatic evaluation budget reached after source head changed; explicit resume required"));
         } else {
-            tracked.paused = false;
+            tracked.release_hold();
             tracked.status =
                 "Source head changed before delivery; waiting for a fresh evaluation".into();
             tracked.follow_up = Some(PullRequestFollowUp {

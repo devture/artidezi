@@ -154,9 +154,10 @@ impl Orchestrator {
                     // The upload has already been judged and cannot be retried. Preserve any
                     // published proposals and make partial failure actionable instead of leaving
                     // the task working forever with no active attempt.
-                    self.needs_human(
+                    self.delivery_failed(
                         &task,
                         &attempt,
+                        &error,
                         &format!("could not apply accepted attempt outcome: {error}"),
                     )?;
                 }
@@ -175,6 +176,7 @@ impl Orchestrator {
                 }
                 self.pause_task_source(
                     &task,
+                    HoldReason::FailedRun,
                     "The worker result was rejected; inspect it before resuming",
                 )?;
                 self.db.record_event(

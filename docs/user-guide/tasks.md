@@ -67,6 +67,8 @@ turn on a delivery mode, grant a new repository or authorize tagging outside the
 ## Read the result
 
 The task page shows status, attempts, a summary, checks, logs/evidence and any published proposals.
+`waiting_to_retry` means that a temporary failure interrupted delivery of a validated result; it
+[continues by itself](pr-discovery.md#automatic-delivery-retries), also for manual merge-request tasks.
 `needs_human` can mean a question, a failed check, rejected output or a publication conflict. Read
 the recorded reason rather than treating every such task as a model failure.
 
@@ -146,10 +148,11 @@ and adaptations open human-reviewed PRs. An explicit `safe_verdict_action` can a
 an unchanged update on GitHub or Forgejo; see [source delivery policy](pr-discovery.md#approve-or-merge-safe-updates).
 `adaptation_action: merge` lets ArtiDezi merge its own adaptation PRs once their checks pass; see
 [merging adaptations](pr-discovery.md#merge-artidezis-own-adaptations).
-Eligible automatic delivery with pending checks shows **Waiting for CI**, also available as a task
-filter. It continues automatically when checks pass and the assessment is still current. No worker
+Eligible automatic delivery with pending checks shows **Waiting for CI**. The **Waiting** task filter
+shows it together with deliveries waiting to retry. It continues automatically when checks pass and the assessment is still current. No worker
 stays occupied, and no new evaluation is created. Close the task or pause its incoming source to stop it.
-Publication failures expose **Retry publication**, which reuses the valid
+Temporary delivery failures [retry by themselves](pr-discovery.md#automatic-delivery-retries). Other
+publication failures expose **Retry publication**, which reuses the valid
 result and reconciles existing effects without another worker. See the
 [publication guide](github-enrollment.md#enable-publication) for scope and limits.
 

@@ -19,6 +19,8 @@ use serde_json::json;
 
 #[path = "github_ci.rs"]
 mod ci;
+#[path = "github_retries.rs"]
+mod retries;
 #[path = "github_supersession.rs"]
 mod supersession;
 
@@ -313,6 +315,7 @@ fn world() -> (World, Fixture) {
         max_active_tasks: 1,
         repositories: vec!["role".into()],
         ci_log_context: Default::default(),
+        retries: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             target_conflicts: Default::default(),
@@ -789,7 +792,7 @@ fn live_adaptation_survives_lost_pr_and_review_responses_without_duplicate_effec
     let id = scan(&mut w).remove(0);
     f.state.lock().unwrap().lose_create_response = true;
     assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     assert_eq!(f.state.lock().unwrap().proposals.len(), 1);
     assert!(
         w.orchestrator
@@ -820,13 +823,24 @@ fn live_adaptation_survives_lost_pr_and_review_responses_without_duplicate_effec
         .unwrap();
     let old_attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap().id;
     reopen(&mut w, &f);
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     f.state.lock().unwrap().lose_review_response = true;
-    assert!(w.orchestrator.retry_publication(&id, "human").is_err());
+    let now = Timestamp::now();
+    w.orchestrator
+        .tick_at(now + SignedDuration::from_secs(3600))
+        .unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
     assert_eq!(w.orchestrator.db.list_merge_requests(&id).unwrap().len(), 1);
+    let hold = w.orchestrator.db.list_pull_request_sources(None).unwrap()[0]
+        .hold
+        .clone()
+        .unwrap();
+    assert_eq!((hold.retries, hold.max_retries), (3, 8));
     reopen(&mut w, &f);
-    w.orchestrator.retry_publication(&id, "human").unwrap();
+    w.orchestrator
+        .tick_at(now + SignedDuration::from_secs(7200))
+        .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
     assert_eq!(
         w.orchestrator.db.latest_attempt(&id).unwrap().unwrap().id,
@@ -1199,6 +1213,13 @@ fn reopened_new_head_cannot_bypass_open_adaptations_including_lost_receipts() {
         );
         f.state.lock().unwrap().open = false;
         assert!(scan(&mut w).is_empty());
+        if lost_receipt {
+            // The retry may still recognize its own merge, so it decides about the closed source.
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+            w.orchestrator
+                .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+                .unwrap();
+        }
         assert_eq!(task_state(&w, &id), TaskState::Closed);
         let tracked = w
             .orchestrator
@@ -1206,6 +1227,7 @@ fn reopened_new_head_cannot_bypass_open_adaptations_including_lost_receipts() {
             .list_pull_request_sources(None)
             .unwrap()
             .remove(0);
+        assert_eq!(tracked.hold, None);
         move_source_head(&w, &f);
         f.state.lock().unwrap().open = true;
         let report = w
@@ -1319,9 +1341,9 @@ fn exact_workflow_grant_retries_and_recovers_without_a_second_proposal() {
                 "Reviewed the exact workflow change",
                 "human"
             )
-            .is_err()
+            .is_ok()
     );
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     assert_eq!(f.state.lock().unwrap().proposals.len(), 1);
     let grants: Vec<_> = w
         .orchestrator
@@ -1336,7 +1358,9 @@ fn exact_workflow_grant_retries_and_recovers_without_a_second_proposal() {
     assert_eq!(grants[0].attempt_id.as_deref(), Some(attempt.id.as_str()));
     assert_eq!(grants[0].payload["attempt_record_sha256"], digest);
     reopen(&mut w, &f);
-    w.orchestrator.retry_publication(&id, "human").unwrap();
+    w.orchestrator
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+        .unwrap();
     assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
     assert_eq!(
         w.orchestrator.db.latest_attempt(&id).unwrap().unwrap().id,
@@ -1696,9 +1720,11 @@ fn safe_delivery_recovers_lost_responses_and_external_automerge_without_duplicat
             AttemptState::Valid
         );
         if loss != "external" {
-            assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
             reopen(&mut w, &f);
-            w.orchestrator.retry_publication(&id, "human").unwrap();
+            w.orchestrator
+                .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+                .unwrap();
         }
         assert_eq!(task_state(&w, &id), TaskState::Done, "{loss}");
         let s = f.state.lock().unwrap();
@@ -1800,6 +1826,10 @@ fn an_edited_or_dismissed_approval_is_not_recreated_during_retry() {
             }
         }
         reopen(&mut w, &f);
+        w.orchestrator
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+            .unwrap();
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{changed}");
         assert!(
             w.orchestrator.retry_publication(&id, "human").is_err(),
             "{changed}"
@@ -1903,7 +1933,6 @@ fn adaptation_merge_leaves_failed_objected_moved_revoked_or_refused_adaptations_
         "retargeted",
         "revoked",
         "refused",
-        "interrupted",
     ] {
         let (mut w, f) = adaptation_merge_world();
         let id = scan(&mut w).remove(0);
@@ -1949,25 +1978,6 @@ fn adaptation_merge_leaves_failed_objected_moved_revoked_or_refused_adaptations_
                 f.state.lock().unwrap().proposals.get_mut(&100).unwrap()["base"]["ref"] =
                     json!("release");
             }
-            "interrupted" => {
-                // A crash after the plan, before any receipt: the merge is not tried again.
-                let mr = w
-                    .orchestrator
-                    .db
-                    .list_merge_requests(&id)
-                    .unwrap()
-                    .remove(0);
-                w.orchestrator
-                    .db
-                    .record_event(
-                        Some(&id),
-                        None,
-                        "orchestrator",
-                        "adaptation.merge_planned",
-                        json!({"repository": mr.repository_id, "number": mr.number, "head": mr.head_commit}),
-                    )
-                    .unwrap();
-            }
             "refused" => {
                 f.state.lock().unwrap().overrides.insert(
                     "/repos/org/app/pulls/100/merge".into(),
@@ -1990,7 +2000,7 @@ fn adaptation_merge_leaves_failed_objected_moved_revoked_or_refused_adaptations_
             usize::from(reason == "refused"),
             "{reason}"
         );
-        if ["refused", "revoked", "interrupted", "objection"].contains(&reason) {
+        if ["refused", "revoked", "objection"].contains(&reason) {
             assert_eq!(task_state(&w, &id), TaskState::AwaitingReview, "{reason}");
         }
     }

@@ -129,7 +129,10 @@ impl Http {
         if let Some(retry_at) = *self.backoff.lock().unwrap()
             && retry_at > Timestamp::now()
         {
-            return Err(ForgeError::RetryAfter { retry_at });
+            return Err(ForgeError::RetryAfter {
+                retry_at,
+                rate_limited: true,
+            });
         }
         Ok(())
     }
@@ -167,7 +170,7 @@ impl Http {
         if let Some(cached) = &cached {
             request = request.header("If-None-Match", &cached.etag);
         }
-        let response = request.call().map_err(|_| transport_error())?;
+        let response = request.call().map_err(transport_error)?;
         if response.status().as_u16() == 304 {
             let cached = cached.ok_or_else(|| {
                 ForgeError::Other("GitHub returned 304 without a cached representation".into())
@@ -216,7 +219,7 @@ impl Http {
             .header("X-GitHub-Api-Version", API_VERSION)
             .header("Authorization", &format!("Bearer {jwt}"))
             .send_json(body)
-            .map_err(|_| transport_error())?;
+            .map_err(transport_error)?;
         parse(&self.body(response, 201)?)
     }
 
@@ -247,7 +250,7 @@ impl Http {
             .header("X-GitHub-Api-Version", API_VERSION)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(value)
-            .map_err(|_| transport_error())?;
+            .map_err(transport_error)?;
         parse(&self.body(response, expected)?)
     }
 
@@ -280,7 +283,20 @@ impl Http {
                 .unwrap();
             *self.backoff.lock().unwrap() = Some(retry_at);
             if status != expected {
-                return Err(ForgeError::RetryAfter { retry_at });
+                let rate_limited = status == 429
+                    || retry_after.is_some()
+                    || remaining == Some("0")
+                    // Secondary limits can come without either header.
+                    || response
+                        .body_mut()
+                        .with_config()
+                        .limit(64 * 1024)
+                        .read_to_string()
+                        .is_ok_and(|body| body.to_lowercase().contains("rate limit"));
+                return Err(ForgeError::RetryAfter {
+                    retry_at,
+                    rate_limited,
+                });
             }
         }
         if status == 401 {
@@ -299,16 +315,29 @@ impl Http {
                     "repository/request is absent or inaccessible; verify the installation and repository selection"
                 }
                 300..=399 => "redirect refused; use the repository's current canonical name",
+                500..=599 => "temporary failure",
                 _ => "request failed",
             };
-            return Err(ForgeError::Other(format!("GitHub HTTP {status}: {reason}")));
+            let message = format!("GitHub HTTP {status}: {reason}");
+            return Err(if crate::temporary_status(status) {
+                ForgeError::Temporary(message)
+            } else {
+                ForgeError::Other(message)
+            });
         }
         response
             .body_mut()
             .with_config()
             .limit(8 * 1024 * 1024)
             .read_to_string()
-            .map_err(|_| ForgeError::Other("GitHub response is unreadable or exceeds 8 MiB".into()))
+            .map_err(|error| {
+                let message = "GitHub response is unreadable or exceeds 8 MiB".into();
+                if crate::connection_failed(&error) {
+                    ForgeError::Temporary(message)
+                } else {
+                    ForgeError::Other(message)
+                }
+            })
     }
 }
 
@@ -316,9 +345,13 @@ fn parse<T: DeserializeOwned>(body: &str) -> Result<T> {
     serde_json::from_str(body)
         .map_err(|_| ForgeError::Other("GitHub returned an unexpected response shape".into()))
 }
-fn transport_error() -> ForgeError {
-    ForgeError::Other(
+fn transport_error(error: ureq::Error) -> ForgeError {
+    let message =
         "GitHub request failed (transport or redirect); check connectivity and repository identity"
-            .into(),
-    )
+            .into();
+    if crate::connection_failed(&error) {
+        ForgeError::Temporary(message)
+    } else {
+        ForgeError::Other(message)
+    }
 }

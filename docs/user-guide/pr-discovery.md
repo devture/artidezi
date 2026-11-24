@@ -156,6 +156,42 @@ until an explicit human action, unless the worker pool [opts into retries](opera
 attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded retries; a failed
 final invocation still holds the source for human review.
 
+### Automatic delivery retries
+
+A temporary failure while a validated result is being delivered does not need a person. When the
+forge or its Git server fails on its side, times out, drops the connection or rate-limits ArtiDezi,
+or a restart interrupts delivery, the task shows **Waiting to retry** with the next time and the
+cause. ArtiDezi then delivers the same result again, without another agent run and without charging
+the run budget.
+
+```yaml
+pull_requests:
+  retries:
+    delivery:                      # these are the defaults
+      max: 8                       # 0 asks a person right away; at most 20
+      initial_delay_seconds: 120
+      multiplier: 2
+      max_delay_seconds: 3600
+```
+
+With the defaults, retries wait 2, 4, 8, 16 and 32 minutes and then an hour each, about four hours
+in total. A rate limit that asks for a longer wait is respected. The limit counts per validated
+result; a person's **Retry publication** starts it over. The same limits apply to merge-request
+delivery of the project's manual tasks, and the defaults apply when the project has no
+`pull_requests`.
+
+Every retry repeats all gates: source head, checks, reviews, pauses and current permissions. It looks
+for what already happened before acting: an existing proposal branch, proposal, review or merge is
+recognized, and a merge always names the assessed head. An approval whose response was lost is
+posted again only while the forge shows no trace of it, so in rare cases the same commit can carry
+two identical approvals. If the source moved meanwhile, the new head is evaluated within the run
+budget instead; if it was closed or merged, the task closes.
+
+Not retried: pauses, requested changes, rejected credentials or permissions, a merge the forge
+refuses, edited, dismissed or deleted reviews of ArtiDezi, changed proposals, direct pushes and
+release tags. Preparing an evaluation during an outage is tried again every two minutes without
+stopping the change.
+
 ### Conflicts with the target branch
 
 A change can stop merging cleanly only because its target moved, for example when another update
@@ -227,7 +263,7 @@ model run. When a re-run turns the same head green, delivery continues through t
 freshness and policy gates, reusing an approval that was already posted. When the source moves to
 a new head, the held task closes and the new head is evaluated after settling, within the existing
 run budget. Checks that stay red keep the hold. A later explicit pause, a reviewer requesting
-changes, an earlier approval or merge whose response was lost, or any other hold still needs a person.
+changes or any other hold still needs a person.
 Changed source identity/routing, draft or closed state, and any possible prior publication still
 require inspection. **Retry publication** continues to reuse the recorded result and never queues
 a new model run; use **Resume evaluations** or task feedback to recover an older held assessment
@@ -272,6 +308,7 @@ The badge describes the current stage of that source and its latest task:
 - **Evaluated**: the latest observed source revision has a completed evaluation. Open its task for the verdict and evidence; the source request may still be open.
 - **Ready for review**: published adaptations are awaiting human review, or their checks when the
   handler merges adaptations.
+- **Waiting to retry**: a temporary failure interrupted delivery, which [continues by itself](#automatic-delivery-retries); the next time appears below the source.
 - **Needs attention**: the latest evaluation needs human input.
 - **Paused**: automatic evaluations are held. A running evaluation can still finish and shows a separate pause badge.
 - **Closed or merged**: the source request is closed and no longer evaluated.
@@ -322,7 +359,7 @@ Authenticated API equivalents:
 - `POST /admin/v1/discovery/scan` with `{"project":"project-name"}` (or `{}` for all enabled projects).
 - `POST /admin/v1/discovery/{id}/pause` or `/resume` with `{"actor":"admin"}`.
 - The existing task revision endpoint accepts human feedback and returns the new linked attempt.
-- `POST /admin/v1/tasks/{id}/retry-publication` retries interrupted delivery without a new evaluation.
+- `POST /admin/v1/tasks/{id}/retry-publication` retries interrupted delivery without a new evaluation, right away.
 
 Open adaptation proposals must be resolved before starting
 a new evaluation, including via Resume or task feedback. Resume closes the controller's own proposals
@@ -482,8 +519,9 @@ controller merges the task's adaptations with a merge commit once all of the fol
 Merging gives the agent's own code the same standing as a person's merge, so enable it where
 checks cover what matters: tests, linting, a deployment dry run. A merge the forge refuses, for
 example because branch protection requires an approval, is recorded as `adaptation.merge_failed`
-and not tried again for that head; neither is a merge interrupted by a restart. The adaptation then
-waits for a person, as without this setting. With several writable repositories, adaptations merge
+and not tried again for that head; the adaptation then waits for a person, as without this setting.
+A merge that failed temporarily or was interrupted by a restart is tried again under the
+[delivery retry limits](#automatic-delivery-retries), after checking whether it happened anyway. With several writable repositories, adaptations merge
 one after another once all are ready, and the conditions above are checked again before each one; a
 failure or change part-way leaves the remaining ones open. The original change is not merged or closed by
 ArtiDezi: once the adaptation lands, the updater usually closes or rebases it.

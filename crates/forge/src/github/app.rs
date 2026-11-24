@@ -534,7 +534,9 @@ impl GithubForge {
             || current.title != source.title
             || current.body != source.body
         {
-            return Err(invalid("GitHub source changed while reading checks; retry"));
+            return Err(ForgeError::Temporary(
+                "GitHub source changed while reading checks; retry".into(),
+            ));
         }
         let state = match (source.merged, source.state.as_str()) {
             (true, _) => MergeRequestState::Merged,

@@ -21,6 +21,7 @@ fn enable(w: &mut World) {
         max_active_tasks: 1,
         repositories: vec!["role".into()],
         ci_log_context: Default::default(),
+        retries: Default::default(),
         handlers: vec![PullRequestHandler {
             adaptation_action: Default::default(),
             target_conflicts: Default::default(),

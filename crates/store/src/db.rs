@@ -270,26 +270,12 @@ impl Db {
             .claim_source_ci_check(task_id, now, next_check_at)
     }
 
-    pub fn hold_for_source_check(
-        &mut self,
-        task_id: &str,
-        attempt_id: &str,
-        actor: &str,
-        hold: serde_json::Value,
-        next_check_at: Timestamp,
-    ) -> Result<()> {
-        self.connection()
-            .hold_for_source_check(task_id, attempt_id, actor, hold, next_check_at)
+    pub fn hold_task(&mut self, hold: TaskHold<'_>, actor: &str) -> Result<()> {
+        self.connection().hold_task(hold, actor)
     }
 
-    pub fn claim_held_source_check(
-        &mut self,
-        task_id: &str,
-        now: Timestamp,
-        next_check_at: Timestamp,
-    ) -> Result<bool> {
-        self.connection()
-            .claim_held_source_check(task_id, now, next_check_at)
+    pub fn list_task_holds(&self) -> Result<Vec<(String, Hold)>> {
+        self.connection().list_task_holds()
     }
 
     pub fn get_attempt(&self, id: &str) -> Result<Attempt> {

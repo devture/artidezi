@@ -40,8 +40,13 @@ pub struct TrackedPullRequest {
     pub head_observed_at: Timestamp,
     pub last_task_id: Option<String>,
     pub runs: u32,
+    /// Automatic work on this change is stopped. Changed together with `hold`; records from older
+    /// controllers can be paused without one.
     pub paused: bool,
     pub status: String,
+    /// Why this change is stuck and what moves it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<Hold>,
     /// A known unresolved source can be revisited without listing its repository again.
     #[serde(default)]
     pub follow_up: Option<PullRequestFollowUp>,
@@ -51,6 +56,131 @@ pub struct TrackedPullRequest {
     /// A head a person explicitly resumed despite its recorded target conflict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_conflict_waived_head: Option<String>,
+}
+
+impl TrackedPullRequest {
+    /// Places a hold. An operator's pause stays in force: automation never replaces or releases it.
+    pub fn place_hold(&mut self, hold: Hold) {
+        if self.operator_paused() && hold.reason != HoldReason::OperatorPause {
+            return;
+        }
+        self.paused = hold.reason.stops_automatic_work();
+        self.status = hold.message.clone();
+        self.hold = Some(hold);
+    }
+
+    pub fn release_hold(&mut self) {
+        self.paused = false;
+        self.hold = None;
+    }
+
+    pub fn operator_paused(&self) -> bool {
+        self.hold
+            .as_ref()
+            .is_some_and(|hold| hold.reason == HoldReason::OperatorPause)
+    }
+}
+
+/// What keeps a change, or a task without one, from moving on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub reason: HoldReason,
+    pub message: String,
+    /// What lets automation release it; only a person can when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub releases: Vec<HoldRelease>,
+    pub since: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Source head and target commit of the held assessment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Automatic retries scheduled so far, including the one `next_at` announces.
+    #[serde(default)]
+    pub retries: u32,
+    #[serde(default)]
+    pub max_retries: u32,
+    /// When automation looks at it next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_at: Option<Timestamp>,
+}
+
+impl Hold {
+    pub fn new(reason: HoldReason, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+            releases: vec![],
+            since: Timestamp::now(),
+            task_id: None,
+            head: None,
+            target: None,
+            retries: 0,
+            max_retries: 0,
+            next_at: None,
+        }
+    }
+
+    pub fn due(&self, now: Timestamp) -> bool {
+        self.next_at.is_some_and(|at| at <= now)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldReason {
+    /// A person stopped automatic work. Never released automatically.
+    OperatorPause,
+    /// The agent needs a decision from a person.
+    Question,
+    /// The run broke, or produced no acceptable result.
+    FailedRun,
+    /// Forge checks of the assessed head failed before approval or merging.
+    FailedChecks,
+    /// A temporary failure interrupted delivery of a validated result; it is tried again.
+    Delivery,
+    /// Delivery was refused, or still failed after its retries.
+    DeliveryStopped,
+    /// The change could not be routed or prepared under the current configuration.
+    Intake,
+    /// The automatic evaluation budget is used up.
+    Budget,
+    /// Recorded before holds were typed, or by a newer controller.
+    #[serde(other)]
+    Unclassified,
+}
+
+impl HoldReason {
+    /// Delivery retries wait in their own task state, so discovery needs no separate stop.
+    pub fn stops_automatic_work(self) -> bool {
+        self != Self::Delivery
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldRelease {
+    Time,
+    GreenChecks,
+    NewHead,
+    /// Not understood by this controller.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A hold to record together with its task's state and audit event.
+pub struct TaskHold<'a> {
+    pub task_id: &'a str,
+    pub attempt_id: &'a str,
+    pub state: TaskState,
+    pub event: &'a str,
+    pub payload: serde_json::Value,
+    /// The held incoming change, already carrying its hold.
+    pub source: Option<&'a TrackedPullRequest>,
+    /// The hold of a task without an incoming change.
+    pub hold: Option<&'a Hold>,
 }
 
 /// A source head that does not merge cleanly into the recorded target commit.
@@ -84,6 +214,8 @@ pub enum TaskState {
     Working,
     /// A validated unchanged source assessment is waiting for forge CI before approval/merge.
     WaitingForCi,
+    /// A temporary failure interrupted delivery of the validated result; it is tried again.
+    WaitingToRetry,
     /// The latest attempt produced a proposal that is published and awaits a human or automerge.
     AwaitingReview,
     /// The latest attempt asked for human input, or validation failed and a human must decide.
@@ -105,8 +237,9 @@ impl TaskState {
             (self, next),
             (
                 Working,
-                WaitingForCi | AwaitingReview | NeedsHuman | Done | Closed
+                WaitingForCi | WaitingToRetry | AwaitingReview | NeedsHuman | Done | Closed
             ) | (WaitingForCi, Working | NeedsHuman | Done | Closed)
+                | (WaitingToRetry, Working | NeedsHuman | Closed)
                 | (AwaitingReview, Working | NeedsHuman | Done | Closed)
                 | (NeedsHuman, Working | Closed)
         )
@@ -116,6 +249,7 @@ impl TaskState {
         match self {
             Self::Working => "working",
             Self::WaitingForCi => "waiting_for_ci",
+            Self::WaitingToRetry => "waiting_to_retry",
             Self::AwaitingReview => "awaiting_review",
             Self::NeedsHuman => "needs_human",
             Self::Done => "done",

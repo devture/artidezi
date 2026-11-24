@@ -178,10 +178,14 @@ impl ForgejoForge {
                 entity: "resource",
                 id: what.to_owned(),
             }),
-            _ => Err(ForgeError::Other(format!(
-                "{what}: HTTP {status}: {}",
-                body.trim()
-            ))),
+            _ => {
+                let message = format!("{what}: HTTP {status}: {}", body.trim());
+                Err(if crate::temporary_status(status) {
+                    ForgeError::Temporary(message)
+                } else {
+                    ForgeError::Other(message)
+                })
+            }
         }
     }
 
@@ -191,12 +195,12 @@ impl ForgejoForge {
             .get(self.api(path))
             .header("Authorization", &self.auth())
             .call()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         self.check(status, &body, path)?;
         serde_json::from_str(&body).map_err(|e| ForgeError::Other(format!("{path}: bad JSON: {e}")))
     }
@@ -231,12 +235,12 @@ impl ForgejoForge {
         let mut response = request
             .header("Authorization", &self.auth())
             .send_json(payload)
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         self.check(status, &body, path)?;
         Ok(body)
     }
@@ -260,7 +264,7 @@ impl ForgejoForge {
             if (!batch.is_empty() && !combined.sha.eq_ignore_ascii_case(sha))
                 || expected.is_some_and(|count| count != combined.total_count)
             {
-                return Err(ForgeError::Other(
+                return Err(ForgeError::Temporary(
                     "Forgejo commit statuses changed while reading them; retry".into(),
                 ));
             }
@@ -278,7 +282,7 @@ impl ForgejoForge {
         }
         let contexts: BTreeSet<_> = statuses.iter().map(|s| s.context.as_str()).collect();
         if contexts.len() != statuses.len() {
-            return Err(ForgeError::Other(
+            return Err(ForgeError::Temporary(
                 "Forgejo commit statuses changed while reading them; retry".into(),
             ));
         }
@@ -346,12 +350,12 @@ impl ForgejoForge {
             .put(self.api(&path))
             .header("Authorization", &self.auth())
             .send_json(json!({"permission": "write"}))
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         self.check(status, &body, &path)
     }
 
@@ -433,6 +437,14 @@ impl ReviewResponse {
             head_commit,
             body: self.body,
         })
+    }
+}
+
+fn transport_error(error: ureq::Error) -> ForgeError {
+    if crate::connection_failed(&error) {
+        ForgeError::Temporary(error.to_string())
+    } else {
+        ForgeError::Other(error.to_string())
     }
 }
 
@@ -788,12 +800,12 @@ impl ForgeAdapter for ForgejoForge {
                 .post(self.api(&path))
                 .header("Authorization", &self.auth())
                 .send_json(&payload)
-                .map_err(|e| ForgeError::Other(e.to_string()))?;
+                .map_err(transport_error)?;
             let status = response.status().as_u16();
             let body = response
                 .body_mut()
                 .read_to_string()
-                .map_err(|e| ForgeError::Other(e.to_string()))?;
+                .map_err(transport_error)?;
             match status {
                 200..=299 => break,
                 405 if body.contains("Please try again later") && attempt < MERGE_ATTEMPTS => {
@@ -804,6 +816,13 @@ impl ForgeAdapter for ForgejoForge {
                         expected: expected_head.clone(),
                         actual: self.get_merge_request(remote, number)?.head_commit,
                     });
+                }
+                // Still calculating mergeability after every attempt above.
+                405 if body.contains("Please try again later") => {
+                    return Err(ForgeError::Temporary(format!(
+                        "{path}: HTTP {status}: {}",
+                        body.trim()
+                    )));
                 }
                 405 | 409 => return Err(ForgeError::NotMergeable(number, body.trim().to_owned())),
                 _ => self.check(status, &body, &path)?,
@@ -818,7 +837,7 @@ impl ForgeAdapter for ForgejoForge {
             {
                 Ok(commit)
             }
-            _ => Err(ForgeError::Other(
+            _ => Err(ForgeError::Temporary(
                 "Forgejo did not confirm the merge of the expected head".into(),
             )),
         }
@@ -849,12 +868,12 @@ impl ForgeAdapter for ForgejoForge {
             .post(self.api(&path))
             .header("Authorization", &self.auth())
             .send_json(json!({"tag_name": name, "target": commit.as_str()}))
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
+            .map_err(transport_error)?;
         if status == 409 {
             return Err(ForgeError::Other(format!("tag {name} already exists")));
         }
@@ -944,6 +963,43 @@ mod tests {
             }
         });
         url
+    }
+
+    #[test]
+    fn only_outages_are_temporary() {
+        let forge = ForgejoForge::new("http://127.0.0.1:1", "token", "bot");
+        for (status, temporary) in [
+            (400, false),
+            (401, false),
+            (403, false),
+            (404, false),
+            (405, false),
+            (409, false),
+            (422, false),
+            (408, true),
+            (429, true),
+            (500, true),
+            (502, true),
+            (503, true),
+            (504, true),
+        ] {
+            let error = forge.check(status, "", "/x").unwrap_err();
+            assert_eq!(error.is_temporary(), temporary, "{status}: {error}");
+        }
+        // Nothing listens on this port.
+        let error = forge.get_merge_request("o/r", 1).unwrap_err();
+        assert!(matches!(error, ForgeError::Temporary(_)), "{error}");
+        // A server that drops the connection instead of answering.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
+        let forge = ForgejoForge::new(&url, "token", "bot");
+        let error = forge.get_merge_request("o/r", 1).unwrap_err();
+        assert!(matches!(error, ForgeError::Temporary(_)), "{error}");
     }
 
     #[test]

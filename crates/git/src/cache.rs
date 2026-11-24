@@ -87,7 +87,9 @@ impl BareCache {
         options.follow_redirects(git2::RemoteRedirect::None);
         options.download_tags(git2::AutotagOption::None);
         options.prune(git2::FetchPrune::Off);
-        remote.fetch(refspecs, Some(&mut options), None)?;
+        remote
+            .fetch(refspecs, Some(&mut options), None)
+            .map_err(crate::remote_error)?;
         Ok(())
     }
 
@@ -157,7 +159,9 @@ impl BareCache {
             let mut options = PushOptions::new();
             options.remote_callbacks(callbacks);
             options.follow_redirects(git2::RemoteRedirect::None);
-            remote.push(&[refspec], Some(&mut options))?;
+            remote
+                .push(&[refspec], Some(&mut options))
+                .map_err(crate::remote_error)?;
         }
         match rejected.into_inner() {
             Some(reason) => Err(GitError::Invalid(format!("push rejected: {reason}"))),
