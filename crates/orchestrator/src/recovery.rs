@@ -80,17 +80,21 @@ impl Orchestrator {
         if attempt.state == AttemptState::Invalid
             && attempt.result.is_none()
             && !self.db.transient_failure_recorded(&attempt.id)?
-            // Older releases did not look at what such a run had committed.
-            && !attempt
-                .validation_problems
-                .iter()
-                .any(|problem| problem.contains("reported unchanged but HEAD moved"))
             && self
                 .config
                 .worker_pools
                 .get(&attempt.worker_pool)
                 .is_some_and(|pool| pool.transient_failure_retries > 0)
         {
+            // Older releases did not look at what such a run had committed. It stays with a person,
+            // as do its proposals when the source moves.
+            if attempt
+                .validation_problems
+                .iter()
+                .any(|problem| problem.contains("reported unchanged but HEAD moved"))
+            {
+                return Ok(());
+            }
             let Some(reference) = &attempt.attempt_record else {
                 return Ok(());
             };
