@@ -231,6 +231,55 @@ fn evidence_section(result: &AgentResult, repository: &ResolvedRepository) -> St
 }
 
 impl Orchestrator {
+    /// What the source's review says about an assessment.
+    pub(crate) fn assessment_body(
+        &self,
+        task: &Task,
+        result: &AgentResult,
+        policy: &ResolvedProjectPolicy,
+        automatic: bool,
+        without_checks: bool,
+    ) -> Result<String> {
+        let source = policy
+            .source_pull_request
+            .as_ref()
+            .ok_or_else(|| invalid("missing source identity"))?;
+        let repo = &policy.repositories[&source.repository_id];
+        let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
+        let verdict = match result.outcome {
+            Outcome::ApproveUntouched if automatic => {
+                "Approved: no adaptation is required under the configured project policy."
+            }
+            Outcome::ApproveUntouched => {
+                "Assessment only: no adaptation is required; no approval or merge was requested."
+            }
+            Outcome::Proposal if source.adaptation_action == AdaptationAction::Merge => {
+                "The agent prepared adaptations. ArtiDezi merges them once their checks pass, unless a reviewer requests changes."
+            }
+            Outcome::Proposal => {
+                "The agent prepared adaptations for human review. The original change remains open."
+            }
+            Outcome::NeedsHuman => "The assessment needs a maintainer decision.",
+            Outcome::RetryLater | Outcome::Failed => unreachable!(),
+        };
+        let mut body = format!("{verdict}\n\n{}", summary(result));
+        if without_checks {
+            body.push_str(
+                "\n\n**No forge checks were reported for this commit.** This handler accepts that, so the approval rests on ArtiDezi's assessment alone.",
+            );
+        }
+        body.push_str("\n\n");
+        body.push_str(&evidence_section(result, repo));
+        for mr in self.db.list_merge_requests(&task.id)? {
+            body.push_str(&format!("\n\nAdaptation: {}", mr.url));
+        }
+        body.push_str(&format!(
+            "\n\nAssessed source `{}`.\n\n{marker}",
+            source.input.commit
+        ));
+        Ok(body)
+    }
+
     pub(crate) fn protected_repositories(
         &self,
         policy: &ResolvedProjectPolicy,
@@ -615,37 +664,7 @@ impl Orchestrator {
         } else {
             artidezi_forge::ReviewState::Commented
         };
-        let verdict = match result.outcome {
-            Outcome::ApproveUntouched if automatic => {
-                "Approved: no adaptation is required under the configured project policy."
-            }
-            Outcome::ApproveUntouched => {
-                "Assessment only: no adaptation is required; no approval or merge was requested."
-            }
-            Outcome::Proposal if source.adaptation_action == AdaptationAction::Merge => {
-                "The agent prepared adaptations. ArtiDezi merges them once their checks pass, unless a reviewer requests changes."
-            }
-            Outcome::Proposal => {
-                "The agent prepared adaptations for human review. The original change remains open."
-            }
-            Outcome::NeedsHuman => "The assessment needs a maintainer decision.",
-            Outcome::RetryLater | Outcome::Failed => unreachable!(),
-        };
-        let mut body = format!("{verdict}\n\n{}", summary(result));
-        if without_checks {
-            body.push_str(
-                "\n\n**No forge checks were reported for this commit.** This handler accepts that, so the approval rests on ArtiDezi's assessment alone.",
-            );
-        }
-        body.push_str("\n\n");
-        body.push_str(&evidence_section(result, repo));
-        for mr in self.db.list_merge_requests(&task.id)? {
-            body.push_str(&format!("\n\nAdaptation: {}", mr.url));
-        }
-        body.push_str(&format!(
-            "\n\nAssessed source `{}`.\n\n{marker}",
-            source.input.commit
-        ));
+        let mut body = self.assessment_body(task, result, &policy, automatic, without_checks)?;
         // A planned approval fixed its body, including whether checks were absent then. Checks that
         // appeared since must not make the existing approval look foreign on resume or retry.
         if automatic

@@ -744,7 +744,7 @@ impl Orchestrator {
             .rev()
             .find(|event| event.kind == "task.needs_human")
             .is_some_and(|event| event.payload["recheck"] == "failed_checks");
-        if failed_checks && task.state == TaskState::NeedsHuman {
+        if failed_checks && matches!(task.state, TaskState::NeedsHuman | TaskState::Closed) {
             hold.reason = HoldReason::FailedChecks;
             hold.releases = vec![HoldRelease::GreenChecks, HoldRelease::NewHead];
             hold.next_at = Some(Timestamp::now());

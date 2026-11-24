@@ -695,3 +695,24 @@ fn every_stage_shares_a_private_attempt_scratch_directory() {
     output.cleanup().unwrap();
     assert!(!output.workspace.exists());
 }
+
+#[test]
+fn a_long_log_keeps_its_last_lines() {
+    let f = fixture();
+    let body = r#"i=0; while [ $i -lt 500 ]; do echo "line $i of a long log"; i=$((i+1)); done; printf 'the end\n'; exit 1"#;
+    let harness = FakeHarness {
+        script: script(&f, "long.sh", body),
+    };
+    let (job, bytes) = make_job(&f, "att_long", 60);
+    let output = run_attempt(&config(&f), &harness, &inputs(&f, &job, &bytes)).unwrap();
+    let log = fs::read_to_string(output.workspace.join("out/harness-stdout.log")).unwrap();
+    assert!(log.starts_with("line 0 of a long log\n"));
+    let (_, tail) = log
+        .split_once("\n[truncated by artidezi worker]\n")
+        .unwrap();
+    assert!(
+        tail.starts_with("line ") && tail.ends_with("line 499 of a long log\nthe end\n"),
+        "{tail}"
+    );
+    assert!(log.len() < 4096 + 64);
+}

@@ -139,7 +139,7 @@ It doesn't need the orchestrator's configuration or any forge credential.
    | `workspaces_root` | Where attempts run, including their checkouts, builds and temporary files (`TMPDIR`). Unique per worker; size its disk for your largest builds |
    | `credentials_root` | Model credentials, by `credential_ref`. Unique per worker |
    | `poll_seconds` | How often to ask for work. Default 15 |
-   | `max_log_bytes` | Limit for each captured log. Default 16 MiB |
+   | `max_log_bytes` | Limit for each captured log; a longer one loses its middle. Default 16 MiB |
    | `sweep_system_tmp` | After each attempt, remove what the worker's user created in `/tmp` during it, for tools that ignore `TMPDIR`. Default `false`. Enable it only for a `/tmp` of the worker's own, as in the unit below |
    | `codex_binary`, `pi_binary`, `claude_binary` | The harnesses this worker offers, by name or path. Set at least 1 |
 

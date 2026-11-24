@@ -123,7 +123,7 @@ announced retry. `reconsider` then decides, with the next look reserved before a
   the reported blocker as untrusted task text. Once the retries are used, a person is asked.
 
 Every release first requires that the source is watched and open, nobody's latest review requests
-changes, the published assessment still exists unedited (receipts of older releases have no digest, so the planned approval body or else its verdict and marker are compared), and all planned proposals are settled; a
+changes, the published assessment still exists unedited (receipts of older releases have no digest, so it is compared with the planned approval or what the result renders to), and all planned proposals are settled; a
 blocked release is looked at again ten minutes later, or ends the wait after a failed run or a temporary blocker. Delivery errors
 decide their own releases (`releases_after`); errors that can stem from a person's decision, revoked
 permission or a foreign edit have none.

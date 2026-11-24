@@ -515,7 +515,7 @@ impl Orchestrator {
         let published: Vec<_> = events
             .iter()
             .filter(|event| event.kind == "assessment.published")
-            .filter_map(|event| Some((event.payload["review_id"].as_u64()?, &event.payload)))
+            .filter_map(|event| Some((event.payload["review_id"].as_u64()?, event)))
             .collect();
         let planned: Vec<_> = events
             .iter()
@@ -534,67 +534,87 @@ impl Orchestrator {
             .forge(&tracked.forge)?
             .list_reviews(&tracked.remote, source.number)?;
         let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
-        // Plans and receipts of older releases can lack what was posted; at least the verdict has to
-        // be there.
-        let verdict: Option<AgentResult> = self
-            .db
-            .latest_attempt(&task.id)?
-            .and_then(|attempt| attempt.result)
-            .and_then(|result| self.artifacts.get_json(&result).ok());
+        // Plans and receipts of older releases can lack what was posted. It is built from the result.
+        let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
+            .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
+        let as_built = |attempt: Option<&str>, review: &MergeRequestReview| -> Result<bool> {
+            let attempt = match attempt {
+                Some(id) => Some(self.db.get_attempt(id)?),
+                None => self.db.latest_attempt(&task.id)?,
+            };
+            let Some(result) = attempt
+                .and_then(|attempt| attempt.result)
+                .and_then(|result| self.artifacts.get_json::<AgentResult>(&result).ok())
+                .filter(|result| !matches!(result.outcome, Outcome::RetryLater | Outcome::Failed))
+            else {
+                return Ok(false);
+            };
+            for (automatic, without_checks) in [(false, false), (true, false), (true, true)] {
+                if review.body
+                    == self.assessment_body(task, &result, &policy, automatic, without_checks)?
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
         // Forges dismiss approvals themselves when the head moves.
         let moved = tracked.observed_head != source.input.commit.as_str();
-        let has_verdict = |review: &MergeRequestReview| {
-            review.body.trim_end().ends_with(&marker)
-                && verdict.as_ref().is_none_or(|verdict| {
-                    review
-                        .body
-                        .contains(&crate::source_publish::summary(verdict))
-                })
-        };
         if published.is_empty() {
             // Its receipt was lost: it can have arrived, and have been edited since.
-            return Ok(reviews.iter().any(|review| {
+            for review in &reviews {
                 let ours = review.body.contains(&marker);
                 let altered = Some(&review.author_login) == source.publisher_login.as_ref()
                     && review.head_commit == source.input.commit
                     && !review.body.contains("<!-- artidezi:assessment:");
-                let as_planned = planned.iter().any(|plan| {
-                    if let Some(body) = plan["body"].as_str() {
+                if altered || (ours && review.state == ReviewState::Dismissed && !moved) {
+                    return Ok(true);
+                }
+                if !ours {
+                    continue;
+                }
+                let mut as_planned = false;
+                for plan in &planned {
+                    as_planned |= if let Some(body) = plan["body"].as_str() {
                         review.body == body
                     } else if let Some(sha256) = plan["body_sha256"].as_str() {
                         crate::source_publish::digest(&review.body) == sha256
                     } else {
-                        // Plans of older releases for a comment.
-                        has_verdict(review)
-                    }
-                });
-                altered
-                    || (ours && (!as_planned || (review.state == ReviewState::Dismissed && !moved)))
-            }));
+                        as_built(None, review)?
+                    };
+                }
+                if !as_planned {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
-        Ok(!published.iter().all(|(id, receipt)| {
-            reviews.iter().any(|review| {
-                review.id == *id
-                    && review.body.contains(&marker)
-                    && match receipt["body_sha256"].as_str() {
-                        Some(digest) => digest == crate::source_publish::digest(&review.body),
-                        None => {
-                            let mut bodies = planned
-                                .iter()
-                                .filter(|_| receipt["state"] == "approved")
-                                .filter_map(|plan| plan["body"].as_str())
-                                .peekable();
-                            if bodies.peek().is_some() {
-                                bodies.any(|body| body == review.body)
-                            } else {
-                                has_verdict(review)
-                            }
-                        }
-                    }
-                    && (review.state != ReviewState::Dismissed
-                        || (receipt["state"] == "approved" && moved))
-            })
-        }))
+        for (id, event) in published {
+            let receipt = &event.payload;
+            let Some(review) = reviews.iter().find(|review| review.id == id) else {
+                return Ok(true);
+            };
+            let mut bodies = planned
+                .iter()
+                .filter(|_| receipt["state"] == "approved")
+                .filter_map(|plan| plan["body"].as_str())
+                .peekable();
+            let unedited = if let Some(digest) = receipt["body_sha256"].as_str() {
+                digest == crate::source_publish::digest(&review.body)
+            } else if bodies.peek().is_some() {
+                bodies.any(|body| body == review.body)
+            } else {
+                as_built(event.attempt_id.as_deref(), review)?
+            };
+            if !unedited
+                || !review.body.contains(&marker)
+                || (review.state == ReviewState::Dismissed
+                    && !(receipt["state"] == "approved" && moved))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Fetches the current head and target and compares the change with the held assessment's.

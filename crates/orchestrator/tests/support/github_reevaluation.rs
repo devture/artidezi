@@ -84,6 +84,16 @@ fn advance_target(w: &World) -> Oid {
         "Advance target",
     )
 }
+fn event(w: &World, id: &str, kind: &str) -> serde_json::Value {
+    w.orchestrator
+        .db
+        .list_events(id)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == kind)
+        .unwrap()
+        .payload
+}
 /// Store the hold as a release without typed holds did.
 fn untype(w: &World, reason: Option<&str>, id: &str) {
     let mut tracked = source(w);
@@ -504,11 +514,12 @@ fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
 
 #[test]
 fn unreported_commits_beyond_what_is_collected_or_inspected_ask_right_away() {
-    for limit in ["message", "bundle"] {
+    for limit in ["message", "bundle", "partial"] {
         let (mut w, _f) = safe_world(true);
         let id = scan(&mut w).remove(0);
         let message = match limit {
             "message" => "$(head -c 4000 /dev/zero | tr '\\0' x)",
+            "partial" => "Second",
             _ => {
                 w.orchestrator.config.instance.limits.max_bundle_bytes = 1;
                 "Change"
@@ -517,11 +528,21 @@ fn unreported_commits_beyond_what_is_collected_or_inspected_ask_right_away() {
         let script = w.script(
             "unreported.sh",
             &format!(
-                "echo x > x.txt; git add -A; git commit -q -m \"{message}\"; {}",
+                "git commit -q --allow-empty -m First; echo x > x.txt; git add -A; git commit -q -m \"{message}\"; {}",
                 result_writer(r#"{"schema_version":1,"outcome":"failed","summary":"Broke.","repositories":[{"id":"role","changed":false}]}"#)
             ),
         );
-        assert_eq!(w.work(&script), AttemptState::Invalid, "{limit}");
+        let state = w.work_with_record(&script, |record| {
+            if limit == "partial" {
+                // As a record that leaves out the first commit.
+                for repository in &mut record.repositories {
+                    if let Some(series) = &mut repository.series {
+                        series.commits.remove(0);
+                    }
+                }
+            }
+        });
+        assert_eq!(state, AttemptState::Invalid, "{limit}");
         let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
         assert!(
             attempt
@@ -997,6 +1018,54 @@ fn a_restart_goes_on_without_a_result_that_is_gone() {
     reopen(&mut w, &f);
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
     assert!(hold(&w).message.contains("cannot be read"));
+}
+
+/// Those releases planned the exact body of an approval, but not of a comment.
+#[test]
+fn a_comment_of_an_older_release_that_was_edited_stays_with_a_person() {
+    for case in ["untouched", "inserted", "removed"] {
+        let (mut w, f, id) = asking();
+        let mut receipt = event(&w, &id, "assessment.published");
+        receipt.as_object_mut().unwrap().remove("body_sha256");
+        // Only the older form of it is left.
+        let mut state = f.state.lock().unwrap();
+        let mut review = state.reviews[0].clone();
+        review["id"] = json!(901);
+        receipt["review_id"] = json!(901);
+        if case == "inserted" {
+            let body = review["body"].as_str().unwrap();
+            let marker = body.find("<!-- artidezi:assessment:").unwrap();
+            review["body"] = json!(format!(
+                "{}Do not approve this.\n\n{}",
+                &body[..marker],
+                &body[marker..]
+            ));
+        }
+        if case != "removed" {
+            state.reviews.push(review);
+        }
+        drop(state);
+        let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+        w.orchestrator
+            .db
+            .record_event(
+                Some(&id),
+                Some(&attempt.id),
+                "orchestrator",
+                "assessment.published",
+                receipt,
+            )
+            .unwrap();
+        untype(&w, None, &id);
+        move_source_head(&w, &f);
+        reopen(&mut w, &f);
+        assert_eq!(hold(&w).reason, HoldReason::Question);
+        assert_eq!(
+            settle(&mut w).len(),
+            usize::from(case == "untouched"),
+            "{case}"
+        );
+    }
 }
 
 /// Those releases planned the exact body of an approval, but its receipt had no digest.

@@ -603,13 +603,23 @@ impl StateAccess {
                 ));
             }
         }
+        // The walk ends at a commit that does not follow the one before it.
+        let mut parent = base;
+        let walked = oids.len() == series.commits.len()
+            && oids.iter().all(|&oid| {
+                let follows = cache.repo().find_commit(oid).is_ok_and(|commit| {
+                    commit.parent_count() == 1 && commit.parent_id(0).ok() == Some(parent)
+                });
+                parent = oid;
+                follows
+            });
         problems.extend(
             inspect(cache.repo(), base, &oids, &rules)?
                 .into_iter()
                 .map(|p| format!("repository {}: {p}", job_repo.id)),
         );
         if !problems.is_empty() {
-            return Ok((problems, None, true));
+            return Ok((problems, None, walked));
         }
         let head =
             Oid::from_str(head.as_str()).map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
@@ -619,7 +629,7 @@ impl StateAccess {
                 "repository {}: diff is above the {} byte limit",
                 job_repo.id, job.limits.max_diff_bytes_per_repository
             ));
-            return Ok((problems, None, true));
+            return Ok((problems, None, walked));
         }
         let _guard = self.artifacts.upload_guard();
         let artifact = ArtifactRef {
@@ -628,7 +638,7 @@ impl StateAccess {
         };
         self.db
             .pin_artifact_upload(&attempt.id, &artifact, Timestamp::now())?;
-        Ok((problems, Some(self.artifacts.put(&patch)?), true))
+        Ok((problems, Some(self.artifacts.put(&patch)?), walked))
     }
 }
 

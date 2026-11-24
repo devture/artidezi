@@ -113,7 +113,8 @@ pub fn claude_failure(stream: &[u8]) -> Option<&'static str> {
         event["api_error"].as_str(),
     ) {
         (Some(529), ..) | (_, Some("overloaded_error"), _) => Some("model_capacity"),
-        (Some(429), _, None) | (None, Some("rate_limit_error"), None) => Some("model_rate_limit"),
+        (Some(429), None | Some("rate_limit_error"), None)
+        | (None, Some("rate_limit_error"), None) => Some("model_rate_limit"),
         (Some(408 | 500..=599), ..)
         | (None, Some("api_error" | "timeout_error"), None)
         | (None, _, Some("connection_failed" | "no_response" | "stream_idle_timeout")) => {
@@ -166,6 +167,7 @@ fn claude_refusal(event: &serde_json::Value) -> bool {
             "credential",
             "credits",
             "login",
+            "quota",
             "api_key",
             "signin",
             "spend_limit",
@@ -173,11 +175,13 @@ fn claude_refusal(event: &serde_json::Value) -> bool {
         ]
         .iter()
         .any(|text| {
-            ["api_error", "api_error_code"].iter().any(|field| {
-                event[field]
-                    .as_str()
-                    .is_some_and(|code| code.contains(text))
-            })
+            ["api_error", "api_error_code", "api_error_type"]
+                .iter()
+                .any(|field| {
+                    event[field]
+                        .as_str()
+                        .is_some_and(|code| code.contains(text))
+                })
         })
         || (matches!(event["api_error_status"].as_u64(), None | Some(400 | 429)) && {
             // The provider reports an exhausted quota as an invalid request or a rate limit.
@@ -316,6 +320,8 @@ mod tests {
             (status(429, "rate_limit_error", "API Error: Request rejected (429) · Extra usage is required for long context requests."), None, true),
             (api(r#""api_error_status":429,"api_error_code":"enforced_spend_limit_reached""#, "API Error: Request rejected (429)"), None, true),
             (api(r#""api_error_status":429,"api_error":"usage_limit_reached""#, "Limit reached"), None, true),
+            (status(429, "insufficient_quota", "Limit reached"), None, true),
+            (status(429, "some_error", "Limit reached"), None, false),
             (code("org_disabled_credential", "API Error"), None, true),
             (r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"terminal_reason":"budget_exhausted","errors":["Reached maximum budget ($3)"]}"#.into(), None, true),
             (r#"{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}"#.into(), None, true),

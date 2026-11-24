@@ -617,27 +617,49 @@ fn failed_checks_hold_still_recovers_after_reopening_on_the_same_head() {
 
 #[test]
 fn failed_checks_hold_reopened_on_a_moved_head_is_assessed_whatever_its_checks_say() {
-    let (mut w, f) = safe_world(true);
-    let id = scan(&mut w).remove(0);
-    f.state.lock().unwrap().conclusion = "failure".into();
-    w.work(&safe_result(&w, Some("low"), true));
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    move_source_head(&w, &f);
-    scan(&mut w);
-    f.state.lock().unwrap().open = false;
-    scan(&mut w);
-    assert_eq!(task_state(&w, &id), TaskState::Closed);
-    f.state.lock().unwrap().open = true;
-    scan(&mut w);
-    let now = Timestamp::now();
-    for seconds in [601, 1300, 2000] {
-        w.orchestrator
-            .tick_at(now + SignedDuration::from_secs(seconds))
-            .unwrap();
+    for older in [false, true] {
+        let (mut w, f) = safe_world(true);
+        let id = scan(&mut w).remove(0);
+        f.state.lock().unwrap().conclusion = "failure".into();
+        w.work(&safe_result(&w, Some("low"), true));
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        move_source_head(&w, &f);
+        scan(&mut w);
+        f.state.lock().unwrap().open = false;
+        scan(&mut w);
+        assert_eq!(task_state(&w, &id), TaskState::Closed);
+        if older {
+            // As a release without typed holds left it.
+            w.orchestrator
+                .db
+                .record_event(
+                    Some(&id),
+                    None,
+                    "orchestrator",
+                    "task.needs_human",
+                    json!({"reason": "Current forge checks failed", "recheck": "failed_checks"}),
+                )
+                .unwrap();
+            let mut tracked = held_source(&w);
+            tracked.hold = None;
+            w.orchestrator
+                .db
+                .save_pull_request_source(&tracked)
+                .unwrap();
+            reopen(&mut w, &f);
+        }
+        f.state.lock().unwrap().open = true;
+        scan(&mut w);
+        let now = Timestamp::now();
+        for seconds in [601, 1300, 2000] {
+            w.orchestrator
+                .tick_at(now + SignedDuration::from_secs(seconds))
+                .unwrap();
+        }
+        // Queued; whether red checks hold it back from there is the handler's setting.
+        assert_eq!(held_source(&w).hold, None);
+        assert!(!held_source(&w).paused);
     }
-    // Queued; whether red checks hold it back from there is the handler's setting.
-    assert_eq!(held_source(&w).hold, None);
-    assert!(!held_source(&w).paused);
 }
 
 /// An approval whose response was lost is bound to its head. Failed checks on the retry hold it like

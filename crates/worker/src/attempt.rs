@@ -5,7 +5,7 @@
 use artidezi_contract::time::Timestamp;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -29,6 +29,9 @@ use crate::credentials;
 use crate::process::{self, Spec};
 use crate::{Cancellation, Result, WorkerError, io_err};
 
+/// The end of a truncated log that is kept; below what the controller reads of a log's end.
+const MAX_LOG_TAIL_BYTES: u64 = 32 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
     pub worker_pool: String,
@@ -37,7 +40,7 @@ pub struct WorkerConfig {
     pub workspaces_root: PathBuf,
     /// `<credentials_root>/<credential_ref>/` holds harness credential material, if any.
     pub credentials_root: Option<PathBuf>,
-    /// Logs above this size are truncated (head kept) before upload.
+    /// Logs above this size are truncated (head and last lines kept) before upload.
     pub max_log_bytes: u64,
     /// The host's shared temporary directory (normally `/tmp`), swept after each attempt of what
     /// the worker's user created there during it. `None` disables the sweep.
@@ -105,9 +108,18 @@ impl Staging<'_> {
             let len = fs::metadata(path).map_err(io_err(path))?.len();
             if len > self.max_log_bytes {
                 let mut file = fs::File::open(path).map_err(io_err(path))?;
-                let mut head = vec![0u8; self.max_log_bytes as usize];
+                // A harness says last how its run ended, so the last lines stay.
+                let kept = (self.max_log_bytes / 4).min(MAX_LOG_TAIL_BYTES);
+                let mut head = vec![0u8; (self.max_log_bytes - kept) as usize];
                 file.read_exact(&mut head).map_err(io_err(path))?;
                 head.extend_from_slice(b"\n[truncated by artidezi worker]\n");
+                let mut tail = vec![0u8; kept as usize];
+                file.seek(SeekFrom::Start(len - kept))
+                    .and_then(|_| file.read_exact(&mut tail))
+                    .map_err(io_err(path))?;
+                if let Some(end) = tail.iter().position(|byte| *byte == b'\n') {
+                    head.extend_from_slice(&tail[end + 1..]);
+                }
                 fs::write(&staged_path, &head).map_err(io_err(&staged_path))?;
                 truncated = true;
             }
