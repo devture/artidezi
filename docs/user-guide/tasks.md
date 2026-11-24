@@ -158,10 +158,10 @@ result and reconciles existing effects without another worker. See the
 
 If the source HEAD changes before publication starts, ArtiDezi closes the obsolete assessment and
 schedules a fresh evaluation within the existing source budget. The task links to that follow-up.
-A retry request that never started publication does not prevent this recovery. Human decisions,
-explicit source pauses and possible existing forge effects retain their holds. For an invalid or
-lost execution requiring manual recovery, **Retry evaluation** starts a fresh evaluation without
-requiring a comment.
+A retry request that never started publication does not prevent this recovery. Explicit source
+pauses stay. Held assessments and failed runs are
+[evaluated again by themselves](pr-discovery.md#automatic-reevaluation) where that can help; **Retry evaluation** on an
+invalid or lost execution starts a fresh evaluation right away, without requiring a comment.
 
 Use **Evaluate again** for fresh source-aware feedback. It creates a new linked task against
 the current head and preserves earlier completed tasks. It includes your follow-up instructions with

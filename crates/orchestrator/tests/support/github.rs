@@ -19,6 +19,8 @@ use serde_json::json;
 
 #[path = "github_ci.rs"]
 mod ci;
+#[path = "github_reevaluation.rs"]
+mod reevaluation;
 #[path = "github_retries.rs"]
 mod retries;
 #[path = "github_supersession.rs"]
@@ -1159,7 +1161,7 @@ fn same_head_reopening_and_open_source_changes_keep_holds_and_budget() {
 }
 
 #[test]
-fn reopened_new_head_keeps_a_nonterminal_delivery_task_linked() {
+fn a_nonterminal_delivery_reassesses_a_reopened_new_head_within_its_budget() {
     let (mut w, f) = safe_world(true);
     f.state.lock().unwrap().pending_on_approval = true;
     let id = scan(&mut w).remove(0);
@@ -1182,18 +1184,20 @@ fn reopened_new_head_keeps_a_nonterminal_delivery_task_linked() {
     f.state.lock().unwrap().open = true;
     assert!(scan(&mut w).is_empty());
     assert_eq!(task_state(&w, &id), TaskState::WaitingForCi);
+    f.state.lock().unwrap().conclusion = "success".into();
     w.orchestrator
         .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    let held = w
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    let fresh = w
         .orchestrator
         .db
         .get_pull_request_source(&tracked.id)
         .unwrap();
-    assert!(held.paused);
-    assert_eq!(held.runs, tracked.runs);
-    assert_eq!(held.last_task_id, tracked.last_task_id);
+    assert!(!fresh.paused);
+    assert_eq!(fresh.runs, tracked.runs + 1);
+    assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
+    assert!(!f.state.lock().unwrap().merged);
 }
 
 #[test]
@@ -1762,8 +1766,23 @@ fn merge_uses_expected_head_and_never_bypasses_forge_rejection() {
         );
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
         assert!(!f.state.lock().unwrap().merged);
-        assert!(w.orchestrator.retry_publication(&id, "human").is_err());
+        let held = w.orchestrator.db.list_pull_request_sources(None).unwrap()[0]
+            .hold
+            .clone()
+            .unwrap();
+        assert_eq!(
+            held.releases,
+            [HoldRelease::NewHead, HoldRelease::TargetMoved]
+        );
+        // A person's retry meets the same refusal, or retires the obsolete verdict.
+        let retried = w.orchestrator.retry_publication(&id, "human");
+        if reason == "race" {
+            assert_eq!(retried.unwrap().state, TaskState::Closed);
+        } else {
+            assert!(retried.is_err());
+        }
         assert_eq!(f.state.lock().unwrap().reviews.len(), 1);
+        assert!(!f.state.lock().unwrap().merged);
     }
 }
 #[test]

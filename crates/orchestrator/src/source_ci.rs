@@ -57,21 +57,28 @@ impl Orchestrator {
             }
             match error {
                 OrchestratorError::ChecksFailed => self.hold_for_failed_checks(task, &attempt)?,
-                OrchestratorError::WaitingForCi
-                | OrchestratorError::Forge(artidezi_forge::ForgeError::RetryAfter { .. }) => {
-                    // Only preflight reads reach here. Respect persisted forge backoff and try on
-                    // a later scheduled check; never convert an API error into successful CI.
-                }
-                ref error if error.is_temporary() => {
+                OrchestratorError::WaitingForCi => {}
+                // Only preflight reads reach here. Respect persisted forge backoff and try on a
+                // later scheduled check; never convert an API error into successful CI.
+                ref error
+                    if error.is_temporary()
+                        || matches!(
+                            error,
+                            OrchestratorError::Forge(artidezi_forge::ForgeError::RetryAfter { .. })
+                        ) =>
+                {
                     if let Some(source) = source_of(task)? {
                         let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
                         tracked.status = format!("Waiting for CI; checking it failed: {error}");
                         self.db.save_pull_request_source(&tracked)?;
                     }
                 }
-                _ => self.needs_human(
+                OrchestratorError::SourceHeadChanged { .. }
+                    if self.reassess_moved_source(task, &attempt)? => {}
+                _ => self.stop_delivery(
                     task,
                     &attempt,
+                    &error,
                     &format!("Automatic delivery stopped: {error}"),
                 )?,
             }
@@ -184,9 +191,10 @@ impl Orchestrator {
             Ok(()) => Ok(()),
             // Keep the hold and its schedule; a later check sees the current forge state.
             Err(OrchestratorError::Forge(_) | OrchestratorError::Store(_)) => Ok(()),
-            Err(error) => self.needs_human(
+            Err(error) => self.stop_delivery(
                 task,
                 &attempt,
+                &error,
                 &format!("Automatic check recovery stopped: {error}"),
             ),
         }
@@ -216,7 +224,7 @@ impl Orchestrator {
             // A maintainer objection made during the hold is a human decision; a new head alone
             // must not reactivate automatic evaluation past it.
             if self.source_changes_requested(&policy)? {
-                return Err(OrchestratorError::Invalid(
+                return Err(OrchestratorError::Outdated(
                     "a reviewer has requested changes; maintainer input required".into(),
                 ));
             }
@@ -227,6 +235,7 @@ impl Orchestrator {
                 &source.input.commit,
                 &current.head_commit,
                 Some("failed_checks"),
+                None,
             );
         }
         if current.checks != ChecksState::Success {

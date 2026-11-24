@@ -21,6 +21,7 @@ use artidezi_forge::{MergeRequestState as RemoteState, NewMergeRequest};
 use artidezi_store::model::*;
 use git2::Oid;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fmt::Write as _};
 
 #[derive(Serialize, Deserialize)]
@@ -43,6 +44,12 @@ fn checks_receipt(mut payload: serde_json::Value, without_checks: bool) -> serde
 
 fn invalid(message: &str) -> OrchestratorError {
     OrchestratorError::Invalid(message.into())
+}
+fn outdated(message: &str) -> OrchestratorError {
+    OrchestratorError::Outdated(message.into())
+}
+pub(crate) fn digest(text: &str) -> String {
+    hex::encode(Sha256::digest(text))
 }
 pub(crate) fn limited(text: &str, limit: usize) -> String {
     let mut value: String = text.trim().chars().take(limit).collect();
@@ -344,7 +351,7 @@ impl Orchestrator {
                     || h.safe_verdict_checks != source.safe_verdict_checks
             })
         {
-            return Err(invalid(
+            return Err(outdated(
                 "current configuration no longer permits publication",
             ));
         }
@@ -393,7 +400,7 @@ impl Orchestrator {
         let repository = &policy.repositories[&source.repository_id];
         if Some(&self.config.forges[&repository.forge].bot_login) != source.publisher_login.as_ref()
         {
-            return Err(invalid(
+            return Err(outdated(
                 "publishing bot changed; a new evaluation is required",
             ));
         }
@@ -434,7 +441,7 @@ impl Orchestrator {
                 .is_some_and(|title| current.title != *title)
             || current.draft
         {
-            return Err(invalid(
+            return Err(outdated(
                 "source identity, routing, title, state or draft status changed; evaluate again",
             ));
         }
@@ -448,7 +455,7 @@ impl Orchestrator {
             && handler.require_successful_checks
             && current.checks != artidezi_forge::ChecksState::Success
         {
-            return Err(invalid("source checks changed; evaluate again"));
+            return Err(outdated("source checks changed; evaluate again"));
         }
         // Target branches may advance while the agent works. Adaptation publication replays the
         // validated commit series onto the current target and refuses conflicts; untouched
@@ -501,19 +508,14 @@ impl Orchestrator {
         }
         self.require_source_fresh(task, &policy, !automatic)?;
         if result.outcome == Outcome::Failed {
-            return self.hold_for_person(
-                task,
-                attempt,
-                HoldReason::FailedRun,
-                "agent reported failure; nothing published",
-            );
+            return self.run_failed(task, attempt, "The agent reported failure");
         }
         if result.outcome == Outcome::Proposal {
             let workflow_repositories = self.protected_repositories(&policy, record, result)?;
             if !workflow_repositories.is_empty()
                 && !self.workflow_publication_authorized(task, attempt)?
             {
-                return Err(invalid(
+                return Err(outdated(
                     "Protected CI path changes require task-specific human authorization; publication withheld",
                 ));
             }
@@ -737,7 +739,7 @@ impl Orchestrator {
                 ));
             }
         };
-        self.db.record_event(Some(&task.id), Some(&attempt.id), "orchestrator", "assessment.published", serde_json::json!({"review_id":review.id,"head":source.input.commit,"outcome":result.outcome,"state":review.state}))?;
+        self.db.record_event(Some(&task.id), Some(&attempt.id), "orchestrator", "assessment.published", serde_json::json!({"review_id":review.id,"head":source.input.commit,"outcome":result.outcome,"state":review.state,"body_sha256":digest(&review.body)}))?;
         if automatic {
             // An approval can let another actor (e.g. Renovate) merge immediately.
             if self.recover_completed_source_action(task, attempt, &policy)? {
@@ -846,7 +848,7 @@ impl Orchestrator {
     ) -> Result<bool> {
         self.require_source_fresh(task, policy, false)?;
         if self.source_changes_requested(policy)? {
-            return Err(invalid(
+            return Err(outdated(
                 "A reviewer has requested changes; maintainer input required",
             ));
         }
@@ -863,11 +865,11 @@ impl Orchestrator {
             {
                 Ok(true)
             }
-            artidezi_forge::ChecksState::Absent => Err(invalid(
+            artidezi_forge::ChecksState::Absent => Err(outdated(
                 "No forge checks were reported; human review is required for automatic source action unless the handler sets safe_verdict_checks: passing_or_none",
             )),
             // Skipped checks mean CI exists and chose not to run; that is not a check-less project.
-            artidezi_forge::ChecksState::Inconclusive => Err(invalid(
+            artidezi_forge::ChecksState::Inconclusive => Err(outdated(
                 "No successful forge checks; human review is required for automatic source action",
             )),
             artidezi_forge::ChecksState::Pending => Err(OrchestratorError::WaitingForCi),
@@ -975,6 +977,22 @@ impl Orchestrator {
                 )),
             };
         }
+        if let Some(mr) = &owned {
+            // Before the first effect, so that a retry recognizes what someone changed meanwhile.
+            match existing.as_slice() {
+                [info]
+                    if info.number == mr.number
+                        && info.target_branch == repo.branch
+                        && info.author_login == self.config.forges[&repo.forge].bot_login =>
+                {
+                    if info.title != plan.title || info.body != plan.body {
+                        self.plan_proposal_update(task, attempt, &plan.repository, info)?;
+                    }
+                }
+                _ => return Err(invalid("proposal was changed; refusing to rewrite it")),
+            }
+        }
+        let forge = self.forge(&repo.forge)?;
         match forge.branch_head_optional(&repo.remote, &plan.branch)? {
             None => {
                 let credentials = if workflow_changes {
@@ -1405,15 +1423,19 @@ impl Orchestrator {
             serde_json::from_str(&task.policy_snapshot).map_err(|e| invalid(&e.to_string()))?;
         self.require_source_authority(&task, &policy)?;
         tracked.release_hold();
-        self.db.save_pull_request_source(&tracked)?;
-        self.db.record_event(
-            Some(task_id),
-            Some(&attempt.id),
+        // At once, so that a crash leaves either the hold or an interrupted delivery.
+        self.db.hold_task(
+            TaskHold {
+                task_id,
+                attempt_id: &attempt.id,
+                state: TaskState::Working,
+                event: "publication.retry_requested",
+                payload: serde_json::json!({}),
+                source: Some(&tracked),
+                hold: None,
+            },
             actor,
-            "publication.retry_requested",
-            serde_json::json!({}),
         )?;
-        self.db.set_task_state(task_id, TaskState::Working, actor)?;
         task.state = TaskState::Working;
         if let Err(error) = self.publish_source_result(&task, &attempt, &job, &record, &result) {
             self.delivery_failed(
@@ -1423,7 +1445,11 @@ impl Orchestrator {
                 &format!("publication retry withheld: {error}"),
             )?;
             self.persist_forge_backoffs()?;
-            if self.db.get_task(task_id)?.state != TaskState::WaitingToRetry {
+            // A moved source may have been retired into a fresh evaluation instead.
+            if !matches!(
+                self.db.get_task(task_id)?.state,
+                TaskState::WaitingToRetry | TaskState::Closed
+            ) {
                 return Err(error);
             }
         }

@@ -1207,6 +1207,7 @@ async fn navigation_counts_follow_authenticated_pages_and_project_grants() {
             follow_up: None,
             target_conflict: None,
             target_conflict_waived_head: None,
+            reevaluations: Default::default(),
         })
         .unwrap();
     }
@@ -2421,7 +2422,34 @@ async fn ui_distinguishes_automatic_ci_waiting_from_worker_activity_and_human_ho
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_delivery_retries_show_their_schedule_without_asking_for_attention() {
     let w = world_with_setup(Some(UiConfig::new(false)), |o| {
-        use artidezi_store::model::{Hold, HoldReason, TaskHold, TaskState};
+        use artidezi_store::model::{EvaluationRetry, Hold, HoldReason, TaskHold, TaskState};
+        let failed = o
+            .create_manual_task(
+                "roles",
+                "Evaluate me",
+                "admin",
+                &artidezi_config::resolve::TaskSelection::default(),
+            )
+            .unwrap();
+        let attempt = o.db.latest_attempt(&failed.id).unwrap().unwrap();
+        let mut hold = Hold::new(HoldReason::FailedRun, "The worker did not finish");
+        hold.retry = Some(EvaluationRetry::Failed);
+        hold.retries = 1;
+        hold.max_retries = 1;
+        hold.next_at = Some(Timestamp::now() + SignedDuration::from_mins(40));
+        o.db.hold_task(
+            TaskHold {
+                task_id: &failed.id,
+                attempt_id: &attempt.id,
+                state: TaskState::WaitingToRetry,
+                event: "evaluation.retry_scheduled",
+                payload: serde_json::json!({"retry": 1, "max_retries": 1}),
+                source: None,
+                hold: Some(&hold),
+            },
+            "orchestrator",
+        )
+        .unwrap();
         let task = o
             .create_manual_task(
                 "roles",
@@ -2468,7 +2496,12 @@ async fn waiting_delivery_retries_show_their_schedule_without_asking_for_attenti
         None,
     );
     assert_eq!(page.matches("class=\"task-row row-tone-").count(), 0);
-    let (code, _, page) = browser_request(&w.base_url, "/tasks/1", Some(&cookie), None, None);
+    let (_, _, page) = browser_request(&w.base_url, "/tasks/1", Some(&cookie), None, None);
+    assert!(page.contains("Another evaluation is scheduled"), "{page}");
+    assert!(page.contains("Evaluating again at <time"));
+    assert!(page.contains("(1 of 1): The worker did not finish"));
+    assert!(page.contains("Evaluation 1 of 1 after a failed run scheduled"));
+    let (code, _, page) = browser_request(&w.base_url, "/tasks/2", Some(&cookie), None, None);
     assert_eq!(code, 200);
     assert!(page.contains("Retrying at <time"), "{page}");
     assert!(page.contains("(2 of 8): GitHub HTTP 503 &lt;script&gt;"));
@@ -2583,6 +2616,7 @@ async fn ui_incoming_changes_filter_projects_and_paginate_without_scanning() {
                 follow_up: None,
                 target_conflict: None,
                 target_conflict_waived_head: None,
+                reevaluations: Default::default(),
             };
             o.db.save_pull_request_source(&source).unwrap();
         }

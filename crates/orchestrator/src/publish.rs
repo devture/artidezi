@@ -630,6 +630,32 @@ impl Orchestrator {
                 )));
             }
         }
+        let title = collection
+            .series
+            .as_ref()
+            .and_then(|s| s.commits.first())
+            .and_then(|c| c.message.lines().next())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("ArtiDezi: {}", task.id));
+        let body = render_body(task, attempt, result, collection);
+        // Forges may normalize line ends, and Forgejo marks drafts in the title.
+        let unchanged = |info: &MergeRequestInfo| {
+            let live = info
+                .title
+                .strip_prefix("WIP: ")
+                .filter(|_| policy.draft_merge_requests)
+                .unwrap_or(&info.title);
+            live == title && info.body.replace("\r\n", "\n").trim_end() == body.trim_end()
+        };
+        // Before the first effect, so that a retry recognizes what someone wrote while it waited.
+        if let Some(mr) = &existing {
+            let info = self
+                .forge(&resolved.forge)?
+                .get_merge_request(&resolved.remote, mr.number)?;
+            if !unchanged(&info) {
+                self.plan_proposal_update(task, attempt, collection.id.as_str(), &info)?;
+            }
+        }
         let remote_head = self
             .forge(&resolved.forge)?
             .branch_head_optional(&resolved.remote, &branch)?;
@@ -665,23 +691,6 @@ impl Orchestrator {
             )?;
         }
 
-        let title = collection
-            .series
-            .as_ref()
-            .and_then(|s| s.commits.first())
-            .and_then(|c| c.message.lines().next())
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("ArtiDezi: {}", task.id));
-        let body = render_body(task, attempt, result, collection);
-        // Forges may normalize line ends, and Forgejo marks drafts in the title.
-        let unchanged = |info: &MergeRequestInfo| {
-            let live = info
-                .title
-                .strip_prefix("WIP: ")
-                .filter(|_| policy.draft_merge_requests)
-                .unwrap_or(&info.title);
-            live == title && info.body.replace("\r\n", "\n").trim_end() == body.trim_end()
-        };
         let info: MergeRequestInfo = {
             let forge = self.forge(&resolved.forge)?;
             match &existing {

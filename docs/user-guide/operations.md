@@ -289,10 +289,12 @@ worker_pools:
     transient_failure_retries: 5
 ```
 
-Zero (the default) leaves lost work for a human; at most three retries are allowed. A replacement
+Zero (the default) starts no immediate replacement; an incoming change is still
+[evaluated again later](pr-discovery.md#automatic-reevaluation). At most three retries are allowed. A replacement
 starts fresh from the same frozen repository inputs, instructions and revision context. It does not
 resume the old session or retry publication. Tasks with accepted results, unclassified execution records or publication history are
-held for human inspection. Repeated loss beyond the configured limit also needs human attention.
+held for human inspection. Repeated loss beyond the configured limit also needs human attention,
+after that later evaluation of an incoming change.
 The worker that lost its lease is held from new assignments for five minutes, allowing another
 worker to take over. With one worker, recovery can wait for its cooldown and environment recovery.
 

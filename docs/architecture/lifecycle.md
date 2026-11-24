@@ -31,7 +31,7 @@ These are separate identities because completing an assessment must not erase it
 | --- | --- |
 | `working` | Queued/running or processing an attempt |
 | `waiting_for_ci` | Accepted unchanged source assessment waits for CI before automatic approval/merge |
-| `waiting_to_retry` | A temporary failure interrupted delivery of a validated result; it is tried again |
+| `waiting_to_retry` | A temporary failure interrupted delivery of a validated result, or the run failed; it is tried again |
 | `awaiting_review` | Published proposal(s) await review/merge |
 | `needs_human` | A question, invalid/failed result or uncertain delivery requires attention |
 | `done` | Delivery completed, or a shadow assessment was recorded; terminal |
@@ -68,14 +68,15 @@ safe. Reconciliation and ownership checks matter before any retry of a forge sid
 
 A stuck change carries one `Hold` in its tracking record; a manual task waiting to retry carries it
 in `task_holds`. It says why (`reason`), what can release it (`releases`: a time, green checks, a new
-head, or only a person when empty), the assessed head and target, retries used and when to look again.
+head, a moved target, or only a person when empty), the assessed head and target, retries used and when to look again.
 `TrackedPullRequest::place_hold` and `release_hold` change it together with `paused`. An operator's
 pause is a reason of its own that no other hold replaces and no automation releases. `hold_task`
 stores the hold, task state and audit event in one transaction.
 
 [`process_holds`](../../crates/orchestrator/src/holds.rs) is the maintenance step that acts on due
-holds: delivery retries and the recheck of failed checks. At startup, holds from older releases are
-classified where their stored events make that certain; the rest stay `unclassified` for a person.
+holds: delivery retries, the recheck of failed checks and [reevaluation](#reevaluation). At startup,
+holds from older releases are classified where their stored events make that certain; the rest stay
+`unclassified` for a person.
 A wait for an already known forge backoff schedules a retry without counting it, since nothing was
 sent; a second one in a row counts.
 
@@ -100,6 +101,33 @@ if someone edited the proposal since. Manual tasks additionally
 require that the current project still permits their publication. A waiting task without a delivery
 hold, for example after a crash during a pause, goes to a person. Direct pushes are not repeated. Adaptation merges keep `awaiting_review` and count their
 `adaptation.merge_planned` events at the same head instead.
+
+### Reevaluation
+
+[`reevaluation.rs`](../../crates/orchestrator/src/reevaluation.rs) evaluates held source changes
+again. Discovery only records the observed head and, for a hold that a moved target releases, the
+announced retry. `reconsider` then decides, with the next look reserved before any forge access:
+
+- A head that differs from the assessed one is fetched with the current target and compared with
+  `same_change`. A different or unprovable change retires the held task (`assessment.superseded` with
+  cause `held_change`) into an ordinary evaluation within the run budget. An exhausted budget keeps
+  the hold, so a question stays visible.
+- The same change on a new head, or a moved target, announces one `target_change` retry. It is
+  checked again when due; an undone move cancels it.
+- `run_failed` holds a broken, lost or failed run in `waiting_to_retry` with a `failed` retry. Like a
+  delivery retry this doesn't pause the source. Validation problems that `broke_a_rule`, and
+  provider refusals over credentials or quota, go to a person instead.
+
+Every release first requires that the source is watched and open, nobody's latest review requests
+changes, the published assessment still exists unedited, and all planned proposals are settled; a
+blocked release is looked at again ten minutes later, or ends a failed run's wait. Delivery errors
+decide their own releases (`releases_after`); errors that can stem from a person's decision, revoked
+permission or a foreign edit have none.
+
+`TrackedPullRequest::reevaluations` holds the retries used for the current change and the `pending`
+one. Task creation compares the change with the previous task's once more, after fetching it: only
+the same change counts as that retry instead of a run; another one uses the budget and resets the
+counts. People's resume, feedback and a reopened lifecycle reset them too.
 
 ## Proposal branch cleanup
 
@@ -145,10 +173,11 @@ using current configuration/inputs, closing an older nonterminal assessment wher
 previous completed task remains terminal. Source holds/budgets live outside the task and therefore
 survive this new task creation. See [discovery internals](pr-discovery.md).
 
-A validated unpublished approval/proposal whose source head is superseded can be closed
+A source that moves before or during delivery is reassessed like one that moves while held, also after
+an approval was published or planned, since that is bound to its head. A validated unpublished approval/proposal whose source head is superseded can be closed
 automatically, with an `assessment.superseded` event retaining the old and observed heads. Discovery
 assesses the new revision under its ordinary gates and the remaining source budget. Any publication
-plan or receipt, identity change, human decision or failure prevents this recovery. A retry request
+plan or receipt leads to the checks for [reevaluation](#reevaluation) instead. A retry request
 that stopped before any publication plan does not prevent a fresh evaluation. Published
 adaptations whose source moved while it stayed open are retained when Git proves that the source
 still carries exactly the frozen change, measured from each head's merge base with its own target.
@@ -194,8 +223,8 @@ Late uploads/records remain fenced by the old attempt's expired lease and cannot
 `worker_pools.<name>.transient_failure_retries` independently allows zero to five retries (default
 zero) for terminal Codex model-capacity, temporary rate-limit and transport failures with no result
 document. Backoff is 60, 120, 300, 600 and 1800 seconds. The controller matches fixed categories from
-the final terminal event in a bounded log tail, never command output or model prose. Authentication,
-quota exhaustion, invalid results and other validation failures are held for inspection. Each retry
+the final terminal event in a bounded log tail, never command output or model prose. Other failures follow
+[reevaluation](#reevaluation). Each retry
 uses a fresh workspace and the same frozen inputs; dirty changes from the failed run are discarded.
 Retry limits count all replacements of that category within the task, including mixed loss/failure
 chains. The retry deadline, classification and replacement linkage survive controller restarts.
@@ -214,7 +243,8 @@ Expiry is not proof that a process stopped: a partitioned VM, detached service o
 container can remain active. Enable retries only where setup, checks and model execution tolerate
 repetition and overlap. Controller fencing protects accepted results/publication, not arbitrary
 external side effects from repository code. Accepted-result/publication recovery remains separate
-and never starts another model execution automatically.
+and never starts another model execution for the same input. [Reevaluation](#reevaluation) starts a
+new task, by default an hour after the failure.
 
 The server serializes task administration, preparation, ingestion and forge operations through an
 operation mutex. UI reads/session operations and worker leases, heartbeats and artifact transfers use

@@ -856,3 +856,34 @@ fn a_revision_that_crashed_before_its_state_change_replaces_the_retry() {
     assert_eq!(task_state(&w, &id), TaskState::Working);
     assert_eq!(source(&w).hold, None);
 }
+
+#[test]
+fn switching_retries_off_stops_the_one_already_scheduled() {
+    let (mut w, f, id) = safe_run();
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    restore(&f, MERGE);
+    limits(&mut w).max = 0;
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(sent(&f, "PUT", MERGE), 1);
+}
+
+#[test]
+fn a_reopened_change_stays_paused_by_a_person() {
+    let (mut w, f, id) = safe_run();
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    let tracked = source(&w);
+    w.orchestrator
+        .pause_pull_request(&tracked.id, "operator")
+        .unwrap();
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    move_source_head(&w, &f);
+    f.state.lock().unwrap().open = true;
+    assert!(scan(&mut w).is_empty());
+    assert_eq!(hold(&w).reason, HoldReason::OperatorPause);
+}

@@ -73,10 +73,10 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | Queued evaluation has an old head | Cancel it; consider the newest head on a later scan |
 | Source closed/merged | Cancel queued or leased work, even if evaluations are paused; do not activate again while closed |
 | Completed assessment of same head | Keep it; metadata changes do not re-run |
-| Previously closed source reopens with a new head | Renew budget and clear pause/latest-task link only after the prior task and attempt are terminal and all adaptations are resolved |
+| Previously closed source reopens with a new head | Renew budget and clear the latest-task link and holds other than a person's pause only after the prior task and attempt are terminal and all adaptations are resolved |
 | New eligible source head that conflicts with its target (default `target_conflicts`) | No task or budget charge; record the head, target and paths and wait for either to move |
 | New eligible source head | Queue within project capacity and the persisted source budget |
-| Failed/lost/needs-human work | Hold for inspection, apart from the bounded lost and transient retries a pool opts into |
+| Failed/lost/needs-human work | Hold, and [evaluate again](lifecycle.md#reevaluation) within its limits; a pool can opt into immediate lost and transient retries |
 | Delivery interrupted by a temporary failure or restart | No new work; the [delivery retry](lifecycle.md#delivery-retries) owns the source, and a new head brings it forward |
 | Temporary forge or Git failure while preparing | Try again in two minutes without a hold |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |
@@ -94,7 +94,7 @@ Reopening is detected from the persisted closed flag before replacing the observ
 Resolved-proposal checks inspect durable publication-plan branches on the forge, including proposals
 whose creation receipts were lost. A fresh lifecycle retains immutable task/source history and still
 applies normal eligibility gates. Same-head reopenings and head changes on continuously open sources
-retain their existing budgets and holds. A close/reopen cycle missed between scans requires explicit
+retain their existing budgets and holds, apart from [reevaluation](lifecycle.md#reevaluation). A close/reopen cycle missed between scans requires explicit
 resume to renew a held source.
 
 Source closure requires a confirmed forge response; a missing list entry or failed read cannot
@@ -105,8 +105,8 @@ Completed results and published adaptations retain their existing reconciliation
 ## Frozen input and result handling
 
 The Forgejo adapter supplies the PR-head ref from the configured target remote. The controller fetches
-it into its cache and verifies that its SHA equals the API's observed head. A changing source during
-snapshot preparation is surfaced and held; the agent never chooses a clone URL or publishes to a
+it into its cache and verifies that its SHA equals the API's observed head. A source that changes
+during snapshot preparation is read again two minutes later; the agent never chooses a clone URL or publishes to a
 source branch. All target/context bases and source input are captured in immutable bundles/policy.
 
 Before preparing any input artifact, a handler with the default `target_conflicts: wait_for_rebase`
@@ -203,7 +203,7 @@ a remote effect and does not block recovery, including eligible stale holds left
 A recognized transient execution failure with no result can likewise retire when discovery already
 observed a newer head, without retrying its obsolete inputs or overriding explicit source pauses. The persisted follow-up waits for the new head
 to settle; its run count is retained, and exhaustion pauses it. Other authority/identity changes,
-failed/needs-human results and explicit operator pauses retain their holds. CI-wait
+failed/needs-human results follow [reevaluation](lifecycle.md#reevaluation), and explicit operator pauses retain their holds. CI-wait
 reconciliation uses the same guard; discovery leaves that decision to the delivery reconciler.
 Unpublished results keep these rules even for equivalent rebases. Equivalence preserves an existing
 adaptation delivery; it does not authorize publishing a verdict for a commit the worker did not assess.

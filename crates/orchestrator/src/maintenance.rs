@@ -31,11 +31,6 @@ impl Orchestrator {
             let problems = vec!["validation did not finish".to_owned()];
             self.db.judge_attempt(&attempt.id, problems.clone())?;
             let task = self.db.get_task(&attempt.task_id)?;
-            self.pause_task_source(
-                &task,
-                HoldReason::FailedRun,
-                "Validation of the worker result did not finish; inspect it before resuming",
-            )?;
             self.db.record_event(
                 Some(&task.id),
                 Some(&attempt.id),
@@ -43,10 +38,11 @@ impl Orchestrator {
                 "attempt.rejected",
                 serde_json::json!({"problems": problems}),
             )?;
-            if task.state != TaskState::NeedsHuman && !task.state.is_terminal() {
-                self.db
-                    .set_task_state(&task.id, TaskState::NeedsHuman, "orchestrator")?;
-            }
+            self.reject_run(
+                &task,
+                &attempt,
+                "Validation of the worker result did not finish",
+            )?;
         }
         Ok(())
     }

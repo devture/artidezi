@@ -61,6 +61,13 @@ pub fn target_conflict_status(branch: &str, paths: &[String]) -> String {
     format!("Conflicts with `{branch}` in {shown}{more}{TARGET_CONFLICT_STATUS_SUFFIX}")
 }
 
+fn budget_reached() -> Hold {
+    Hold::new(
+        HoldReason::Budget,
+        "Automatic evaluation budget reached; explicit resume required",
+    )
+}
+
 struct DiscoveryTarget<'a> {
     project: &'a str,
     repository_id: &'a str,
@@ -326,6 +333,7 @@ impl Orchestrator {
             follow_up: None,
             target_conflict: None,
             target_conflict_waived_head: None,
+            reevaluations: Default::default(),
         });
         let before = source.clone();
         let reopened_with_new_head = source.closed
@@ -369,7 +377,11 @@ impl Orchestrator {
                     // The reopened revision starts a new budget; immutable task source references
                     // retain the previous lifecycle's evidence and publication history.
                     source.runs = 0;
-                    source.release_hold();
+                    source.reevaluations = Default::default();
+                    // Automation never releases a person's pause.
+                    if !source.operator_paused() {
+                        source.release_hold();
+                    }
                     source.last_task_id = None;
                 }
             }
@@ -395,7 +407,11 @@ impl Orchestrator {
                         source.head_observed_at = before.head_observed_at;
                     }
                 } else {
-                    source.place_hold(Hold::new(HoldReason::Intake, status));
+                    // Nothing was evaluated yet, so a new head can be prepared right away.
+                    let mut hold = Hold::new(HoldReason::Intake, status);
+                    hold.head = Some(pull.head_commit.0.clone());
+                    hold.releases = vec![HoldRelease::NewHead];
+                    source.place_hold(hold);
                 }
                 if deferred {
                     source.follow_up = Some(PullRequestFollowUp {
@@ -503,10 +519,12 @@ impl Orchestrator {
             source.status = "Source PR is closed or merged".into();
             if let Some(id) = &source.last_task_id {
                 let task = self.db.get_task(id)?;
-                if matches!(
-                    task.state,
-                    TaskState::WaitingForCi | TaskState::WaitingToRetry
-                ) {
+                if task.state == TaskState::WaitingForCi
+                    || (task.state == TaskState::WaitingToRetry
+                        && source.hold.as_ref().is_some_and(|hold| {
+                            hold.reason == HoldReason::Delivery && hold.task_id.as_ref() == Some(id)
+                        }))
+                {
                     // The scheduled delivery check reconciles an accepted approval/merge receipt
                     // before deciding whether closure needs attention. Discovery must not erase it.
                     return Ok(None);
@@ -548,16 +566,26 @@ impl Orchestrator {
                         "assessment.closed_source",
                         serde_json::json!({"reason": "source PR is closed or merged"}),
                     )?;
-                    if source.hold.as_ref().is_some_and(|hold| {
-                        hold.reason == HoldReason::Delivery && hold.task_id.as_ref() == Some(id)
-                    }) {
+                    if source
+                        .hold
+                        .as_ref()
+                        .is_some_and(|hold| hold.waits() && hold.task_id.as_ref() == Some(id))
+                    {
                         source.hold = None;
                     }
                 }
             }
             return Ok(None);
         }
+        if source.hold.as_ref().is_some_and(|hold| {
+            hold.reason == HoldReason::Intake
+                && hold.releases_on(HoldRelease::NewHead)
+                && hold.head.as_deref() != Some(pull.head_commit.as_str())
+        }) {
+            source.release_hold();
+        }
         if source.paused {
+            self.note_target_change(source, &pull.head_commit, now);
             return Ok(None);
         }
         // Delivery retries own a waiting change; their gates refuse a changed route or identity.
@@ -620,22 +648,20 @@ impl Orchestrator {
                 return Ok(None);
             }
             if task.state == TaskState::NeedsHuman {
-                let lost = self.db.latest_attempt(id)?.is_some_and(|attempt| {
-                    matches!(attempt.state, AttemptState::Lost | AttemptState::Invalid)
-                });
-                let reason = if lost {
-                    HoldReason::FailedRun
-                } else {
-                    HoldReason::Unclassified
-                };
-                source.place_hold(self.new_hold(
-                    &task,
-                    reason,
-                    "The last evaluation needs human input",
-                )?);
+                self.db.save_pull_request_source(source)?;
+                self.adopt_held_task(&task, "The last evaluation needs human input")?;
+                *source = self.db.get_pull_request_source(&source.id)?;
                 return Ok(None);
             }
             if task.state == TaskState::Working {
+                if let Some(attempt) = self.db.latest_attempt(id)?
+                    && matches!(attempt.state, AttemptState::Lost | AttemptState::Invalid)
+                {
+                    self.db.save_pull_request_source(source)?;
+                    self.run_failed(&task, &attempt, "Processing of the result was interrupted")?;
+                    *source = self.db.get_pull_request_source(&source.id)?;
+                    return Ok(None);
+                }
                 self.db
                     .set_task_state(id, TaskState::NeedsHuman, "discovery")?;
                 source.place_hold(self.new_hold(
@@ -705,11 +731,11 @@ impl Orchestrator {
                 }
             }
         }
-        if source.runs >= discovery.max_runs_per_pull_request {
-            source.place_hold(Hold::new(
-                HoldReason::Budget,
-                "Automatic evaluation budget reached; explicit resume required",
-            ));
+        // A retry is checked once the change was read: only the same change stays outside the budget.
+        if source.reevaluations.pending.is_none()
+            && source.runs >= discovery.max_runs_per_pull_request
+        {
+            source.place_hold(budget_reached());
             return Ok(None);
         }
         let active = self
@@ -778,9 +804,10 @@ impl Orchestrator {
         )?;
         let git = Repository::open_bare(cache.path())?;
         if git.refname_to_id(&local_ref)?.to_string() != pull.head_commit.as_str() {
-            return Err(OrchestratorError::Invalid(
-                "PR head changed while snapshotting; rescan after inspection".into(),
-            ));
+            return Err(artidezi_forge::ForgeError::Temporary(
+                "PR head changed while snapshotting".into(),
+            )
+            .into());
         }
         if conflict_gate {
             let target = bases
@@ -821,6 +848,21 @@ impl Orchestrator {
                     tracing::warn!(source = %source.id, %error, "target conflict check failed; evaluating the source");
                 }
             }
+        }
+        let same_change = self.continues_last_evaluation(source, pull, &bases, &git);
+        let retry = source.reevaluations.pending.filter(|kind| {
+            feedback.is_none() && same_change && self.evaluation_retry_left(source, *kind)
+        });
+        if feedback.is_none()
+            && retry.is_none()
+            && self.config.projects[&source.project]
+                .pull_requests
+                .as_ref()
+                .is_some_and(|discovery| source.runs >= discovery.max_runs_per_pull_request)
+        {
+            source.reevaluations.pending = None;
+            source.place_hold(budget_reached());
+            return Ok(None);
         }
         let temp = self
             .artifacts
@@ -1023,7 +1065,14 @@ impl Orchestrator {
         attempt.human_feedback = feedback.map(|(feedback, _)| feedback.to_owned());
         let mut updated = source.clone();
         updated.last_task_id = Some(task.id.clone());
-        updated.runs += 1;
+        if !same_change {
+            updated.reevaluations = Default::default();
+        }
+        updated.reevaluations.pending = None;
+        match retry {
+            Some(kind) => updated.reevaluations.count(kind),
+            None => updated.runs += 1,
+        }
         updated.release_hold();
         updated.target_conflict = None;
         // A waiver covers one requested evaluation, not later returns to the same head.
@@ -1084,6 +1133,47 @@ impl Orchestrator {
         }
         *source = updated;
         Ok(Some(self.db.get_task(&task.id)?))
+    }
+
+    /// Whether this evaluation is of the very change that the source's last task evaluated, so that
+    /// its retries stay counted. A human follow-up starts over.
+    fn continues_last_evaluation(
+        &self,
+        source: &TrackedPullRequest,
+        pull: &MergeRequestInfo,
+        bases: &[TaskRepository],
+        git: &Repository,
+    ) -> bool {
+        if source.reevaluations == Default::default() {
+            return false;
+        }
+        let same = || -> Result<bool> {
+            let Some(task_id) = &source.last_task_id else {
+                return Ok(false);
+            };
+            let task = self.db.get_task(task_id)?;
+            let Some(previous) = source_of(&task)? else {
+                return Ok(false);
+            };
+            if previous.input.commit == pull.head_commit {
+                return Ok(true);
+            }
+            let base = |repositories: &[TaskRepository]| {
+                repositories
+                    .iter()
+                    .find(|repository| repository.repository_id == source.repository_id)
+                    .and_then(|repository| git2::Oid::from_str(&repository.base_commit).ok())
+            };
+            let (Some(old), Some(new)) = (base(&task.repositories), base(bases)) else {
+                return Ok(false);
+            };
+            Ok(artidezi_git::equivalence::same_change(
+                git,
+                (old, git2::Oid::from_str(previous.input.commit.as_str())?),
+                (new, git2::Oid::from_str(pull.head_commit.as_str())?),
+            )?)
+        };
+        same().unwrap_or(false)
     }
 
     /// Stop queued automatic work; a currently leased attempt may finish without reactivation.
@@ -1205,6 +1295,7 @@ impl Orchestrator {
             }
         }
         source.runs = 0;
+        source.reevaluations = Default::default();
         source.release_hold();
         // Retain task history through immutable source references, but allow explicit same-head retry.
         source.last_task_id = None;
@@ -1299,6 +1390,7 @@ impl Orchestrator {
         self.require_resolved_source_proposals(task)?;
         let mut source = source;
         source.runs = 0;
+        source.reevaluations = Default::default();
         source.release_hold();
         source.handler_id = handler.id.clone();
         source.observed_head = pull.head_commit.0.clone();
@@ -1377,14 +1469,11 @@ impl Orchestrator {
                 self.db
                     .set_task_state(&task.id, TaskState::Done, "discovery")?
             }
-            outcome @ (Outcome::NeedsHuman | Outcome::Failed) => self.hold_for_person(
+            Outcome::Failed => self.run_failed(task, attempt, "The agent reported failure")?,
+            Outcome::NeedsHuman => self.hold_for_person(
                 task,
                 attempt,
-                if outcome == Outcome::Failed {
-                    HoldReason::FailedRun
-                } else {
-                    HoldReason::Question
-                },
+                HoldReason::Question,
                 "shadow assessment needs human input",
             )?,
         }

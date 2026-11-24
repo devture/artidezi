@@ -331,6 +331,10 @@ pub struct PullRequestDiscovery {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Retries {
+    /// Evaluating again after a run that broke, or produced no acceptable result.
+    pub failed: EvaluationRetries,
+    /// Evaluating a held change again because its target moved or it was merely rebased.
+    pub target_change: EvaluationRetries,
     /// Delivering a validated result again after a temporary forge or Git failure, or a restart.
     pub delivery: DeliveryRetries,
 }
@@ -338,6 +342,23 @@ pub struct Retries {
 impl Retries {
     fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+/// Evaluations of one change, counted until the change itself differs. `max: 0` turns them off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct EvaluationRetries {
+    pub max: u32,
+    pub initial_delay_seconds: u32,
+}
+
+impl Default for EvaluationRetries {
+    fn default() -> Self {
+        Self {
+            max: 1,
+            initial_delay_seconds: 3600,
+        }
     }
 }
 

@@ -151,10 +151,46 @@ automatic source approval or merge requires current successful checks. An all-sk
 never satisfies that source-action gate, and an empty one does so only for a handler that opts in
 with [`safe_verdict_checks: passing_or_none`](#repositories-without-ci). One source has at most one active attempt;
 project capacity bounds queued/running assessments. Budgets count queued evaluations, including
-superseded ones. Exhausted budgets, failed attempts and requests for human input pause that source
-until an explicit human action, unless the worker pool [opts into retries](operations.md#lost-execution-recovery-and-multiple-workers) of lost or transiently failed execution. Within one worker
-attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded retries; a failed
-final invocation still holds the source for human review.
+superseded ones but not [retries](#automatic-reevaluation). An exhausted budget pauses that source
+until an explicit human action. Failed attempts and requests for human input wait for a person too,
+but the change is [evaluated again](#automatic-reevaluation) by itself where that can help. A worker
+pool can additionally [opt into immediate retries](operations.md#lost-execution-recovery-and-multiple-workers) of lost or transiently failed execution. Within one worker
+attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded retries.
+
+### Automatic reevaluation
+
+| What happened | What ArtiDezi does | Default limit |
+| --- | --- | --- |
+| A run broke, was lost, produced no acceptable result or reported `failed` | Evaluates again after an hour; until then the task shows **Waiting to retry** | once per change |
+| A held assessment, and the change itself differs now | Evaluates the new revision after it settles | the run budget |
+| A held assessment, and its target branch moved or the change was merely rebased | Evaluates again after an hour; until then it stays with you, in case you answer first | once per change |
+
+```yaml
+pull_requests:
+  retries:                                        # these are the defaults
+    failed: {max: 1, initial_delay_seconds: 3600}        # 0 turns it off; at most 5
+    target_change: {max: 1, initial_delay_seconds: 3600}
+```
+
+These evaluations don't count against `max_runs_per_pull_request`, use the current head, target, CI
+and configuration, and pass the usual gates. Their counts start over when the change itself differs,
+or when a person resumes it or gives feedback. “Merely rebased” means that Git proves the same paths, contents and
+modes, as for [published adaptations](#conflicts-with-the-target-branch); anything unclear counts as
+a different change and uses the run budget.
+
+A held assessment is one that asks a person, failed, or stopped while being delivered, for example
+because the forge refused the merge or delivery retries ran out. Only a new head, not a moved
+target, releases one that is merely out of date, such as a changed handler, missing checks or a
+protected CI path.
+
+Never evaluated again automatically: pauses by a person; while a reviewer requests changes, or after
+someone edited, dismissed or deleted the assessment; open or foreign adaptation proposals; results
+that broke a rule (paths, read-only repositories, forged records); and runs that Codex refused over
+credentials or quota. Holds from releases before this feature are adopted at startup where their
+reason is certain, so they can recover without a person.
+
+A failed run can have started work outside ArtiDezi's control. Raise `initial_delay_seconds` beyond
+your longest run if an overlapping lost worker could interfere, or set `max: 0`.
 
 ### Automatic delivery retries
 
@@ -178,11 +214,12 @@ With the defaults, retries wait 2, 4, 8, 16 and 32 minutes and then an hour each
 in total. A rate limit that asks for a longer wait is respected. The limit counts per validated
 result; a person's **Retry publication** starts it over. The same limits apply to merge-request
 delivery of the project's manual tasks, and the defaults apply when the project has no
-`pull_requests`.
+`pull_requests`. Setting `max: 0` also stops a retry that is already scheduled.
 
 Every retry repeats all gates: source head, checks, reviews, pauses and current permissions. It looks
 for what already happened before acting: an existing proposal branch, proposal, review or merge is
-recognized, and a merge always names the assessed head. An approval whose response was lost is
+recognized, and a merge always names the assessed head. A proposal revision remembers what it
+replaces before its first effect, and stops if someone changed that meanwhile. An approval whose response was lost is
 posted again only while the forge shows no trace of it, so in rare cases the same commit can carry
 two identical approvals. If the source moved meanwhile, the new head is evaluated within the run
 budget instead; if it was closed or merged, the task closes.
@@ -251,7 +288,8 @@ the same guards, even when other repositories still await review. Temporary clea
 after delivery completes; see [proposal branch cleanup](tasks.md#proposal-branch-cleanup).
 Historical branches and human-closed proposals are not swept.
 
-Explicit pauses, agent requests for human input, failed results and exhausted budgets stay held.
+Explicit pauses and exhausted budgets stay held; requests for human input and failed results follow
+[automatic reevaluation](#automatic-reevaluation).
 Unpublished results still follow the fresh-evaluation rules above, even for equivalent rebases.
 Source reviews, approvals and automatic merges always require the exact assessed commit. Revising an
 existing proposal also refuses a moved source, even when the open proposal was preserved.
@@ -262,12 +300,10 @@ forge outage or flaky runner), so the controller rechecks that hold every two mi
 model run. When a re-run turns the same head green, delivery continues through the usual review,
 freshness and policy gates, reusing an approval that was already posted. When the source moves to
 a new head, the held task closes and the new head is evaluated after settling, within the existing
-run budget. Checks that stay red keep the hold. A later explicit pause, a reviewer requesting
-changes or any other hold still needs a person.
-Changed source identity/routing, draft or closed state, and any possible prior publication still
-require inspection. **Retry publication** continues to reuse the recorded result and never queues
-a new model run; use **Resume evaluations** or task feedback to recover an older held assessment
-whose source head has changed.
+run budget. Checks that stay red keep the hold. A later explicit pause or a reviewer requesting
+changes still needs a person.
+A changed route still requires inspection. **Retry publication** continues to reuse the recorded result and never queues
+a new model run; use **Resume evaluations** or task feedback to evaluate a held assessment right away.
 
 The worker receives the exact PR commit at `refs/artidezi/inputs/source-pr`, alongside target-branch
 and sibling snapshots, without forge credentials or remotes. An acceptable update returns the
@@ -308,8 +344,8 @@ The badge describes the current stage of that source and its latest task:
 - **Evaluated**: the latest observed source revision has a completed evaluation. Open its task for the verdict and evidence; the source request may still be open.
 - **Ready for review**: published adaptations are awaiting human review, or their checks when the
   handler merges adaptations.
-- **Waiting to retry**: a temporary failure interrupted delivery, which [continues by itself](#automatic-delivery-retries); the next time appears below the source.
-- **Needs attention**: the latest evaluation needs human input.
+- **Waiting to retry**: a temporary failure interrupted delivery, which [continues by itself](#automatic-delivery-retries), or a run failed and is [repeated](#automatic-reevaluation); the next time appears below the source.
+- **Needs attention**: the latest evaluation needs human input. A scheduled reevaluation shows its time below the source.
 - **Paused**: automatic evaluations are held. A running evaluation can still finish and shows a separate pause badge.
 - **Closed or merged**: the source request is closed and no longer evaluated.
 
@@ -346,10 +382,10 @@ Closed sources with unfinished tasks continue to be checked until those tasks se
 
 When a scan observes a previously closed source reopen with a different head, it starts a fresh
 evaluation lifecycle if the prior task and attempt are terminal and all adaptation proposals are
-closed or merged. This renews the run budget, clears the pause and latest-task link, and applies the
+closed or merged. This renews the run budget, clears the latest-task link and any hold except a person's pause, and applies the
 usual settling, matching, checks and capacity gates. Previous tasks and published adaptations retain
 their history. An unchanged-head reopening or a head change while the source stays open does not
-renew the budget or clear a hold. Unfinished work and open adaptations still require attention.
+renew the budget or clear a hold, apart from [automatic reevaluation](#automatic-reevaluation). Unfinished work and open adaptations still require attention.
 Both closure and reopening must be observed by discovery; otherwise, use **Resume evaluations** to
 recover that source.
 

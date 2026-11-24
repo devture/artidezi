@@ -229,7 +229,7 @@ fn unpublished_ci_wait_reconciles_a_new_head_before_queuing_fresh_work() {
 }
 
 #[test]
-fn rebases_after_an_approval_still_require_explicit_recovery() {
+fn a_new_head_after_an_approval_is_reassessed_without_reusing_it() {
     let (mut w, f) = safe_world(true);
     let id = scan(&mut w).remove(0);
     f.state.lock().unwrap().pending_on_approval = true;
@@ -244,9 +244,15 @@ fn rebases_after_an_approval_still_require_explicit_recovery() {
     w.orchestrator
         .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
         .unwrap();
-    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
-    assert!(w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].paused);
-    assert!(scan(&mut w).is_empty());
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    let tracked = w
+        .orchestrator
+        .db
+        .list_pull_request_sources(None)
+        .unwrap()
+        .remove(0);
+    assert!(!tracked.paused);
+    assert_eq!(tracked.runs, 2, "an ordinary evaluation");
     let state = f.state.lock().unwrap();
     assert_eq!(state.reviews.len(), 1);
     assert!(!state.merged);
@@ -287,6 +293,12 @@ fn a_rebase_does_not_override_other_holds_or_potential_remote_effects() {
             _ => {}
         }
         assert_eq!(w.work(&script), AttemptState::Valid, "{reason}");
+        if matches!(reason, "needs_human" | "failed" | "approval_plan") {
+            // Nothing of it can act on the new head, so that is assessed instead.
+            assert_eq!(task_state(&w, &id), TaskState::Closed, "{reason}");
+            no_publication(&f);
+            continue;
+        }
         assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{reason}");
         assert!(
             w.orchestrator.db.list_pull_request_sources(None).unwrap()[0].paused,
@@ -366,6 +378,18 @@ fn old_controller_stale_hold_is_adopted_automatically_without_remote_effects() {
         )
         .unwrap();
     w.orchestrator.db.record_event(Some(&id),Some(&attempt.id),"orchestrator","task.needs_human",json!({"reason":"publication retry withheld: source head changed from old to new; a fresh evaluation is required"})).unwrap();
+    let mut untyped = w
+        .orchestrator
+        .db
+        .get_pull_request_source(&source.id)
+        .unwrap();
+    untyped.hold = None;
+    w.orchestrator
+        .db
+        .save_pull_request_source(&untyped)
+        .unwrap();
+    reopen(&mut w, &f);
+    assert!(scan(&mut w).is_empty());
     let report = w.orchestrator.tick_at(Timestamp::now()).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(task_state(&w, &id), TaskState::Closed);
@@ -403,7 +427,7 @@ exit 1"#);
             w.work_with_record(&script, |record| record.harness.name = "codex".into()),
             AttemptState::Invalid
         );
-        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
         let head = move_source_head(&w, &f);
         assert!(scan(&mut w).is_empty());
         let mut tracked = w
@@ -450,8 +474,20 @@ exit 1"#);
             1,
             "never rerun stale inputs"
         );
-        if matches!(case, "recover" | "budget") {
+        if case == "publication_plan" {
+            // The plan's outcome is unknown, so its retry ends with a person.
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+            w.orchestrator
+                .tick_at(Timestamp::now() + SignedDuration::from_secs(4000))
+                .unwrap();
+        }
+        if case == "recover" {
             assert_eq!(task_state(&w, &id), TaskState::Closed, "{case}");
+        } else if case == "budget" {
+            // Its retry stays scheduled; the changed head would use the budget.
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry, "{case}");
+            assert!(report.discovered.is_empty());
+            continue;
         } else {
             assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{case}");
         }

@@ -45,6 +45,32 @@ pub fn codex_failure(stream: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether the provider refused a Codex run over credentials or quota, which time alone does not fix.
+pub fn codex_refused(stream: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stream);
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|event| event["type"] == "turn.failed")
+        .and_then(|event| {
+            let message = event.pointer("/error/message")?.as_str()?;
+            Some(message.to_ascii_lowercase())
+        })
+        .is_some_and(|message| {
+            [
+                "insufficient_quota",
+                "usage limit",
+                "quota exceeded",
+                "401 unauthorized",
+                "403 forbidden",
+                "invalid_api_key",
+                "token expired",
+                "not logged in",
+            ]
+            .iter()
+            .any(|pattern| message.contains(pattern))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +111,13 @@ mod tests {
             ),
         ] {
             assert_eq!(codex_failure(text.as_bytes()), expected);
+            assert_eq!(
+                codex_refused(text.as_bytes()),
+                text.contains("401") || text.contains("insufficient_quota")
+            );
         }
+        assert!(!codex_refused(
+            br#"{"type":"item.completed","item":{"aggregated_output":"401 Unauthorized"}}"#
+        ));
     }
 }

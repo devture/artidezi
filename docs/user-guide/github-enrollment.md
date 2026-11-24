@@ -202,7 +202,7 @@ credentials. GitHub Enterprise and arbitrary custom API endpoints are not suppor
 
 The controller persists server-advised backoff across restarts. **Scan now** cannot bypass it.
 Authentication/permission failures are visible as scan errors, never fabricated source closure.
-Preparation failures may pause a source; inspect it before resuming. A preparation that hit a rate
+Preparation failures may pause a source until its head changes or you resume it. A preparation that hit a rate
 limit or an outage is tried again. If freshness cannot be checked after a completed worker result, the
 task [retries delivery](pr-discovery.md#automatic-delivery-retries) when the cause is temporary and
 otherwise requests human input, rather than treating stale evidence as current. Other publication failures
@@ -227,8 +227,9 @@ Publish mode has three useful outcomes:
 - `proposal`: publish an ArtiDezi-owned adaptation PR per changed repository, then link them in a
   COMMENT review on the source. The original request remains open. Humans review/merge proposals
   and resolve the original request. ArtiDezi observes those merges without tagging or releasing.
-- `needs_human`: publish the assessment as an informational review and pause for a decision.
-  `failed` and invalid worker results publish nothing.
+- `needs_human`: publish the assessment as an informational review and wait for a decision, or for
+  the change or its target to [move](pr-discovery.md#automatic-reevaluation).
+  `failed` and invalid worker results publish nothing and are evaluated once more.
 
 Published reviews keep the verdict, summary, agent-assessed risk and maintainer questions visible.
 The complete evidence list is retained in a collapsed disclosure so a routine review stays compact
@@ -320,7 +321,8 @@ Adaptations remain human-reviewed PRs even under a merge handler, unless the han
 `adaptation_action: merge` (see [merge ArtiDezi's own adaptations](pr-discovery.md#merge-artidezis-own-adaptations)).
 ArtiDezi does not change repository protection, enable GitHub auto-merge, use a GitHub merge queue
 or create release tags. If merge commits are disabled, or repository rules
-reject the operation, publication stops for attention; there is no fallback merge method or bypass.
+reject the operation, publication stops for attention until the head or target
+[moves](pr-discovery.md#automatic-reevaluation); there is no fallback merge method or bypass.
 
 The merge request sends the assessed head SHA to GitHub. The controller also rechecks target/context
 commits before effects. GitHub does not expose an atomic expected-base parameter for this endpoint,

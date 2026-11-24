@@ -88,37 +88,12 @@ impl Orchestrator {
             return Ok(false);
         };
         let repo = &policy.repositories[&source.repository_id];
-        let proof = (|| -> Result<Option<CommitSha>> {
-            let forge = self.forge(&repo.forge)?;
-            let fresh_target = forge.branch_head(&repo.remote, &repo.branch)?;
-            let remote_ref = forge.merge_request_ref(&repo.remote, source.number)?;
-            let cache = self.cache(&repo.forge, &repo.remote)?;
-            let target_ref = format!("refs/heads/{}", repo.branch);
-            let source_ref = format!("refs/artidezi/discovery/{}", source.tracking_id);
-            cache.fetch(
-                &forge.clone_url(&repo.remote),
-                &[
-                    &format!("+{target_ref}:{target_ref}"),
-                    &format!("+{remote_ref}:{source_ref}"),
-                ],
-                forge.git_credentials(&repo.remote)?.as_ref(),
-            )?;
-            let target = git2::Oid::from_str(fresh_target.as_str())?;
-            let head = git2::Oid::from_str(current.head_commit.as_str())?;
-            if cache.resolve(&target_ref)? != target || cache.resolve(&source_ref)? != head {
-                return Ok(None);
-            }
-            Ok(artidezi_git::equivalence::same_change(
-                cache.repo(),
-                (
-                    git2::Oid::from_str(frozen.base_commit.as_str())?,
-                    git2::Oid::from_str(source.input.commit.as_str())?,
-                ),
-                (target, head),
-            )?
-            .then_some(fresh_target))
-        })();
-        let fresh_target = match proof {
+        let fresh_target = match self.same_source_change(
+            (&repo.forge, &repo.remote, &repo.branch),
+            source,
+            (frozen.base_commit.as_str(), source.input.commit.as_str()),
+            &current.head_commit,
+        ) {
             Ok(Some(target)) => target,
             Ok(None) => return Ok(false),
             Err(error) => {
@@ -208,30 +183,14 @@ impl Orchestrator {
         }
         // Plans precede writes, including writes whose receipts may have been lost. A retry
         // request alone carries no remote effect and must not strand an obsolete assessment.
-        let events = self.db.list_events(&task.id)?;
-        let last_pause = events
-            .iter()
-            .filter(|event| event.kind == "discovery.paused")
-            .map(|event| event.id)
-            .max()
-            .unwrap_or(0);
-        let last_retry = events
-            .iter()
-            .filter(|event| event.kind == "publication.retry_requested")
-            .map(|event| event.id)
-            .max()
-            .unwrap_or(0);
-        if (tracked.paused && last_pause > last_retry)
-            || events.iter().any(|event| {
-                (event.kind.starts_with("publication.")
-                    && event.kind != "publication.retry_requested")
-                    || event.kind.starts_with("assessment.")
-            })
-            || !self.db.list_merge_requests(&task.id)?.is_empty()
+        if self.db.list_events(&task.id)?.iter().any(|event| {
+            (event.kind.starts_with("publication.") && event.kind != "publication.retry_requested")
+                || event.kind.starts_with("assessment.")
+        }) || !self.db.list_merge_requests(&task.id)?.is_empty()
         {
             return Ok(false);
         }
-        self.retire_superseded_source(task, &attempt.id, tracked, expected, actual, None)?;
+        self.retire_superseded_source(task, &attempt.id, tracked, expected, actual, None, None)?;
         Ok(true)
     }
 
@@ -242,18 +201,7 @@ impl Orchestrator {
             return Ok(false);
         };
         let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-        let events = self.db.list_events(&task.id)?;
-        let last = |kind: &str| {
-            events
-                .iter()
-                .filter(|event| event.kind == kind)
-                .map(|event| event.id)
-                .max()
-                .unwrap_or(0)
-        };
-        if tracked.operator_paused()
-            || (tracked.paused && last("discovery.paused") > last("publication.retry_requested"))
-        {
+        if tracked.operator_paused() {
             return Ok(false);
         }
         let Some((attempt_id, expected, actual)) = self.close_superseded_adaptations(task)? else {
@@ -267,6 +215,7 @@ impl Orchestrator {
             &expected,
             &actual,
             Some("published_adaptation"),
+            None,
         )?;
         Ok(true)
     }
@@ -404,7 +353,9 @@ impl Orchestrator {
     }
 
     /// Close an obsolete source task and let discovery assess the new head after settling, within
-    /// the source's existing run budget. Callers must first rule out unknown remote write outcomes.
+    /// the source's existing run budget, or as the given retry outside it. Callers must first rule
+    /// out unknown remote write outcomes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn retire_superseded_source(
         &mut self,
         task: &Task,
@@ -413,6 +364,7 @@ impl Orchestrator {
         expected: &CommitSha,
         actual: &CommitSha,
         cause: Option<&str>,
+        retry: Option<EvaluationRetry>,
     ) -> Result<()> {
         let discovery = self.config.projects[&task.project]
             .pull_requests
@@ -423,14 +375,20 @@ impl Orchestrator {
             tracked.observed_head = actual.0.clone();
             tracked.head_observed_at = now;
         }
-        if tracked.runs >= discovery.max_runs_per_pull_request {
+        tracked.reevaluations.pending = retry;
+        if retry.is_none() && tracked.runs >= discovery.max_runs_per_pull_request {
             tracked.follow_up = None;
             tracked.release_hold();
             tracked.place_hold(Hold::new(HoldReason::Budget, "Automatic evaluation budget reached after source head changed; explicit resume required"));
         } else {
             tracked.release_hold();
-            tracked.status =
-                "Source head changed before delivery; waiting for a fresh evaluation".into();
+            tracked.status = match (retry, cause) {
+                (Some(EvaluationRetry::Failed), _) => "Evaluating again after a failed run",
+                (Some(_), _) => "Evaluating again because the target moved or the PR was rebased",
+                (None, Some("held_change")) => "Source changed; waiting for a fresh evaluation",
+                (None, _) => "Source head changed before delivery; waiting for a fresh evaluation",
+            }
+            .into();
             tracked.follow_up = Some(PullRequestFollowUp {
                 at: (tracked.head_observed_at
                     + SignedDuration::from_secs(i64::from(discovery.settle_seconds)))

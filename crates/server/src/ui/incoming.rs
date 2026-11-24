@@ -234,7 +234,10 @@ pub(in super::super) fn incoming_changes(
                 && source.status == "Published adaptations await review")
         {
             let reason = match &source.hold {
-                Some(hold) if hold.reason == HoldReason::Delivery => {
+                Some(hold)
+                    if hold.reason == HoldReason::Delivery
+                        || (hold.retry.is_some() && hold.next_at.is_some()) =>
+                {
                     retry_line(hold, &token.access.timezone)
                 }
                 _ => e(&source_status(source, Some(settle_seconds))).to_string(),
@@ -368,7 +371,7 @@ fn evaluation_status(
             "Waiting to retry",
             "waiting_to_retry",
             "clock",
-            "A temporary failure interrupted delivery; it is tried again automatically",
+            "The run failed, or a temporary failure interrupted delivery; it is tried again automatically",
         )
     } else if task.is_some_and(|t| t.state == TaskState::AwaitingReview) {
         (
@@ -481,6 +484,7 @@ mod tests {
                 follow_up: None,
                 target_conflict: None,
                 target_conflict_waived_head: None,
+                reevaluations: Default::default(),
             },
         )
     }

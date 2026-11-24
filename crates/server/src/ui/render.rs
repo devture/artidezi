@@ -348,7 +348,7 @@ fn status(task: &Task) -> String {
         ),
         TaskState::WaitingToRetry => (
             "Waiting to retry",
-            "A temporary failure interrupted delivery; it is tried again automatically.",
+            "The run failed, or a temporary failure interrupted delivery; it is tried again automatically.",
         ),
         TaskState::AwaitingReview => (
             "Ready for review",
@@ -403,7 +403,7 @@ pub(super) fn time_zone(name: &str) -> Option<TimeZone> {
         .filter(|zone| zone.iana_name() == Some(name))
 }
 
-/// When a held delivery is tried again and what interrupted it.
+/// When a held delivery or evaluation is tried again, and why.
 fn retry_line(hold: &Hold, timezone: &str) -> String {
     let when = hold.next_at.map_or_else(String::new, |at| {
         let zone = time_zone(timezone).unwrap_or(TimeZone::UTC);
@@ -429,7 +429,18 @@ fn retry_line(hold: &Hold, timezone: &str) -> String {
     } else {
         format!(" ({} of {})", hold.retries, hold.max_retries)
     };
-    format!("Retrying{when}{count}: {}", e(&hold.message))
+    let what = match hold.retry {
+        None => "Retrying",
+        Some(_) => "Evaluating again",
+    };
+    let why = match hold.retry {
+        Some(EvaluationRetry::TargetChange) if hold.rebased_head.is_some() => {
+            " because the change was rebased"
+        }
+        Some(EvaluationRetry::TargetChange) => " because the target branch moved",
+        _ => "",
+    };
+    format!("{what}{when}{count}{why}: {}", e(&hold.message))
 }
 
 fn time(at: &Timestamp, timezone: &str) -> String {
@@ -1081,6 +1092,13 @@ pub(super) fn detail(
     }) {
         write!(body, r#"<section class="task-attention waiting" role="status"><h2>Delivery continues automatically</h2><p>{}</p></section>"#, retry_line(hold, &token.access.timezone)).unwrap();
     }
+    if let Some(hold) = detail
+        .hold
+        .as_ref()
+        .filter(|hold| hold.retry.is_some() && hold.next_at.is_some() && !task.state.is_terminal())
+    {
+        write!(body, r#"<section class="task-attention waiting" role="status"><h2>Another evaluation is scheduled</h2><p>{}</p></section>"#, retry_line(hold, &token.access.timezone)).unwrap();
+    }
     if task.state == TaskState::NeedsHuman
         && let Some(view) = detail.attempts.last()
     {
@@ -1159,10 +1177,25 @@ pub(super) fn detail(
             .any(|event| event.kind == "merge_request.superseded")
         {
             "The source changed after its adaptation was published. ArtiDezi closed the obsolete proposal, retired this assessment"
+        } else if let Some(kind) = detail
+            .events
+            .iter()
+            .rev()
+            .find(|event| event.kind == "assessment.superseded")
+            .and_then(|event| event.payload["cause"].as_str())
+            .filter(|cause| ["failed_run", "target_change", "held_change"].contains(cause))
+        {
+            match kind {
+                "failed_run" => "The run failed. ArtiDezi retired it",
+                "target_change" => {
+                    "The target branch moved, or the change was rebased. ArtiDezi retired this assessment"
+                }
+                _ => "The source changed while this assessment was held. ArtiDezi retired it",
+            }
         } else {
             "The source changed before publication. ArtiDezi retired this stale assessment"
         };
-        write!(body, r#"<section class="task-attention"><h2>Fresh evaluation scheduled automatically</h2><p>{change} and will assess the new revision after it settles. No action is needed.</p></section>"#).unwrap();
+        write!(body, r#"<section class="task-attention"><h2>Fresh evaluation scheduled automatically</h2><p>{change} and will assess the current revision after it settles. No action is needed.</p></section>"#).unwrap();
     }
     if let Some((feedback, error)) = revision_error {
         write!(
@@ -1288,6 +1321,10 @@ pub(super) fn detail(
                 "Delivery retry {} of {} scheduled after a temporary failure",
                 event.payload["retry"], event.payload["max_retries"]
             ),
+            "evaluation.retry_scheduled" => format!(
+                "Evaluation {} of {} after a failed run scheduled",
+                event.payload["retry"], event.payload["max_retries"]
+            ),
             "delivery.retry_started" => "Retrying delivery".into(),
             "publication.planned" => "Publication prepared".into(),
             "publication.ci_passed" => "CI passed; continuing delivery".into(),
@@ -1312,7 +1349,7 @@ pub(super) fn detail(
                 Some("waiting_for_ci") => {
                     "Waiting for CI; delivery will continue automatically".into()
                 }
-                Some("waiting_to_retry") => "Waiting to retry delivery".into(),
+                Some("waiting_to_retry") => "Waiting to retry".into(),
                 Some("needs_human") => "Your input is needed".into(),
                 Some("done") if task.delivery_mode == DeliveryMode::Shadow => {
                     "Evaluation recorded without publication".into()

@@ -484,6 +484,14 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             {
                 problems.push(problem(format!("{ctx}: retries.delivery needs max 0-20, multiplier 1-10 and 10 <= initial_delay_seconds <= max_delay_seconds <= 86400")));
             }
+            for (name, retries) in [
+                ("failed", discovery.retries.failed),
+                ("target_change", discovery.retries.target_change),
+            ] {
+                if retries.max > 5 || !(60..=86_400).contains(&retries.initial_delay_seconds) {
+                    problems.push(problem(format!("{ctx}: retries.{name} needs max 0-5 and 60 <= initial_delay_seconds <= 86400")));
+                }
+            }
             let mut ids = BTreeSet::new();
             let mut catch_all = false;
             for handler in &discovery.handlers {

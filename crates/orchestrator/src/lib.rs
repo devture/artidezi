@@ -15,6 +15,7 @@ pub mod prompt;
 mod proposal_branch_cleanup;
 pub mod publish;
 mod recovery;
+mod reevaluation;
 pub mod secrets;
 mod source_ci;
 mod source_publish;
@@ -52,6 +53,10 @@ pub enum OrchestratorError {
     },
     #[error("{0}")]
     Invalid(String),
+    /// The result no longer fits its source or configuration, or needs a permission that another
+    /// result may not need. A new source head can be evaluated afresh.
+    #[error("{0}")]
+    Outdated(String),
     #[error("source head changed from {expected} to {actual}; a fresh evaluation is required")]
     SourceHeadChanged {
         expected: artidezi_contract::common::CommitSha,

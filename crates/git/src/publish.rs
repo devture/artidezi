@@ -186,7 +186,7 @@ pub fn recreate_rebased(
             None,
         )?;
         if index.has_conflicts() {
-            return Err(GitError::Invalid(format!(
+            return Err(GitError::Conflict(format!(
                 "commit {oid} does not apply cleanly on top of {base}"
             )));
         }

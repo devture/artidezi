@@ -39,6 +39,9 @@ pub enum GitError {
         status: String,
         stderr: String,
     },
+    /// Commits that no longer apply to a moved target.
+    #[error("{0}")]
+    Conflict(String),
     #[error("{0}")]
     Invalid(String),
 }

@@ -56,6 +56,9 @@ pub struct TrackedPullRequest {
     /// A head a person explicitly resumed despite its recorded target conflict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_conflict_waived_head: Option<String>,
+    /// Automatic evaluations of the current change outside `runs`.
+    #[serde(default, skip_serializing_if = "Reevaluations::is_default")]
+    pub reevaluations: Reevaluations,
 }
 
 impl TrackedPullRequest {
@@ -64,7 +67,7 @@ impl TrackedPullRequest {
         if self.operator_paused() && hold.reason != HoldReason::OperatorPause {
             return;
         }
-        self.paused = hold.reason.stops_automatic_work();
+        self.paused = hold.stops_automatic_work();
         self.status = hold.message.clone();
         self.hold = Some(hold);
     }
@@ -79,6 +82,52 @@ impl TrackedPullRequest {
             .as_ref()
             .is_some_and(|hold| hold.reason == HoldReason::OperatorPause)
     }
+}
+
+/// Evaluations that retries started, counted until the change itself differs or a person acts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reevaluations {
+    /// The next evaluation of this change is this kind of retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<EvaluationRetry>,
+    #[serde(default)]
+    pub failed: u32,
+    #[serde(default)]
+    pub target_change: u32,
+}
+
+impl Reevaluations {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn used(&self, kind: EvaluationRetry) -> u32 {
+        match kind {
+            EvaluationRetry::Failed => self.failed,
+            EvaluationRetry::TargetChange => self.target_change,
+            EvaluationRetry::Unknown => u32::MAX,
+        }
+    }
+
+    pub fn count(&mut self, kind: EvaluationRetry) {
+        match kind {
+            EvaluationRetry::Failed => self.failed += 1,
+            EvaluationRetry::TargetChange => self.target_change += 1,
+            EvaluationRetry::Unknown => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationRetry {
+    /// The run broke, or produced no acceptable result.
+    Failed,
+    /// The target moved, or the change was rebased without changing itself.
+    TargetChange,
+    /// Not understood by this controller.
+    #[serde(other)]
+    Unknown,
 }
 
 /// What keeps a change, or a task without one, from moving on.
@@ -105,6 +154,15 @@ pub struct Hold {
     /// When automation looks at it next.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_at: Option<Timestamp>,
+    /// The evaluation that `next_at` starts. Delivery and checks have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<EvaluationRetry>,
+    /// A later head that was compared with `head` and carries the same change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebased_head: Option<String>,
+    /// A moved head is not looked at again before this, after something kept it from release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_until: Option<Timestamp>,
 }
 
 impl Hold {
@@ -120,7 +178,28 @@ impl Hold {
             retries: 0,
             max_retries: 0,
             next_at: None,
+            retry: None,
+            rebased_head: None,
+            blocked_until: None,
         }
+    }
+
+    pub fn releases_on(&self, release: HoldRelease) -> bool {
+        self.releases.contains(&release)
+    }
+
+    /// Whether automation continues by itself, so that nobody needs to look. Such a task waits in
+    /// its own state, and discovery needs no separate stop.
+    pub fn waits(&self) -> bool {
+        match self.reason {
+            HoldReason::Delivery => true,
+            HoldReason::FailedRun => self.retry == Some(EvaluationRetry::Failed),
+            _ => false,
+        }
+    }
+
+    pub fn stops_automatic_work(&self) -> bool {
+        !self.waits()
     }
 
     pub fn due(&self, now: Timestamp) -> bool {
@@ -152,19 +231,13 @@ pub enum HoldReason {
     Unclassified,
 }
 
-impl HoldReason {
-    /// Delivery retries wait in their own task state, so discovery needs no separate stop.
-    pub fn stops_automatic_work(self) -> bool {
-        self != Self::Delivery
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HoldRelease {
     Time,
     GreenChecks,
     NewHead,
+    TargetMoved,
     /// Not understood by this controller.
     #[serde(other)]
     Unknown,
@@ -214,7 +287,8 @@ pub enum TaskState {
     Working,
     /// A validated unchanged source assessment is waiting for forge CI before approval/merge.
     WaitingForCi,
-    /// A temporary failure interrupted delivery of the validated result; it is tried again.
+    /// A temporary failure interrupted delivery of the validated result, or the run failed; it is
+    /// tried again.
     WaitingToRetry,
     /// The latest attempt produced a proposal that is published and awaits a human or automerge.
     AwaitingReview,
@@ -241,7 +315,7 @@ impl TaskState {
             ) | (WaitingForCi, Working | NeedsHuman | Done | Closed)
                 | (WaitingToRetry, Working | NeedsHuman | Closed)
                 | (AwaitingReview, Working | NeedsHuman | Done | Closed)
-                | (NeedsHuman, Working | Closed)
+                | (NeedsHuman, Working | WaitingToRetry | Closed)
         )
     }
 

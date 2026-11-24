@@ -1034,7 +1034,14 @@ impl ForgeAdapter for GithubForge {
             sha: String,
         }
         let response: Merged = self.mutate(remote, "PUT", &format!("/repos/{remote}/pulls/{number}/merge"),
-            &json!({"sha":expected_head,"merge_method":match method { MergeMethod::Merge => "merge", MergeMethod::Rebase => "rebase" }}), 200)?;
+            &json!({"sha":expected_head,"merge_method":match method { MergeMethod::Merge => "merge", MergeMethod::Rebase => "rebase" }}), 200)
+            .map_err(|error| match error {
+                // Conflicts, unmet repository rules and a moved head or base.
+                ForgeError::Other(reason) if ["GitHub HTTP 405:", "GitHub HTTP 409:"].iter().any(|s| reason.starts_with(s)) => {
+                    ForgeError::NotMergeable(number, reason)
+                }
+                other => other,
+            })?;
         let sha = CommitSha(response.sha);
         if !response.merged || !sha.is_well_formed() {
             return Err(invalid("GitHub did not confirm the merge"));

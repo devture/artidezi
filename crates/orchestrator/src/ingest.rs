@@ -174,11 +174,6 @@ impl Orchestrator {
                     self.persist_forge_backoffs()?;
                     return Ok(state);
                 }
-                self.pause_task_source(
-                    &task,
-                    HoldReason::FailedRun,
-                    "The worker result was rejected; inspect it before resuming",
-                )?;
                 self.db.record_event(
                     Some(&task.id),
                     Some(attempt_id),
@@ -186,14 +181,29 @@ impl Orchestrator {
                     "attempt.rejected",
                     serde_json::json!({"problems": problems}),
                 )?;
-                if task.state != TaskState::NeedsHuman && !task.state.is_terminal() {
-                    self.db
-                        .set_task_state(&task.id, TaskState::NeedsHuman, "orchestrator")?;
-                }
+                self.reject_run(&task, &attempt, "The worker result was rejected")?;
             }
         }
         self.persist_forge_backoffs()?;
         Ok(state)
+    }
+
+    /// A worker result could not be accepted: ask, or evaluate its incoming change again.
+    pub(crate) fn reject_run(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        message: &str,
+    ) -> Result<()> {
+        if task.kind == TaskKind::PullRequest && !task.state.is_terminal() {
+            return self.run_failed(task, attempt, message);
+        }
+        self.pause_task_source(task, HoldReason::FailedRun, message)?;
+        if task.state != TaskState::NeedsHuman && !task.state.is_terminal() {
+            self.db
+                .set_task_state(&task.id, TaskState::NeedsHuman, "orchestrator")?;
+        }
+        Ok(())
     }
 
     fn validate_record(
@@ -402,6 +412,31 @@ impl Orchestrator {
 
         Ok((problems, result))
     }
+}
+
+/// Whether a validation problem means that the run did what it must not do, rather than that it
+/// broke. Only a person decides how to go on after that.
+pub(crate) fn broke_a_rule(problem: &str) -> bool {
+    [
+        "attempt record names a different attempt",
+        "attempt record answers a different job",
+        "differs from the uploaded file",
+        "base commit differs from the job",
+        "is read_only but was modified",
+        "is read_only and must not be reported",
+        "is not part of the job",
+        "tag proposal",
+        "verification record does not match configured step",
+        "message differs from the record",
+        "outside allowed_paths",
+        "with an invalid file mode",
+        "adds submodule entry",
+        "contains a gitlink entry",
+        "pointing outside the tree",
+        "is not among the job's allowed outcomes",
+    ]
+    .iter()
+    .any(|text| problem.contains(text))
 }
 
 /// The Git work on a worker's bundles. It can be slow on hostile input, so it runs before ingest

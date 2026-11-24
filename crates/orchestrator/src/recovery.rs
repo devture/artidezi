@@ -49,8 +49,8 @@ impl Orchestrator {
         Ok(true)
     }
 
-    /// Adopt recoverable holds left by an older controller or a restart. Explicit source pauses
-    /// and publication plans remain barriers; an explicit retry can supersede an earlier pause.
+    /// Adopt transient failures left by an older controller or a restart, and reconcile held
+    /// adaptations whose source moved. Explicit source pauses remain barriers.
     pub(crate) fn recover_held_execution(&mut self) -> Result<Vec<String>> {
         let mut errors = Vec::new();
         for task in self.db.list_tasks(Some(TaskState::NeedsHuman))? {
@@ -66,26 +66,10 @@ impl Orchestrator {
         let Some(attempt) = self.db.latest_attempt(&task.id)? else {
             return Ok(());
         };
-        let events = self.db.list_events(&task.id)?;
-        let last_pause = events
-            .iter()
-            .filter(|event| event.kind == "discovery.paused")
-            .map(|event| event.id)
-            .max()
-            .unwrap_or(0);
-        let last_retry = events
-            .iter()
-            .filter(|event| event.kind == "publication.retry_requested")
-            .map(|event| event.id)
-            .max()
-            .unwrap_or(0);
         let mut source_moved = false;
         if let Some(source) = crate::discovery::source_of(task)? {
             let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-            if tracked.last_task_id.as_deref() != Some(&task.id)
-                || tracked.operator_paused()
-                || (tracked.paused && last_pause > last_retry)
-            {
+            if tracked.last_task_id.as_deref() != Some(&task.id) || tracked.operator_paused() {
                 return Ok(());
             }
             source_moved = tracked.observed_head != source.input.commit.as_str();
@@ -128,23 +112,6 @@ impl Orchestrator {
             }
             self.db.adopt_transient_failure(&attempt.id, reason)?;
             self.state_access().recover_expired_at(Timestamp::now())?;
-        } else if attempt.state == AttemptState::Valid
-            && events
-                .iter()
-                .rev()
-                .find(|event| event.kind == "task.needs_human")
-                .and_then(|event| event.payload["reason"].as_str())
-                .is_some_and(|reason| reason.contains("source head changed from"))
-            && !events.iter().any(|event| {
-                (event.kind.starts_with("publication.")
-                    && event.kind != "publication.retry_requested")
-                    || event.kind.starts_with("assessment.")
-            })
-            && self.db.list_merge_requests(&task.id)?.is_empty()
-        {
-            // The existing publication path checks authority/freshness first and retires
-            // an obsolete result before any write. Never bypass its reconciliation checks.
-            self.retry_publication(&task.id, "recovery")?;
         } else if source_moved
             && attempt.state.is_terminal()
             && !self.db.list_merge_requests(&task.id)?.is_empty()

@@ -256,6 +256,15 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         [2, 4, 8, 16, 32, 60, 60, 60]
     );
     assert_eq!(defaults.delay_seconds(u32::MAX), 3600);
+    for evaluation in [
+        retries("{}").unwrap().failed,
+        retries(r#"{"target_change":{}}"#).unwrap().target_change,
+    ] {
+        assert_eq!(
+            (evaluation.max, evaluation.initial_delay_seconds),
+            (1, 3600)
+        );
+    }
     let partial = retries(r#"{"delivery":{"max":0}}"#).unwrap().delivery;
     assert_eq!((partial.max, partial.initial_delay_seconds), (0, 120));
     assert!(retries(r#"{"delivery":{"delay":1}}"#).is_err());
@@ -266,6 +275,16 @@ fn discovery_is_optional_and_handlers_are_explicit_and_ordered() {
         (r#"{"delivery":{"multiplier":0}}"#, false),
         (r#"{"delivery":{"max_delay_seconds":60}}"#, false),
         (r#"{"delivery":{"max_delay_seconds":90000}}"#, false),
+        (
+            r#"{"failed":{"max":0},"target_change":{"max":5,"initial_delay_seconds":60}}"#,
+            true,
+        ),
+        (r#"{"failed":{"max":6}}"#, false),
+        (r#"{"target_change":{"initial_delay_seconds":59}}"#, false),
+        (
+            r#"{"target_change":{"initial_delay_seconds":86401}}"#,
+            false,
+        ),
     ] {
         let mut changed = config.clone();
         changed
