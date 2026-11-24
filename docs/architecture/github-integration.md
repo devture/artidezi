@@ -163,9 +163,9 @@ An `assessment.approval_planned` event precedes APPROVE. Retry accepts only revi
 commit, body and APPROVED state; edited or dismissed approvals are not recreated. The
 expected body is the planned one, so checks that appear after a check-less approval do not make it
 look foreign.
-A planned approval without a receipt is posted again only if it was never confirmed by
+A review without a receipt is posted again only if it was never confirmed by
 `assessment.published` and neither its marker nor another unmarked review of the bot at that commit
-exists; otherwise retry stops for inspection. If the first one surfaces late, two identical approvals
+exists; otherwise retry stops for inspection. This covers approvals and COMMENT reviews (`assessment.comment_planned`). If the first one surfaces late, two identical approvals
 count as one. A
 `source.merge_planned` event precedes the merge API call, which includes the expected head SHA.
 A successful response records `source.merge_accepted`. A matching merged source plus the exact owned

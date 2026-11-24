@@ -112,6 +112,9 @@ impl Orchestrator {
         let attempt = self.queue_attempt(&task, &policy, number, Some((feedback, actor)))?;
         self.db.set_task_state(task_id, TaskState::Working, actor)?;
         let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+        if !tracked.paused {
+            tracked.hold = None;
+        }
         tracked.status = "Proposal revision queued".into();
         self.db.save_pull_request_source(&tracked)?;
         Ok(attempt)

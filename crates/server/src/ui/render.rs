@@ -424,12 +424,12 @@ fn retry_line(hold: &Hold, timezone: &str) -> String {
             e(&local.strftime(format).to_string())
         )
     });
-    format!(
-        "Retrying{when} ({} of {}): {}",
-        hold.retries,
-        hold.max_retries,
-        e(&hold.message)
-    )
+    let count = if hold.retries == 0 {
+        String::new()
+    } else {
+        format!(" ({} of {})", hold.retries, hold.max_retries)
+    };
+    format!("Retrying{when}{count}: {}", e(&hold.message))
 }
 
 fn time(at: &Timestamp, timezone: &str) -> String {
@@ -1072,12 +1072,14 @@ pub(super) fn detail(
         !task.state.is_terminal()
     )
     .unwrap();
-    if let Some(hold) = detail
-        .hold
-        .as_ref()
-        .filter(|hold| hold.reason == HoldReason::Delivery)
-    {
-        write!(body, r#"<section class="task-attention" role="status"><h2>Delivery continues automatically</h2><p>{}</p></section>"#, retry_line(hold, &token.access.timezone)).unwrap();
+    if let Some(hold) = detail.hold.as_ref().filter(|hold| {
+        hold.reason == HoldReason::Delivery
+            && matches!(
+                task.state,
+                TaskState::WaitingToRetry | TaskState::AwaitingReview
+            )
+    }) {
+        write!(body, r#"<section class="task-attention waiting" role="status"><h2>Delivery continues automatically</h2><p>{}</p></section>"#, retry_line(hold, &token.access.timezone)).unwrap();
     }
     if task.state == TaskState::NeedsHuman
         && let Some(view) = detail.attempts.last()
@@ -1278,6 +1280,9 @@ pub(super) fn detail(
             "attempt.recovery_queued" => "Replacement queued after worker loss".into(),
             "attempt.transient_retry_queued" => {
                 "Automatic retry scheduled after a temporary model failure".into()
+            }
+            "delivery.retry_scheduled" if event.payload["backoff"] == true => {
+                "Delivery waits until the forge accepts requests again".into()
             }
             "delivery.retry_scheduled" => format!(
                 "Delivery retry {} of {} scheduled after a temporary failure",

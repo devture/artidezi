@@ -22,12 +22,10 @@ use artidezi_git::cache::HttpsCredentials;
 pub enum ForgeError {
     #[error("GitHub credential was rejected or expired; verify the App installation and key")]
     AuthenticationRejected,
-    /// `rate_limited` distinguishes an advised wait from a refusal that GitHub reports the same way
-    /// (HTTP 403), where waiting alone does not help.
     #[error("GitHub permission/rate limit: retry after {retry_at}")]
     RetryAfter {
         retry_at: Timestamp,
-        rate_limited: bool,
+        cause: RetryCause,
     },
     /// The forge could not be reached or failed on its side. A write may still have been applied.
     #[error("{0}")]
@@ -51,6 +49,16 @@ pub enum ForgeError {
 
 pub type Result<T> = std::result::Result<T, ForgeError>;
 
+/// Why a forge request has to wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryCause {
+    RateLimit,
+    /// Refused without an advised wait. GitHub reports missing permissions with the same status.
+    Refused,
+    /// An earlier request's answer still applies; nothing was sent.
+    Backoff,
+}
+
 impl ForgeError {
     /// Whether the same operation can succeed later without anyone changing anything.
     pub fn is_temporary(&self) -> bool {
@@ -58,7 +66,7 @@ impl ForgeError {
             self,
             Self::Temporary(_)
                 | Self::RetryAfter {
-                    rate_limited: true,
+                    cause: RetryCause::RateLimit | RetryCause::Backoff,
                     ..
                 }
                 | Self::Git(artidezi_git::GitError::Temporary(_))

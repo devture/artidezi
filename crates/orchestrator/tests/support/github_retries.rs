@@ -512,3 +512,347 @@ fn holds_recorded_before_they_were_typed_are_adopted_only_when_certain() {
         );
     }
 }
+
+/// A published adaptation whose assessment review failed, so that delivery waits.
+fn published_adaptation() -> (World, Fixture, String) {
+    let (mut w, f) = publishing_world();
+    let id = scan(&mut w).remove(0);
+    respond(&f, REVIEWS, 503);
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    assert_eq!(w.orchestrator.db.list_merge_requests(&id).unwrap().len(), 1);
+    restore(&f, REVIEWS);
+    (w, f, id)
+}
+
+#[test]
+fn a_proposal_that_someone_decided_on_or_edited_is_neither_pushed_nor_updated_again() {
+    for decision in ["merged", "closed", "edited", "lost_then_closed"] {
+        let (mut w, f, id) = if decision == "lost_then_closed" {
+            let (mut w, f) = publishing_world();
+            let id = scan(&mut w).remove(0);
+            f.state.lock().unwrap().lose_create_response = true;
+            assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+            (w, f, id)
+        } else {
+            published_adaptation()
+        };
+        let branch = format!("artidezi/{id}");
+        {
+            let mut s = f.state.lock().unwrap();
+            let pr = s.proposals.get_mut(&100).unwrap();
+            if decision == "edited" {
+                pr["title"] = json!("A maintainer's title");
+            } else {
+                pr["state"] = json!("closed");
+                pr["merged"] = json!(decision == "merged");
+                // The fixture reports live branch heads; keep the one it merged or closed.
+                s.branches.remove(&branch);
+                w.forge
+                    .ensure_repository("org/app")
+                    .unwrap()
+                    .find_reference(&format!("refs/heads/{branch}"))
+                    .unwrap()
+                    .delete()
+                    .unwrap();
+            }
+        }
+        later(&mut w, &f);
+        assert_eq!(
+            task_state(&w, &id),
+            if decision == "merged" {
+                // The review follows, and reconciliation in the same pass sees the merge.
+                TaskState::Done
+            } else {
+                TaskState::NeedsHuman
+            },
+            "{decision}"
+        );
+        assert_eq!(
+            w.forge.branch_head("org/app", &branch).is_ok(),
+            decision == "edited",
+            "{decision}"
+        );
+        let s = f.state.lock().unwrap();
+        assert_eq!(s.proposals.len(), 1);
+        if decision == "edited" {
+            assert_eq!(s.proposals[&100]["title"], "A maintainer's title");
+        }
+    }
+}
+
+#[test]
+fn a_routing_change_or_a_lost_hold_never_leaves_a_task_waiting_forever() {
+    for cause in ["retargeted", "handler", "lost_hold", "half_a_pause"] {
+        let (mut w, f, id) = safe_run();
+        respond(&f, REVIEWS, 503);
+        finish(&mut w);
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+        let mut tracked = source(&w);
+        match cause {
+            "retargeted" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .repositories
+                    .get_mut("role")
+                    .unwrap()
+                    .branch = "release".into();
+            }
+            "handler" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .pull_requests
+                    .as_mut()
+                    .unwrap()
+                    .handlers[0]
+                    .id = "renamed".into();
+            }
+            "lost_hold" => tracked.hold = None,
+            _ => tracked.place_hold(Hold::new(HoldReason::OperatorPause, "paused")),
+        }
+        w.orchestrator
+            .db
+            .save_pull_request_source(&tracked)
+            .unwrap();
+        reopen(&mut w, &f);
+        let _ = w.orchestrator.scan_pull_requests(Some("roles"), true);
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry, "{cause}");
+        later(&mut w, &f);
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{cause}");
+        assert_eq!(
+            hold(&w).reason,
+            if cause == "half_a_pause" {
+                HoldReason::OperatorPause
+            } else {
+                HoldReason::DeliveryStopped
+            },
+            "{cause}"
+        );
+        assert!(f.state.lock().unwrap().reviews.is_empty());
+    }
+}
+
+#[test]
+fn a_temporary_error_on_reopening_keeps_the_gate_for_open_adaptations() {
+    let (mut w, f) = publishing_world();
+    scan(&mut w);
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    f.state.lock().unwrap().open = false;
+    assert!(scan(&mut w).is_empty());
+    move_source_head(&w, &f);
+    f.state.lock().unwrap().open = true;
+    let listing = "/repos/org/app/pulls/100";
+    respond(&f, listing, 503);
+    for outage in [true, false] {
+        if !outage {
+            restore(&f, listing);
+        }
+        let report = w
+            .orchestrator
+            .scan_pull_requests(Some("roles"), true)
+            .unwrap();
+        assert!(report.queued.is_empty(), "{outage}");
+        assert_eq!(report.errors.len(), 1, "{outage}");
+        assert_eq!(source(&w).paused, !outage);
+    }
+}
+
+#[test]
+fn a_moved_head_brings_a_waiting_delivery_forward_only_once() {
+    let (mut w, f, id) = safe_run();
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    move_source_head(&w, &f);
+    let reviews = format!("{REVIEWS}?per_page=100&page=1");
+    respond(&f, &reviews, 503);
+    for _ in 0..6 {
+        let _ = w.orchestrator.scan_pull_requests(Some("roles"), true);
+        w.orchestrator
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(1))
+            .unwrap();
+    }
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    assert_eq!(hold(&w).retries, 2);
+}
+
+#[test]
+fn waiting_for_a_known_backoff_uses_no_retry_and_then_shows_the_real_refusal() {
+    let (mut w, f, id) = safe_run();
+    limits(&mut w).max = 2;
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    assert_eq!(hold(&w).retries, 1);
+    w.orchestrator
+        .db
+        .defer_forge("github", Timestamp::now() + SignedDuration::from_secs(2))
+        .unwrap();
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    assert_eq!(hold(&w).retries, 1);
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    respond(&f, MERGE, 403);
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+
+    // A backoff that never ends is bounded too.
+    let (mut w, f, id) = safe_run();
+    limits(&mut w).max = 2;
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    w.orchestrator
+        .db
+        .defer_forge("github", Timestamp::now() + SignedDuration::from_hours(1))
+        .unwrap();
+    for _ in 0..4 {
+        later(&mut w, &f);
+    }
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+}
+
+#[test]
+fn an_unrelated_review_of_the_bot_does_not_block_a_retry_that_never_tried_to_review() {
+    let (mut w, f) = publishing_world();
+    let id = scan(&mut w).remove(0);
+    let head = f.state.lock().unwrap().head.clone();
+    f.state.lock().unwrap().reviews.push(json!({
+        "id": 70, "user": {"login": "artidezi-fixture[bot]", "type": "Bot"},
+        "commit_id": head, "body": "An inline reply.", "state": "COMMENTED"}));
+    f.state.lock().unwrap().lose_create_response = true;
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
+}
+
+#[test]
+fn a_waiting_task_replaced_by_a_newer_evaluation_does_not_stop_it() {
+    let (mut w, f, id) = safe_run();
+    respond(&f, MERGE, 503);
+    finish(&mut w);
+    // As after a crash between queuing a newer evaluation and closing this task.
+    let mut newer = w.orchestrator.db.get_task(&id).unwrap();
+    newer.id = artidezi_store::new_id("tsk");
+    newer.number = 0;
+    newer.state = TaskState::Done;
+    w.orchestrator.db.insert_task(&newer).unwrap();
+    let mut tracked = source(&w);
+    tracked.last_task_id = Some(newer.id);
+    tracked.hold = None;
+    w.orchestrator
+        .db
+        .save_pull_request_source(&tracked)
+        .unwrap();
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    assert!(!source(&w).paused);
+}
+
+#[test]
+fn a_lost_comment_review_that_someone_edited_or_deleted_is_not_posted_again() {
+    for change in ["edited", "deleted_after_confirmation"] {
+        let (mut w, f) = publishing_world();
+        let id = scan(&mut w).remove(0);
+        f.state.lock().unwrap().lose_review_response = true;
+        assert_eq!(w.work(&unchanged(&w)), AttemptState::Valid);
+        assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+        {
+            let mut s = f.state.lock().unwrap();
+            if change == "edited" {
+                s.reviews[0]["body"] = json!("Edited");
+            } else {
+                s.reviews.clear();
+                drop(s);
+                let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap().id;
+                w.orchestrator
+                    .db
+                    .record_event(
+                        Some(&id),
+                        Some(&attempt),
+                        "orchestrator",
+                        "assessment.published",
+                        json!({"state": "commented"}),
+                    )
+                    .unwrap();
+            }
+        }
+        later(&mut w, &f);
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{change}");
+        assert_eq!(sent(&f, "POST", REVIEWS), 1, "{change}");
+    }
+}
+
+#[test]
+fn a_backoff_does_not_hold_published_adaptations_for_a_person() {
+    let (mut w, f) = publishing_world();
+    let id = scan(&mut w).remove(0);
+    assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
+    w.orchestrator
+        .db
+        .defer_forge("github", Timestamp::now() + SignedDuration::from_hours(1))
+        .unwrap();
+    reopen(&mut w, &f);
+    w.orchestrator.tick().unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::AwaitingReview);
+    assert!(!source(&w).paused);
+}
+
+#[test]
+fn a_delivery_hold_of_an_adaptation_merge_ends_with_the_source_or_the_permission() {
+    for end in ["closed", "revoked"] {
+        let (mut w, f) = adaptation_merge_world();
+        let id = scan(&mut w).remove(0);
+        assert_eq!(w.work(&proposal(&w)), AttemptState::Valid);
+        respond(&f, "/repos/org/app/pulls/100/merge", 503);
+        w.orchestrator.reconcile_task(&id).unwrap();
+        assert_eq!(hold(&w).reason, HoldReason::Delivery);
+        if end == "closed" {
+            f.state.lock().unwrap().open = false;
+            assert!(scan(&mut w).is_empty());
+        } else {
+            w.orchestrator
+                .config
+                .projects
+                .get_mut("roles")
+                .unwrap()
+                .pull_requests
+                .as_mut()
+                .unwrap()
+                .handlers[0]
+                .adaptation_action = Default::default();
+            reopen(&mut w, &f);
+            w.orchestrator.reconcile_task(&id).unwrap();
+        }
+        assert_eq!(source(&w).hold, None, "{end}");
+    }
+}
+
+#[test]
+fn a_revision_that_crashed_before_its_state_change_replaces_the_retry() {
+    let (mut w, f, id) = published_adaptation();
+    w.orchestrator
+        .revise_proposal(&id, "Rename it", "human")
+        .unwrap();
+    assert_eq!(source(&w).hold, None);
+    w.orchestrator
+        .db
+        .set_task_state(&id, TaskState::WaitingToRetry, "fixture")
+        .unwrap();
+    let mut tracked = source(&w);
+    let mut waiting = Hold::new(HoldReason::Delivery, "unavailable");
+    waiting.task_id = Some(id.clone());
+    waiting.next_at = Some(Timestamp::now());
+    tracked.place_hold(waiting);
+    w.orchestrator
+        .db
+        .save_pull_request_source(&tracked)
+        .unwrap();
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::Working);
+    assert_eq!(source(&w).hold, None);
+}

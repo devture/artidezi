@@ -1011,6 +1011,153 @@ fn manual_publication_retries_after_a_push_without_a_merge_request() {
 }
 
 #[test]
+fn a_lost_manual_proposal_is_found_again_unless_someone_decided_on_it_or_revoked_publication() {
+    for case in ["found", "edited", "decided", "revoked"] {
+        let mut w = World::new();
+        let task = w
+            .orchestrator
+            .create_manual_task(
+                "roles",
+                "Do the thing: record a change.",
+                "slavi",
+                &TaskSelection::default(),
+            )
+            .unwrap();
+        w.forge().lose_next_create_response("org/role");
+        let script = w.script("agent.sh", &proposal_script(false));
+        assert_eq!(w.work(&script), AttemptState::Valid);
+        let state = |w: &World| w.orchestrator.db.get_task(&task.id).unwrap().state;
+        assert_eq!(state(&w), TaskState::WaitingToRetry, "{case}");
+        let open = w.forge.list_open_merge_requests("org/role", None).unwrap();
+        assert_eq!(open.len(), 1);
+        match case {
+            "decided" => {
+                // A maintainer adds a commit, merges and deletes the branch.
+                let repo = w.forge.ensure_repository("org/role").unwrap();
+                let branch = format!("refs/heads/{}", open[0].source_branch);
+                let head = repo.refname_to_id(&branch).unwrap();
+                let parent = repo.find_commit(head).unwrap();
+                let author = git2::Signature::now("Maintainer", "m@invalid").unwrap();
+                let fixed = repo
+                    .commit(
+                        None,
+                        &author,
+                        &author,
+                        "Fix",
+                        &parent.tree().unwrap(),
+                        &[&parent],
+                    )
+                    .unwrap();
+                repo.reference(&branch, fixed, true, "maintainer").unwrap();
+                w.forge
+                    .merge(
+                        "org/role",
+                        open[0].number,
+                        &artidezi_contract::common::CommitSha(fixed.to_string()),
+                        artidezi_forge::MergeMethod::Merge,
+                    )
+                    .unwrap();
+                repo.find_reference(&branch).unwrap().delete().unwrap();
+            }
+            "edited" => w
+                .forge
+                .update_merge_request("org/role", open[0].number, "A maintainer's title", "")
+                .unwrap(),
+            "revoked" => {
+                w.orchestrator
+                    .config
+                    .projects
+                    .get_mut("roles")
+                    .unwrap()
+                    .effects
+                    .publish_adaptation_merge_requests = false;
+            }
+            _ => {}
+        }
+        w.orchestrator
+            .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+            .unwrap();
+        assert_eq!(
+            state(&w),
+            if case == "found" {
+                TaskState::AwaitingReview
+            } else {
+                TaskState::NeedsHuman
+            },
+            "{case}"
+        );
+        assert_eq!(
+            w.forge
+                .proposals_for_branch("org/role", &open[0].source_branch)
+                .unwrap()
+                .len(),
+            1
+        );
+        if case == "edited" {
+            assert_eq!(
+                w.forge
+                    .get_merge_request("org/role", open[0].number)
+                    .unwrap()
+                    .title,
+                "A maintainer's title"
+            );
+        }
+        assert!(w.orchestrator.db.list_task_holds().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn retrying_one_repository_leaves_anothers_published_proposal_as_reviewers_edited_it() {
+    let mut w = two_repository_world();
+    let task = w
+        .orchestrator
+        .create_manual_task(
+            "roles",
+            "Upgrade both repositories.",
+            "slavi",
+            &TaskSelection::default(),
+        )
+        .unwrap();
+    w.forge.lose_next_create_response("org/role");
+    let script = w.script("first.sh", &two_repository_script("2", "2"));
+    assert_eq!(w.work(&script), AttemptState::Valid);
+    let published = w.orchestrator.db.list_merge_requests(&task.id).unwrap();
+    assert_eq!(published[0].repository_id, "playbook");
+    w.forge
+        .update_merge_request(
+            "org/playbook",
+            published[0].number,
+            "A maintainer's title",
+            "",
+        )
+        .unwrap();
+    // Merging it meanwhile does not keep the other repository from being delivered.
+    let head = artidezi_contract::common::CommitSha(published[0].head_commit.clone());
+    w.forge
+        .merge(
+            "org/playbook",
+            published[0].number,
+            &head,
+            artidezi_forge::MergeMethod::Merge,
+        )
+        .unwrap();
+    w.orchestrator
+        .tick_at(Timestamp::now() + SignedDuration::from_secs(601))
+        .unwrap();
+    assert_eq!(
+        w.orchestrator.db.get_task(&task.id).unwrap().state,
+        TaskState::AwaitingReview
+    );
+    assert_eq!(
+        w.forge
+            .get_merge_request("org/playbook", published[0].number)
+            .unwrap()
+            .title,
+        "A maintainer's title"
+    );
+}
+
+#[test]
 fn manual_task_interrupted_after_validation_is_delivered_after_a_restart() {
     let mut w = World::new();
     let task = w

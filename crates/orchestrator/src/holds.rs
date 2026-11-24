@@ -9,11 +9,12 @@
 
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::{DeliveryMode, DeliveryRetries};
-use artidezi_contract::common::CommitSha;
+use artidezi_contract::common::{CommitSha, RepositoryAccess};
 use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::{attempt::AttemptRecord, result::AgentResult};
-use artidezi_forge::{ForgeError, MergeRequestState as RemoteState};
+use artidezi_forge::{ForgeError, MergeRequestState as RemoteState, RetryCause};
 use artidezi_store::model::*;
+use std::collections::BTreeMap;
 
 use crate::{Orchestrator, OrchestratorError, Result, discovery::source_of};
 
@@ -74,12 +75,16 @@ impl Orchestrator {
         let source = match source_of(task)? {
             Some(source) => {
                 let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
-                tracked.place_hold(hold.clone());
-                Some(tracked)
+                // A newer evaluation owns the change; an older task must not stop it.
+                (tracked.last_task_id.as_ref() == Some(&task.id)).then(|| {
+                    tracked.place_hold(hold.clone());
+                    tracked
+                })
             }
             None => None,
         };
-        let task_hold = (source.is_none() && state == TaskState::WaitingToRetry).then_some(hold);
+        let task_hold =
+            (task.kind == TaskKind::Manual && state == TaskState::WaitingToRetry).then_some(hold);
         self.db.hold_task(
             TaskHold {
                 task_id: &task.id,
@@ -122,6 +127,7 @@ impl Orchestrator {
             .iter()
             .filter(|event| {
                 event.kind == RETRY_SCHEDULED
+                    && event.payload["backoff"] != true
                     && event.id > since
                     && event.attempt_id.as_deref() == Some(&attempt.id)
             })
@@ -151,13 +157,7 @@ impl Orchestrator {
     ) -> Result<()> {
         let mut message = message.to_owned();
         if error.is_temporary() {
-            let not_before = match error {
-                OrchestratorError::Forge(ForgeError::RetryAfter { retry_at, .. }) => {
-                    Some(*retry_at)
-                }
-                _ => None,
-            };
-            if self.schedule_delivery_retry(task, attempt, &error.to_string(), not_before)? {
+            if self.schedule_delivery_retry(task, attempt, &Interruption::from(error))? {
                 return Ok(());
             }
             let used = self.delivery_retries_used(task, attempt)?;
@@ -173,8 +173,7 @@ impl Orchestrator {
         &mut self,
         task: &Task,
         attempt: &Attempt,
-        cause: &str,
-        not_before: Option<Timestamp>,
+        interruption: &Interruption,
     ) -> Result<bool> {
         let task = self.db.get_task(&task.id)?;
         let attempt = self.db.get_attempt(&attempt.id)?;
@@ -192,17 +191,35 @@ impl Orchestrator {
         }
         let limits = self.delivery_retries(&task);
         let used = self.delivery_retries_used(&task, &attempt)?;
-        if used >= limits.max {
+        // Waiting for a known backoff sends nothing, so it is not a failed try.
+        // One that follows another was not worth waiting for, and counts.
+        let after_backoff = self
+            .db
+            .list_events(&task.id)?
+            .iter()
+            .rev()
+            .find(|event| {
+                event.kind == RETRY_SCHEDULED && event.attempt_id.as_deref() == Some(&attempt.id)
+            })
+            .is_some_and(|event| event.payload["waited"] == true);
+        let free = interruption.backoff && !after_backoff;
+        let counted = u32::from(!free);
+        if used + counted > limits.max || limits.max == 0 {
             return Ok(false);
         }
-        let cause = format!("{cause}{}", self.delivery_stage(&task)?);
+        let cause = format!("{}{}", interruption.cause, self.delivery_stage(&task)?);
         let now = Timestamp::now();
-        let at = now + SignedDuration::from_secs(i64::from(limits.delay_seconds(used)));
+        let delay = if interruption.backoff {
+            limits.initial_delay_seconds
+        } else {
+            limits.delay_seconds(used)
+        };
+        let at = now + SignedDuration::from_secs(i64::from(delay));
         let mut hold = self.new_hold(&task, HoldReason::Delivery, cause.as_str())?;
         hold.releases = vec![HoldRelease::Time];
-        hold.retries = used + 1;
+        hold.retries = used + counted;
         hold.max_retries = limits.max;
-        hold.next_at = Some(not_before.map_or(at, |wait| wait.max(at)));
+        hold.next_at = Some(interruption.not_before.map_or(at, |wait| wait.max(at)));
         self.record_hold(
             &task,
             &attempt,
@@ -210,6 +227,8 @@ impl Orchestrator {
             RETRY_SCHEDULED,
             serde_json::json!({
                 "reason": cause,
+                "backoff": free,
+                "waited": interruption.backoff,
                 "retry": hold.retries,
                 "max_retries": hold.max_retries,
                 "at": hold.next_at,
@@ -244,30 +263,45 @@ impl Orchestrator {
 
     /// Act on every hold whose time has come. Holds only a person can release are left alone.
     pub(crate) fn process_holds(&mut self, now: Timestamp) -> Result<HoldsReport> {
-        let mut due: Vec<(String, HoldReason)> = Vec::new();
+        let mut holds: BTreeMap<String, Hold> = self.db.list_task_holds()?.into_iter().collect();
         for source in self.db.list_pull_request_sources(None)? {
-            if let Some(hold) = &source.hold
-                && hold.due(now)
-                && let Some(task_id) = &hold.task_id
-                && source.last_task_id.as_ref() == Some(task_id)
+            if let Some(hold) = source.hold
+                && let Some(task_id) = &source.last_task_id
+                && hold.task_id.as_ref() == Some(task_id)
             {
-                due.push((task_id.clone(), hold.reason));
+                holds.insert(task_id.clone(), hold);
             }
         }
-        for (task_id, hold) in self.db.list_task_holds()? {
-            if hold.due(now) {
-                due.push((task_id, hold.reason));
+        // Waiting tasks come from their own state, so that none waits without a hold to end it.
+        let mut due: Vec<(Task, Option<Hold>)> = Vec::new();
+        for task in self.db.list_tasks(Some(TaskState::WaitingToRetry))? {
+            let hold = holds
+                .remove(&task.id)
+                .filter(|hold| hold.reason == HoldReason::Delivery);
+            if hold
+                .as_ref()
+                .is_none_or(|hold| hold.next_at.is_none() || hold.due(now))
+            {
+                due.push((task, hold));
+            }
+        }
+        for (task_id, hold) in holds {
+            if hold.reason == HoldReason::FailedChecks && hold.due(now) {
+                let task = self.db.get_task(&task_id)?;
+                if task.state == TaskState::NeedsHuman {
+                    due.push((task, Some(hold)));
+                }
             }
         }
         let mut report = HoldsReport::default();
-        for (task_id, reason) in due {
-            let task = self.db.get_task(&task_id)?;
-            let result = match (reason, task.state) {
-                (HoldReason::Delivery, TaskState::WaitingToRetry) => self.retry_delivery(&task),
-                (HoldReason::FailedChecks, TaskState::NeedsHuman) => {
+        for (task, hold) in due {
+            let task_id = task.id.clone();
+            let result = match hold {
+                Some(hold) if hold.reason == HoldReason::FailedChecks => {
                     self.recheck_failed_source_checks(&task, now)
                 }
-                _ => continue,
+                Some(_) => self.retry_delivery(&task),
+                None => self.stop_orphaned_retry(&task),
             };
             let backoffs = self.persist_forge_backoffs();
             match result.and(backoffs) {
@@ -292,6 +326,10 @@ impl Orchestrator {
             .ok_or_else(|| OrchestratorError::Invalid("missing attempt to deliver".into()))?;
         self.db
             .set_task_state(&task.id, TaskState::Working, "orchestrator")?;
+        if !attempt.state.is_terminal() {
+            // A crash while queuing a revision left its state behind; the revision replaces the retry.
+            return self.clear_delivery_hold(task);
+        }
         self.db.record_event(
             Some(&task.id),
             Some(&attempt.id),
@@ -337,7 +375,86 @@ impl Orchestrator {
             .artifacts
             .get_json(attempt.result.as_ref().ok_or_else(|| missing("result"))?)?;
         let job = self.load_job(attempt)?;
+        if task.kind == TaskKind::Manual {
+            self.require_manual_authority(task)?;
+        }
         self.apply_outcome(task, attempt, &job, &record, &result)
+    }
+
+    /// Source delivery compares its frozen policy with the current configuration at every gate. A
+    /// manual task's first delivery follows its frozen policy alone, so a later automatic one checks
+    /// that the project still permits it.
+    fn require_manual_authority(&self, task: &Task) -> Result<()> {
+        let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
+            .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
+        let permitted = self
+            .config
+            .projects
+            .get(&task.project)
+            .is_some_and(|project| {
+                project.effects.publish_adaptation_merge_requests
+                    && (project.effects.allow_manual_github_publication
+                        || !policy.effects.allow_manual_github_publication)
+                    && project.allowed_delivery_modes.contains(&task.delivery_mode)
+                    && policy
+                        .repositories
+                        .iter()
+                        .filter(|(_, repo)| repo.access == RepositoryAccess::ReadWrite)
+                        .all(|(id, repo)| {
+                            project.repositories.get(id).is_some_and(|current| {
+                                current.forge == repo.forge
+                                    && current.remote == repo.remote
+                                    && current.branch == repo.branch
+                                    && current.agent_access == RepositoryAccess::ReadWrite
+                                    && current.allowed_paths == repo.allowed_paths
+                            }) && self.config.forges.get(&repo.forge).is_some_and(|forge| {
+                                forge.provider == repo.forge_provider
+                                    && repo
+                                        .forge_api_base_url
+                                        .as_ref()
+                                        .is_none_or(|url| *url == forge.api_base_url)
+                                    && repo
+                                        .forge_bot_login
+                                        .as_ref()
+                                        .is_none_or(|login| *login == forge.bot_login)
+                            })
+                        })
+            });
+        if permitted {
+            Ok(())
+        } else {
+            Err(OrchestratorError::Invalid(
+                "current configuration no longer permits publication".into(),
+            ))
+        }
+    }
+
+    /// A pause interrupted by a crash, or a hold placed for another reason, leaves a waiting task
+    /// that nothing would pick up.
+    fn stop_orphaned_retry(&mut self, task: &Task) -> Result<()> {
+        if let Some(source) = source_of(task)?
+            && self
+                .db
+                .get_pull_request_source(&source.tracking_id)?
+                .last_task_id
+                .as_ref()
+                != Some(&task.id)
+        {
+            // A newer evaluation replaced it, but a crash kept it from being closed.
+            return Ok(self
+                .db
+                .set_task_state(&task.id, TaskState::Closed, "orchestrator")?);
+        }
+        match self.db.latest_attempt(&task.id)? {
+            Some(attempt) => self.needs_human(
+                task,
+                &attempt,
+                "delivery stopped while it waited for a retry",
+            ),
+            None => Ok(self
+                .db
+                .set_task_state(&task.id, TaskState::NeedsHuman, "orchestrator")?),
+        }
     }
 
     /// A delivered, superseded or stopped task no longer retries; drop the hold that said so.
@@ -392,7 +509,7 @@ impl Orchestrator {
             Ok(Some(head)) => head,
             Ok(None) => return Ok(false),
             Err(error) if error.is_temporary() => {
-                return self.schedule_delivery_retry(task, attempt, &error.to_string(), None);
+                return self.schedule_delivery_retry(task, attempt, &Interruption::from(&error));
             }
             Err(_) => return Ok(false),
         };
@@ -408,7 +525,7 @@ impl Orchestrator {
             Ok(None) => {}
             Ok(Some(retired)) => return Ok(retired),
             Err(error) if error.is_temporary() => {
-                return self.schedule_delivery_retry(task, attempt, &error.to_string(), None);
+                return self.schedule_delivery_retry(task, attempt, &Interruption::from(&error));
             }
             // An open proposal that is not exactly the planned one; a person has to look.
             Err(_) => return Ok(false),
@@ -465,41 +582,89 @@ impl Orchestrator {
             if source.closed || !source.paused || source.hold.is_some() {
                 continue;
             }
-            let mut hold = Hold::new(HoldReason::Unclassified, source.status.clone());
-            let mut operator_pause = source.status == "Automatic assessments paused by a human"
-                || source.status == "Paused by a human";
-            if let Some(task_id) = &source.last_task_id {
-                let task = self.db.get_task(task_id)?;
-                let events = self.db.list_events(task_id)?;
-                let last = |kind: &str| {
-                    events
-                        .iter()
-                        .filter(|event| event.kind == kind)
-                        .map(|event| event.id)
-                        .max()
-                        .unwrap_or(0)
-                };
-                // A retry that a person asked for superseded an earlier pause.
-                operator_pause |= last("discovery.paused") > last("publication.retry_requested");
-                hold = self.new_hold(&task, HoldReason::Unclassified, source.status.clone())?;
-                let failed_checks = events
-                    .iter()
-                    .rev()
-                    .find(|event| event.kind == "task.needs_human")
-                    .is_some_and(|event| event.payload["recheck"] == "failed_checks");
-                if failed_checks && task.state == TaskState::NeedsHuman && !operator_pause {
-                    hold.reason = HoldReason::FailedChecks;
-                    hold.releases = vec![HoldRelease::GreenChecks, HoldRelease::NewHead];
-                    hold.next_at = Some(Timestamp::now());
-                }
-            }
-            if operator_pause {
-                hold.reason = HoldReason::OperatorPause;
-            }
-            source.hold = Some(hold);
+            source.hold = Some(self.classify_untyped_hold(&source).unwrap_or_else(|error| {
+                tracing::warn!(source = %source.id, %error, "could not classify an older hold");
+                Hold::new(HoldReason::Unclassified, source.status.clone())
+            }));
             self.db.save_pull_request_source(&source)?;
         }
         Ok(())
+    }
+
+    fn classify_untyped_hold(&self, source: &TrackedPullRequest) -> Result<Hold> {
+        let mut hold = Hold::new(HoldReason::Unclassified, source.status.clone());
+        if source.status == "Automatic assessments paused by a human"
+            || source.status == "Paused by a human"
+        {
+            hold.reason = HoldReason::OperatorPause;
+        }
+        let Some(task_id) = &source.last_task_id else {
+            return Ok(hold);
+        };
+        hold.task_id = Some(task_id.clone());
+        let events = self.db.list_events(task_id)?;
+        let last = |kind: &str| {
+            events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .map(|event| event.id)
+                .max()
+                .unwrap_or(0)
+        };
+        // A retry that a person asked for superseded an earlier pause.
+        if last("discovery.paused") > last("publication.retry_requested") {
+            hold.reason = HoldReason::OperatorPause;
+        }
+        if hold.reason == HoldReason::OperatorPause {
+            return Ok(hold);
+        }
+        let task = self.db.get_task(task_id)?;
+        hold = self.new_hold(&task, HoldReason::Unclassified, source.status.clone())?;
+        let failed_checks = events
+            .iter()
+            .rev()
+            .find(|event| event.kind == "task.needs_human")
+            .is_some_and(|event| event.payload["recheck"] == "failed_checks");
+        if failed_checks && task.state == TaskState::NeedsHuman {
+            hold.reason = HoldReason::FailedChecks;
+            hold.releases = vec![HoldRelease::GreenChecks, HoldRelease::NewHead];
+            hold.next_at = Some(Timestamp::now());
+        }
+        Ok(hold)
+    }
+}
+
+/// What interrupted a delivery.
+pub(crate) struct Interruption {
+    cause: String,
+    not_before: Option<Timestamp>,
+    /// Nothing was tried: an earlier answer asked to wait.
+    backoff: bool,
+}
+
+impl Interruption {
+    pub(crate) fn new(cause: &str) -> Self {
+        Self {
+            cause: cause.into(),
+            not_before: None,
+            backoff: false,
+        }
+    }
+}
+
+impl From<&OrchestratorError> for Interruption {
+    fn from(error: &OrchestratorError) -> Self {
+        let (not_before, backoff) = match error {
+            OrchestratorError::Forge(ForgeError::RetryAfter { retry_at, cause }) => {
+                (Some(*retry_at), *cause == RetryCause::Backoff)
+            }
+            _ => (None, false),
+        };
+        Self {
+            cause: error.to_string(),
+            not_before,
+            backoff,
+        }
     }
 }
 

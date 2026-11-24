@@ -200,6 +200,7 @@ impl Orchestrator {
             .expect("checked authority");
         let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
         if (tracked.paused && !incomplete)
+            || tracked.operator_paused()
             || tracked.last_task_id.as_deref() != Some(&task.id)
             || source.input.commit != *expected
         {
@@ -250,7 +251,9 @@ impl Orchestrator {
                 .max()
                 .unwrap_or(0)
         };
-        if tracked.paused && last("discovery.paused") > last("publication.retry_requested") {
+        if tracked.operator_paused()
+            || (tracked.paused && last("discovery.paused") > last("publication.retry_requested"))
+        {
             return Ok(false);
         }
         let Some((attempt_id, expected, actual)) = self.close_superseded_adaptations(task)? else {

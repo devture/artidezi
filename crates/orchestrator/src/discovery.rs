@@ -327,6 +327,7 @@ impl Orchestrator {
             target_conflict: None,
             target_conflict_waived_head: None,
         });
+        let before = source.clone();
         let reopened_with_new_head = source.closed
             && pull.state == MergeRequestState::Open
             && source.observed_head != pull.head_commit.0;
@@ -335,6 +336,13 @@ impl Orchestrator {
         if source.observed_head != pull.head_commit.0 {
             source.observed_head = pull.head_commit.0.clone();
             source.head_observed_at = now;
+            // Seeing a new head once brings a waiting delivery forward, to reassess it.
+            if let Some(hold) = &mut source.hold
+                && hold.reason == HoldReason::Delivery
+                && hold.next_at.is_some()
+            {
+                hold.next_at = Some(now);
+            }
             // A waiver was for the revision a person saw, not for a later return to it.
             source.target_conflict_waived_head = None;
         }
@@ -380,6 +388,12 @@ impl Orchestrator {
                     );
                 if deferred {
                     source.status = status;
+                    if reopened_with_new_head {
+                        // The next pass must recognize the reopening again, with its gate.
+                        source.closed = before.closed;
+                        source.observed_head = before.observed_head;
+                        source.head_observed_at = before.head_observed_at;
+                    }
                 } else {
                     source.place_hold(Hold::new(HoldReason::Intake, status));
                 }
@@ -407,7 +421,11 @@ impl Orchestrator {
             let Some(follow_up) = source.follow_up.as_ref() else {
                 continue;
             };
-            if source.closed || source.paused || follow_up.at > now {
+            // A closed source has one only after a reopening that could not be read completely.
+            if (source.closed && follow_up.reason != PullRequestFollowUpReason::Retry)
+                || source.paused
+                || follow_up.at > now
+            {
                 continue;
             }
             let Some(project) = self.config.projects.get(&source.project) else {
@@ -530,11 +548,22 @@ impl Orchestrator {
                         "assessment.closed_source",
                         serde_json::json!({"reason": "source PR is closed or merged"}),
                     )?;
+                    if source.hold.as_ref().is_some_and(|hold| {
+                        hold.reason == HoldReason::Delivery && hold.task_id.as_ref() == Some(id)
+                    }) {
+                        source.hold = None;
+                    }
                 }
             }
             return Ok(None);
         }
         if source.paused {
+            return Ok(None);
+        }
+        // Delivery retries own a waiting change; their gates refuse a changed route or identity.
+        if let Some(id) = &source.last_task_id
+            && self.db.get_task(id)?.state == TaskState::WaitingToRetry
+        {
             return Ok(None);
         }
         let repository = &self.config.projects[&source.project].repositories[&source.repository_id];
@@ -562,16 +591,6 @@ impl Orchestrator {
                     source.status = "Source changed; waiting for delivery reconciliation".into();
                 } else {
                     source.status = "Waiting for CI; delivery will continue automatically".into();
-                }
-                return Ok(None);
-            }
-            if task.state == TaskState::WaitingToRetry {
-                // Delivery retries own this change; a new head only brings the next one forward.
-                if source_of(&task)?.is_some_and(|s| s.input.commit != pull.head_commit)
-                    && let Some(hold) = &mut source.hold
-                    && hold.reason == HoldReason::Delivery
-                {
-                    hold.next_at = Some(now);
                 }
                 return Ok(None);
             }

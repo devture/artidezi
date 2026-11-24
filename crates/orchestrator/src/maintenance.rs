@@ -65,6 +65,11 @@ impl Orchestrator {
         if self.db.discovery_paused()? {
             return Ok(report);
         }
+        // First, so that one pass never retries its own failure and a forge answer to other work
+        // cannot put waiting deliveries off.
+        let holds = self.process_holds(now)?;
+        report.reconciled.extend(holds.moved);
+        report.errors.extend(holds.errors);
         // Indexed queue, independent of task state. Do this before reconciliation so a new inline
         // failure cannot be retried again in the same pass (including ticks with an injected time).
         for mr in self.db.due_branch_cleanups(now, 16)? {
@@ -101,10 +106,6 @@ impl Orchestrator {
                 Err(error) => report.errors.push(format!("artifact cleanup: {error}")),
             }
         }
-        // Before anything that places holds, so that one pass never retries its own failure.
-        let holds = self.process_holds(now)?;
-        report.reconciled.extend(holds.moved);
-        report.errors.extend(holds.errors);
         for task in self.db.list_tasks(Some(TaskState::WaitingForCi))? {
             match self.resume_source_ci(&task, now) {
                 Ok(state) => report.reconciled.push((task.id, state)),

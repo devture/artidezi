@@ -165,8 +165,7 @@ impl Orchestrator {
                 && !orchestrator.schedule_delivery_retry(
                     &task,
                     &attempt,
-                    "a restart interrupted delivery",
-                    None,
+                    &crate::holds::Interruption::new("a restart interrupted delivery"),
                 )?
             {
                 orchestrator.needs_human(
@@ -185,7 +184,7 @@ impl Orchestrator {
         {
             return Err(artidezi_forge::ForgeError::RetryAfter {
                 retry_at,
-                rate_limited: true,
+                cause: artidezi_forge::RetryCause::Backoff,
             }
             .into());
         }

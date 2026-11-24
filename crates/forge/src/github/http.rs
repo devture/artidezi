@@ -131,7 +131,7 @@ impl Http {
         {
             return Err(ForgeError::RetryAfter {
                 retry_at,
-                rate_limited: true,
+                cause: crate::RetryCause::Backoff,
             });
         }
         Ok(())
@@ -295,7 +295,11 @@ impl Http {
                         .is_ok_and(|body| body.to_lowercase().contains("rate limit"));
                 return Err(ForgeError::RetryAfter {
                     retry_at,
-                    rate_limited,
+                    cause: if rate_limited {
+                        crate::RetryCause::RateLimit
+                    } else {
+                        crate::RetryCause::Refused
+                    },
                 });
             }
         }

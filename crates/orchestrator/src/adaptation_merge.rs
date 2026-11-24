@@ -130,7 +130,7 @@ impl Orchestrator {
                 .any(|mr| mr.state == MergeRequestState::Open)
             || !self.adaptation_merge_authorized(task, policy)?
         {
-            return Ok(());
+            return self.clear_delivery_hold(task);
         }
         let frozen = policy.source_pull_request.as_ref().unwrap();
         // A plan for an adaptation that is still open at the planned head was refused, failed

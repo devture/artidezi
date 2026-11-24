@@ -662,30 +662,32 @@ impl Orchestrator {
         let review = match matching.as_slice() {
             [] => {
                 self.require_source_fresh(task, &policy, !automatic)?;
+                // A review without a confirmation may have been lost on the way; it is posted again
+                // only while the forge shows no trace of it. Once confirmed, its absence is
+                // someone's decision.
+                let events = self.db.list_events(&task.id)?;
+                let planned = events.iter().any(|e| {
+                    e.kind == "assessment.approval_planned"
+                        || (e.kind == "assessment.comment_planned"
+                            && e.attempt_id.as_deref() == Some(&attempt.id))
+                });
+                let confirmed = events.iter().any(|e| {
+                    e.kind == "assessment.published" && e.attempt_id.as_deref() == Some(&attempt.id)
+                });
+                if confirmed
+                    || (planned
+                        && reviews.iter().any(|r| {
+                            r.body.contains(&marker)
+                                || (Some(&r.author_login) == source.publisher_login.as_ref()
+                                    && r.head_commit == source.input.commit
+                                    && !r.body.contains("<!-- artidezi:assessment:"))
+                        }))
+                {
+                    return Err(invalid(
+                        "A prior review was published or may have been, but its matching receipt is missing; inspect the source before a new evaluation",
+                    ));
+                }
                 if automatic {
-                    // A planned approval without a confirmation may have been lost on the way; it is
-                    // posted again only while the forge shows no trace of it. Once confirmed, its
-                    // absence is someone's decision.
-                    let events = self.db.list_events(&task.id)?;
-                    let planned = events
-                        .iter()
-                        .any(|e| e.kind == "assessment.approval_planned");
-                    let confirmed = events.iter().any(|e| {
-                        e.kind == "assessment.published" && e.payload["state"] == "approved"
-                    });
-                    if planned
-                        && (confirmed
-                            || reviews.iter().any(|r| {
-                                r.body.contains(&marker)
-                                    || (Some(&r.author_login) == source.publisher_login.as_ref()
-                                        && r.head_commit == source.input.commit
-                                        && !r.body.contains("<!-- artidezi:assessment:"))
-                            }))
-                    {
-                        return Err(invalid(
-                            "A prior approval was planned but its matching receipt is missing; inspect the source before a new evaluation",
-                        ));
-                    }
                     let without_checks = self.require_source_action_ready(task, &policy)?;
                     self.db.record_event(
                         Some(&task.id),
@@ -704,6 +706,13 @@ impl Orchestrator {
                         &body,
                     )?
                 } else {
+                    self.db.record_event(
+                        Some(&task.id),
+                        Some(&attempt.id),
+                        "orchestrator",
+                        "assessment.comment_planned",
+                        serde_json::json!({"head":source.input.commit}),
+                    )?;
                     self.forge(&repo.forge)?.create_comment_review(
                         &repo.remote,
                         source.number,
@@ -937,6 +946,35 @@ impl Orchestrator {
             .db
             .get_merge_request(&task.id, &plan.repository)?
             .filter(|mr| mr.state == MergeRequestState::Open && mr.source_branch == plan.branch);
+        // Once published by this attempt, the proposal belongs to its reviewers: a repeated delivery
+        // only checks it, without pushing or editing.
+        let published = self.db.list_events(&task.id)?.into_iter().any(|e| {
+            e.kind == "merge_request.published"
+                && e.attempt_id.as_deref() == Some(&attempt.id)
+                && e.payload["repository"] == plan.repository.as_str()
+                && e.payload["head"] == plan.head.as_str()
+        });
+        let existing = forge.proposals_for_branch(&repo.remote, &plan.branch)?;
+        if published
+            && let [info] = existing.as_slice()
+            && info.state == RemoteState::Merged
+            && info.head_commit == plan.head
+        {
+            return Ok(());
+        }
+        if published || existing.iter().any(|info| info.state != RemoteState::Open) {
+            return match existing.as_slice() {
+                // A reviewer may take a published draft out of draft.
+                [info]
+                    if published && self.proposal_matches_plan(policy, repo, plan, info, true) =>
+                {
+                    Ok(())
+                }
+                _ => Err(invalid(
+                    "proposal was changed, merged or closed after it was planned; refusing to recreate it",
+                )),
+            };
+        }
         match forge.branch_head_optional(&repo.remote, &plan.branch)? {
             None => {
                 let credentials = if workflow_changes {
@@ -986,27 +1024,45 @@ impl Orchestrator {
                 )?
             }
             [info] if owned.is_some() && (info.title != plan.title || info.body != plan.body) => {
+                self.plan_proposal_update(task, attempt, &plan.repository, info)?;
+                let forge = self.forge(&repo.forge)?;
                 forge.update_merge_request(&repo.remote, info.number, &plan.title, &plan.body)?;
                 forge.get_merge_request(&repo.remote, info.number)?
             }
             [info] => info.clone(),
             _ => return Err(invalid("multiple proposals use the intended branch")),
         };
-        if info.author_login != self.config.forges[&repo.forge].bot_login
-            || info.source_branch != plan.branch
-            || info.target_branch != repo.branch
-            || info.head_commit != plan.head
-            || info.body != plan.body
-            || info.title != plan.title
-            || info.state != RemoteState::Open
-            || info.draft != policy.draft_merge_requests
-        {
+        if !self.proposal_matches_plan(policy, repo, plan, &info, false) {
             return Err(invalid(
                 "proposal receipt differs from the durable publication plan",
             ));
         }
         self.require_source_fresh(task, policy, true)?;
         self.record_source_proposal(task, attempt, repo, plan, &info)
+    }
+
+    fn proposal_matches_plan(
+        &self,
+        policy: &ResolvedProjectPolicy,
+        repo: &ResolvedRepository,
+        plan: &ProposalPlan,
+        info: &artidezi_forge::MergeRequestInfo,
+        ready_allowed: bool,
+    ) -> bool {
+        // Forgejo marks drafts in the title.
+        let title = info
+            .title
+            .strip_prefix("WIP: ")
+            .filter(|_| policy.draft_merge_requests)
+            .unwrap_or(&info.title);
+        info.author_login == self.config.forges[&repo.forge].bot_login
+            && info.source_branch == plan.branch
+            && info.target_branch == repo.branch
+            && info.head_commit == plan.head
+            && info.body == plan.body
+            && title == plan.title
+            && info.state == RemoteState::Open
+            && (info.draft == policy.draft_merge_requests || (ready_allowed && !info.draft))
     }
 
     /// Record receipts for proposals whose creation response was lost, when the forge shows exactly
@@ -1037,13 +1093,7 @@ impl Orchestrator {
                 .forge(&repo.forge)?
                 .proposals_for_branch(&repo.remote, &plan.branch)?;
             if let [info] = found.as_slice()
-                && info.state == RemoteState::Open
-                && info.author_login == self.config.forges[&repo.forge].bot_login
-                && info.source_branch == plan.branch
-                && info.target_branch == repo.branch
-                && info.head_commit == plan.head
-                && info.title == plan.title
-                && info.body == plan.body
+                && self.proposal_matches_plan(policy, repo, &plan, info, false)
             {
                 self.record_source_proposal(task, attempt, repo, &plan, info)?;
             }
@@ -1115,6 +1165,9 @@ impl Orchestrator {
             return Ok(task.state);
         };
         if let Err(error) = self.require_source_authority(task, policy) {
+            if error.is_temporary() {
+                return Err(error);
+            }
             self.needs_human(task, &attempt, &error.to_string())?;
             return Ok(TaskState::NeedsHuman);
         }

@@ -31,6 +31,7 @@ struct State {
     /// Check results a test wants a merge request to report, keyed by (remote, source branch).
     checks: BTreeMap<(String, String), ChecksState>,
     fail_next_create: BTreeSet<String>,
+    lose_next_create_response: BTreeSet<String>,
     fail_next_branch_head: BTreeSet<String>,
     reviews: BTreeMap<(String, u64), Vec<MergeRequestReview>>,
 }
@@ -106,6 +107,15 @@ impl FakeForge {
             .lock()
             .unwrap()
             .fail_next_create
+            .insert(remote.to_owned());
+    }
+
+    /// Simulates a merge request that is created although its response never arrives.
+    pub fn lose_next_create_response(&self, remote: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .lose_next_create_response
             .insert(remote.to_owned());
     }
 
@@ -297,7 +307,17 @@ impl ForgeAdapter for FakeForge {
                 "simulated merge request creation failure".into(),
             ));
         }
-        self.create_as(remote, "artidezi[bot]", request)
+        let created = self.create_as(remote, "artidezi[bot]", request)?;
+        if self
+            .state
+            .lock()
+            .unwrap()
+            .lose_next_create_response
+            .remove(remote)
+        {
+            return Err(ForgeError::Temporary("simulated lost response".into()));
+        }
+        Ok(created)
     }
 
     fn update_merge_request(

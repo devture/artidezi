@@ -62,7 +62,13 @@ impl Orchestrator {
                     // Only preflight reads reach here. Respect persisted forge backoff and try on
                     // a later scheduled check; never convert an API error into successful CI.
                 }
-                ref error if error.is_temporary() => {}
+                ref error if error.is_temporary() => {
+                    if let Some(source) = source_of(task)? {
+                        let mut tracked = self.db.get_pull_request_source(&source.tracking_id)?;
+                        tracked.status = format!("Waiting for CI; checking it failed: {error}");
+                        self.db.save_pull_request_source(&tracked)?;
+                    }
+                }
                 _ => self.needs_human(
                     task,
                     &attempt,

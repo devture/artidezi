@@ -83,6 +83,7 @@ impl Orchestrator {
         if let Some(source) = crate::discovery::source_of(task)? {
             let tracked = self.db.get_pull_request_source(&source.tracking_id)?;
             if tracked.last_task_id.as_deref() != Some(&task.id)
+                || tracked.operator_paused()
                 || (tracked.paused && last_pause > last_retry)
             {
                 return Ok(());

@@ -76,6 +76,8 @@ stores the hold, task state and audit event in one transaction.
 [`process_holds`](../../crates/orchestrator/src/holds.rs) is the maintenance step that acts on due
 holds: delivery retries and the recheck of failed checks. At startup, holds from older releases are
 classified where their stored events make that certain; the rest stay `unclassified` for a person.
+A wait for an already known forge backoff schedules a retry without counting it, since nothing was
+sent; a second one in a row counts.
 
 ### Delivery retries
 
@@ -91,8 +93,12 @@ survive restarts. Before any effect, a retry returns the task to `working` and r
 A retry runs the ordinary outcome code again: frozen plans, current gates, then lookups. A moved head
 leads to a fresh assessment. A planned approval or merge names its commit and cannot act on another
 one; a proposal whose receipt was lost is recorded only if it equals its plan, and then closed as
-superseded. Manual merge-request tasks refuse to recreate a proposal that someone decided on since.
-Direct pushes are not repeated. Adaptation merges keep `awaiting_review` and count their
+superseded. Once an attempt published a proposal, its retries only check it, without pushing or
+editing; a proposal that is already merged or closed is never recreated. An update of an existing
+proposal first records the text it replaces (`merge_request.update_planned`), so that its retry stops
+if someone edited the proposal since. Manual tasks additionally
+require that the current project still permits their publication. A waiting task without a delivery
+hold, for example after a crash during a pause, goes to a person. Direct pushes are not repeated. Adaptation merges keep `awaiting_review` and count their
 `adaptation.merge_planned` events at the same head instead.
 
 ## Proposal branch cleanup

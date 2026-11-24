@@ -188,9 +188,9 @@ two identical approvals. If the source moved meanwhile, the new head is evaluate
 budget instead; if it was closed or merged, the task closes.
 
 Not retried: pauses, requested changes, rejected credentials or permissions, a merge the forge
-refuses, edited, dismissed or deleted reviews of ArtiDezi, changed proposals, direct pushes and
-release tags. Preparing an evaluation during an outage is tried again every two minutes without
-stopping the change.
+refuses, edited, dismissed or deleted reviews of ArtiDezi, proposals that someone edited, merged or
+closed, direct pushes and release tags. Waiting for a backoff that is already known uses no retry. Preparing an evaluation during an outage is tried again every two minutes without
+stopping the change. A change that is rerouted while its delivery waits is stopped by the next retry.
 
 ### Conflicts with the target branch
 

@@ -194,6 +194,8 @@ select { min-height: 46px; }
 .form-actions { display: flex; justify-content: space-between; gap: 12px; padding-top: 20px; border-top: 1px solid var(--line); }
 .form-error { padding: 12px 16px; background: #fff0ec; border: 1px solid #eac5ba; border-radius: 8px; color: #8e382a; margin-bottom: 20px; overflow-wrap: anywhere; }
 .task-attention { padding: 16px 20px; background: #fff7e8; border: 1px solid #e5cc96; border-left: 4px solid #c08a2e; border-radius: 8px; margin-bottom: 20px; }
+.task-attention.waiting { background: #f3f7fd; border-color: #c9d8ee; border-left-color: #345c91; }
+.task-attention.waiting h2, .task-attention.waiting p { color: #345c91; }
 .task-attention h2 { margin: 0 0 6px; font-size: 1.1rem; color: #704d14; }
 .task-attention p { margin: 0; color: #704d14; overflow-wrap: anywhere; }
 .task-attention form { margin-top: 14px; }

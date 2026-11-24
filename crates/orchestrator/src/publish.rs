@@ -490,6 +490,60 @@ impl Orchestrator {
         Ok((head, cache_ref, false))
     }
 
+    /// Remember a proposal's text before replacing it, so that a retry replaces only that text and
+    /// never what someone wrote since.
+    pub(crate) fn plan_proposal_update(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        repository: &str,
+        info: &MergeRequestInfo,
+    ) -> Result<()> {
+        let planned = self.db.list_events(&task.id)?.into_iter().find(|event| {
+            event.kind == "merge_request.update_planned"
+                && event.attempt_id.as_deref() == Some(&attempt.id)
+                && event.payload["repository"] == repository
+                && event.payload["number"] == info.number
+        });
+        match planned {
+            Some(event)
+                if event.payload["title"] == info.title.as_str()
+                    && event.payload["body"] == info.body.as_str() =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(OrchestratorError::Invalid(format!(
+                "{repository}: the proposal was edited while its update waited; not rewriting"
+            ))),
+            None => {
+                self.db.record_event(
+                    Some(&task.id),
+                    Some(&attempt.id),
+                    "orchestrator",
+                    "merge_request.update_planned",
+                    serde_json::json!({"repository": repository, "number": info.number, "title": info.title, "body": info.body}),
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether this attempt already published its series for a repository at `head`.
+    fn published_by_attempt(
+        &self,
+        task: &Task,
+        attempt: &Attempt,
+        repository: &str,
+        head: &str,
+    ) -> Result<bool> {
+        Ok(self.db.list_events(&task.id)?.iter().any(|event| {
+            event.kind == "merge_request.published"
+                && event.attempt_id.as_deref() == Some(&attempt.id)
+                && event.payload["repository"] == repository
+                && event.payload["head"] == head
+        }))
+    }
+
     fn check_proposal_revision(
         &mut self,
         task: &Task,
@@ -499,6 +553,13 @@ impl Orchestrator {
     ) -> Result<bool> {
         let forge = self.forge(&resolved.forge)?;
         let info = forge.get_merge_request(&resolved.remote, mr.number)?;
+        if info.state == ForgeMrState::Merged
+            && info.head_commit.as_str() == mr.head_commit
+            && self.published_by_attempt(task, attempt, &mr.repository_id, &mr.head_commit)?
+        {
+            // Merged between two tries of the same delivery; only the others remain.
+            return Ok(true);
+        }
         let reason = if info.state != ForgeMrState::Open {
             Some("proposal was closed or merged; not rewriting")
         } else if info.source_branch != source_branch(&task.id)
@@ -549,6 +610,11 @@ impl Orchestrator {
 
         let (new_head, publish_ref, planned_before) =
             self.plan_manual_publication(task, attempt, &resolved, collection)?;
+        // Delivery of another repository failed after this one was published, which was checked
+        // above. Its proposal belongs to its reviewers now, including its title and description.
+        if self.published_by_attempt(task, attempt, collection.id.as_str(), new_head.as_str())? {
+            return Ok(true);
+        }
         // An earlier try may have created the proposal without learning so. If someone merged or
         // closed it since, pushing again would recreate what they already decided on.
         if planned_before && existing.is_none() {
@@ -556,7 +622,7 @@ impl Orchestrator {
                 .forge(&resolved.forge)?
                 .proposals_for_branch(&resolved.remote, &branch)?
                 .iter()
-                .any(|info| info.state != ForgeMrState::Open && info.head_commit == new_head);
+                .any(|info| info.state != ForgeMrState::Open);
             if decided {
                 return Err(OrchestratorError::Invalid(format!(
                     "{}: the proposal from an interrupted publication was already merged or closed",
@@ -607,12 +673,28 @@ impl Orchestrator {
             .map(str::to_owned)
             .unwrap_or_else(|| format!("ArtiDezi: {}", task.id));
         let body = render_body(task, attempt, result, collection);
+        // Forges may normalize line ends, and Forgejo marks drafts in the title.
+        let unchanged = |info: &MergeRequestInfo| {
+            let live = info
+                .title
+                .strip_prefix("WIP: ")
+                .filter(|_| policy.draft_merge_requests)
+                .unwrap_or(&info.title);
+            live == title && info.body.replace("\r\n", "\n").trim_end() == body.trim_end()
+        };
         let info: MergeRequestInfo = {
             let forge = self.forge(&resolved.forge)?;
             match &existing {
                 Some(mr) => {
-                    forge.update_merge_request(&resolved.remote, mr.number, &title, &body)?;
-                    forge.get_merge_request(&resolved.remote, mr.number)?
+                    let info = forge.get_merge_request(&resolved.remote, mr.number)?;
+                    if unchanged(&info) {
+                        info
+                    } else {
+                        self.plan_proposal_update(task, attempt, collection.id.as_str(), &info)?;
+                        let forge = self.forge(&resolved.forge)?;
+                        forge.update_merge_request(&resolved.remote, mr.number, &title, &body)?;
+                        forge.get_merge_request(&resolved.remote, mr.number)?
+                    }
                 }
                 None => {
                     let open: Vec<_> = forge
@@ -633,8 +715,23 @@ impl Orchestrator {
                         )?,
                         [info]
                             if info.author_login
+                                == self.config.forges[&resolved.forge].bot_login
+                                && unchanged(info) =>
+                        {
+                            info.clone()
+                        }
+                        [info]
+                            if info.author_login
                                 == self.config.forges[&resolved.forge].bot_login =>
                         {
+                            if planned_before {
+                                return Err(OrchestratorError::Invalid(format!(
+                                    "{}: the proposal was edited before its publication was confirmed; not rewriting",
+                                    collection.id
+                                )));
+                            }
+                            self.plan_proposal_update(task, attempt, collection.id.as_str(), info)?;
+                            let forge = self.forge(&resolved.forge)?;
                             forge.update_merge_request(
                                 &resolved.remote,
                                 info.number,
