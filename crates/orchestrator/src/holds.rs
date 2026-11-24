@@ -9,7 +9,7 @@
 
 use artidezi_config::ResolvedProjectPolicy;
 use artidezi_config::model::{DeliveryMode, DeliveryRetries};
-use artidezi_contract::common::{CommitSha, RepositoryAccess};
+use artidezi_contract::common::{CommitSha, Outcome, RepositoryAccess};
 use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_contract::{attempt::AttemptRecord, result::AgentResult};
 use artidezi_forge::{ForgeError, MergeRequestState as RemoteState, RetryCause};
@@ -436,6 +436,19 @@ impl Orchestrator {
         if task.kind == TaskKind::Manual {
             self.require_manual_authority(task)?;
         }
+        // Approvals and merges check this themselves, after looking for what already happened.
+        if result.outcome == Outcome::Proposal
+            && task.delivery_mode == DeliveryMode::MergeRequest
+            && source_of(task)?.is_some()
+        {
+            let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
+                .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
+            if self.source_changes_requested(&policy)? {
+                return Err(OrchestratorError::Outdated(
+                    "A reviewer has requested changes; maintainer input required".into(),
+                ));
+            }
+        }
         self.apply_outcome(task, attempt, &job, &record, &result)
     }
 
@@ -564,8 +577,9 @@ impl Orchestrator {
             if current.state != RemoteState::Open || current.head_commit == source.input.commit {
                 return Ok(None);
             }
-            // An objection made meanwhile is a human decision; a new head must not bypass it.
-            if self.source_changes_requested(&policy)? {
+            // An objection or an edit made meanwhile is a human decision; a new head must not bypass
+            // it.
+            if self.person_objects(task, source, &tracked)? {
                 return Ok(None);
             }
             Ok(Some(current.head_commit))
@@ -636,35 +650,41 @@ impl Orchestrator {
     /// Classify holds recorded before they were typed, when that is certain. The rest keep waiting
     /// for a person.
     pub(crate) fn adopt_untyped_holds(&mut self) -> Result<()> {
-        for mut source in self.db.list_pull_request_sources(None)? {
-            if !source.paused || source.hold.is_some() {
-                continue;
-            }
-            let hold = self.classify_untyped_hold(&source).unwrap_or_else(|error| {
-                tracing::warn!(source = %source.id, %error, "could not classify an older hold");
-                Hold::new(HoldReason::Unclassified, source.status.clone())
-            });
-            // Of a closed change, only a person's pause outlives a reopening.
-            if source.closed && hold.reason != HoldReason::OperatorPause {
-                continue;
-            }
-            // In one step, so that a crash leaves either the untyped hold or its classification.
-            if hold.reason == HoldReason::Unclassified
-                && let Some(task_id) = &hold.task_id
-            {
-                let task = self.db.get_task(task_id)?;
-                if task.state == TaskState::NeedsHuman {
-                    match self.adopt_held_task(&task, &source.status) {
-                        Ok(()) => continue,
-                        Err(error) => {
-                            tracing::warn!(source = %source.id, %error, "could not adopt an older hold");
-                        }
+        for source in self.db.list_pull_request_sources(None)? {
+            self.adopt_untyped_hold(source)?;
+        }
+        Ok(())
+    }
+
+    /// Discovery adopts those of changes that were closed at startup once they are open again.
+    pub(crate) fn adopt_untyped_hold(&mut self, mut source: TrackedPullRequest) -> Result<()> {
+        if !source.paused || source.hold.is_some() {
+            return Ok(());
+        }
+        let hold = self.classify_untyped_hold(&source).unwrap_or_else(|error| {
+            tracing::warn!(source = %source.id, %error, "could not classify an older hold");
+            Hold::new(HoldReason::Unclassified, source.status.clone())
+        });
+        // Of a closed change, only a person's pause outlives a reopening.
+        if source.closed && hold.reason != HoldReason::OperatorPause {
+            return Ok(());
+        }
+        // In one step, so that a crash leaves either the untyped hold or its classification.
+        if hold.reason == HoldReason::Unclassified
+            && let Some(task_id) = &hold.task_id
+        {
+            let task = self.db.get_task(task_id)?;
+            if matches!(task.state, TaskState::NeedsHuman | TaskState::Closed) {
+                match self.adopt_held_task(&task, &source.status) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        tracing::warn!(source = %source.id, %error, "could not adopt an older hold");
                     }
                 }
             }
-            source.hold = Some(hold);
-            self.db.save_pull_request_source(&source)?;
         }
+        source.hold = Some(hold);
+        self.db.save_pull_request_source(&source)?;
         Ok(())
     }
 
@@ -696,6 +716,16 @@ impl Orchestrator {
             return Ok(hold);
         }
         let task = self.db.get_task(task_id)?;
+        // Closing a task by hand pauses its change; discovery closes it along with the change.
+        let closed_by = events
+            .iter()
+            .rev()
+            .find(|event| event.kind == "task.state_changed" && event.payload["to"] == "closed")
+            .map(|event| event.actor.as_str());
+        if task.state == TaskState::Closed && closed_by != Some("discovery") {
+            hold.reason = HoldReason::OperatorPause;
+            return Ok(hold);
+        }
         hold = self.new_hold(&task, HoldReason::Unclassified, source.status.clone())?;
         let failed_checks = events
             .iter()

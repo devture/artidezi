@@ -577,6 +577,11 @@ impl Orchestrator {
             }
             return Ok(None);
         }
+        if source.paused && source.hold.is_none() {
+            self.db.save_pull_request_source(source)?;
+            self.adopt_untyped_hold(source.clone())?;
+            *source = self.db.get_pull_request_source(&source.id)?;
+        }
         if source.hold.as_ref().is_some_and(|hold| {
             hold.reason == HoldReason::Intake
                 && hold.releases_on(HoldRelease::NewHead)
@@ -869,10 +874,13 @@ impl Orchestrator {
             && same_change
             && source.reevaluations.pending.take().is_some()
         {
-            source.place_hold(Hold::new(
-                HoldReason::Budget,
-                "Retries of this change were turned off; explicit resume required",
-            ));
+            let mut hold = Hold::new(
+                HoldReason::Intake,
+                "Retries of this change were turned off; a new head is evaluated again",
+            );
+            hold.head = Some(pull.head_commit.0.clone());
+            hold.releases = vec![HoldRelease::NewHead];
+            source.place_hold(hold);
             return Ok(None);
         }
         let temp = self

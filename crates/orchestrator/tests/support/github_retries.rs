@@ -887,3 +887,18 @@ fn a_reopened_change_stays_paused_by_a_person() {
     assert!(scan(&mut w).is_empty());
     assert_eq!(hold(&w).reason, HoldReason::OperatorPause);
 }
+
+#[test]
+fn a_waiting_proposal_is_not_published_past_requested_changes() {
+    let (mut w, f) = publishing_world();
+    let id = scan(&mut w).remove(0);
+    respond(&f, "/repos/org/app/pulls", 503);
+    w.work(&proposal(&w));
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    restore(&f, "/repos/org/app/pulls");
+    let head = source(&w).observed_head;
+    f.state.lock().unwrap().reviews.push(json!({"id": 900, "user": {"login": "maintainer", "type": "User"}, "commit_id": head, "body": "No.", "state": "CHANGES_REQUESTED"}));
+    later(&mut w, &f);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert!(f.state.lock().unwrap().proposals.is_empty());
+}

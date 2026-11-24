@@ -590,8 +590,11 @@ fn a_retry_turned_off_before_it_started_does_not_use_the_budget() {
     retries(&mut w).failed.max = 0;
     f.state.lock().unwrap().conclusion = "success".into();
     assert!(tick(&mut w, 5000).discovered.is_empty());
-    assert_eq!(hold(&w).reason, HoldReason::Budget);
+    assert_eq!(hold(&w).reason, HoldReason::Intake);
     assert_eq!(source(&w).runs, 1);
+    move_source_head(&w, &f);
+    assert_eq!(settle(&mut w).len(), 1);
+    assert_eq!(source(&w).runs, 2);
 }
 
 #[test]
@@ -609,4 +612,47 @@ fn a_pause_of_an_older_release_survives_closing_upgrading_and_reopening() {
     f.state.lock().unwrap().open = true;
     assert!(settle(&mut w).is_empty());
     assert_eq!(hold(&w).reason, HoldReason::OperatorPause);
+}
+
+#[test]
+fn an_older_question_recovers_after_closing_upgrading_and_reopening_on_the_same_head() {
+    for closed_by_hand in [false, true] {
+        let (mut w, f, id) = asking();
+        if closed_by_hand {
+            w.orchestrator.close_task(&id, "human").unwrap();
+        }
+        untype(&w, None, &id);
+        f.state.lock().unwrap().open = false;
+        scan(&mut w);
+        reopen(&mut w, &f);
+        f.state.lock().unwrap().open = true;
+        assert!(settle(&mut w).is_empty());
+        move_source_head(&w, &f);
+        let queued = settle(&mut w).len();
+        assert_eq!(queued, usize::from(!closed_by_hand));
+        if closed_by_hand {
+            assert_eq!(hold(&w).reason, HoldReason::OperatorPause);
+        }
+    }
+}
+
+#[test]
+fn an_approval_edited_while_its_merge_waits_keeps_a_moved_head_with_a_person() {
+    let (mut w, f) = safe_world(true);
+    f.state.lock().unwrap().overrides.insert(
+        "/repos/org/app/pulls/33/merge".into(),
+        Reply::new(503, json!({"message":"fixture"})),
+    );
+    let id = scan(&mut w).remove(0);
+    let script = safe_result(&w, Some("low"), true);
+    w.work(&script);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    {
+        let mut state = f.state.lock().unwrap();
+        let body = state.reviews[0]["body"].as_str().unwrap().to_owned();
+        state.reviews[0]["body"] = json!(format!("{body}\nEdited."));
+    }
+    move_source_head(&w, &f);
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
 }

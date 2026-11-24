@@ -367,7 +367,7 @@ impl Orchestrator {
 
     /// Whether a reviewer's latest decision requests changes, or our assessment of this task was
     /// edited, deleted or dismissed. Either is a human decision that a new head or target must not bypass.
-    fn person_objects(
+    pub(crate) fn person_objects(
         &self,
         task: &Task,
         source: &PullRequestSource,
