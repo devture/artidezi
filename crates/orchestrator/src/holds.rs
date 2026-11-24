@@ -342,7 +342,10 @@ impl Orchestrator {
                 || reconsider.contains(&task_id)
             {
                 let task = self.db.get_task(&task_id)?;
-                if task.state == TaskState::NeedsHuman {
+                // A task can have closed with its change, which was then reopened.
+                if task.state == TaskState::NeedsHuman
+                    || (task.state == TaskState::Closed && reconsider.contains(&task_id))
+                {
                     due.push((task, Some(hold)));
                 }
             }
@@ -542,7 +545,14 @@ impl Orchestrator {
         if tracked.paused || tracked.last_task_id.as_deref() != Some(&task.id) {
             return Ok(false);
         }
-        if task.delivery_mode != DeliveryMode::MergeRequest {
+        // Without budget the hold remains, so that a mere rebase can still use its own retry.
+        let within_budget = self
+            .config
+            .projects
+            .get(&tracked.project)
+            .and_then(|project| project.pull_requests.as_ref())
+            .is_some_and(|discovery| tracked.runs < discovery.max_runs_per_pull_request);
+        if task.delivery_mode != DeliveryMode::MergeRequest || !within_budget {
             return Ok(false);
         }
         let repository = &policy.repositories[&source.repository_id];
@@ -627,27 +637,33 @@ impl Orchestrator {
     /// for a person.
     pub(crate) fn adopt_untyped_holds(&mut self) -> Result<()> {
         for mut source in self.db.list_pull_request_sources(None)? {
-            if source.closed || !source.paused || source.hold.is_some() {
+            if !source.paused || source.hold.is_some() {
                 continue;
             }
             let hold = self.classify_untyped_hold(&source).unwrap_or_else(|error| {
                 tracing::warn!(source = %source.id, %error, "could not classify an older hold");
                 Hold::new(HoldReason::Unclassified, source.status.clone())
             });
-            let held_task = hold
-                .task_id
-                .clone()
-                .filter(|_| hold.reason == HoldReason::Unclassified);
+            // Of a closed change, only a person's pause outlives a reopening.
+            if source.closed && hold.reason != HoldReason::OperatorPause {
+                continue;
+            }
+            // In one step, so that a crash leaves either the untyped hold or its classification.
+            if hold.reason == HoldReason::Unclassified
+                && let Some(task_id) = &hold.task_id
+            {
+                let task = self.db.get_task(task_id)?;
+                if task.state == TaskState::NeedsHuman {
+                    match self.adopt_held_task(&task, &source.status) {
+                        Ok(()) => continue,
+                        Err(error) => {
+                            tracing::warn!(source = %source.id, %error, "could not adopt an older hold");
+                        }
+                    }
+                }
+            }
             source.hold = Some(hold);
             self.db.save_pull_request_source(&source)?;
-            let Some(task) = held_task.map(|id| self.db.get_task(&id)).transpose()? else {
-                continue;
-            };
-            if task.state == TaskState::NeedsHuman
-                && let Err(error) = self.adopt_held_task(&task, &source.status)
-            {
-                tracing::warn!(source = %source.id, %error, "could not adopt an older hold");
-            }
         }
         Ok(())
     }

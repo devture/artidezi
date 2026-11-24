@@ -400,6 +400,17 @@ impl Orchestrator {
         if let Some(cause) = cause {
             payload["cause"] = cause.into();
         }
+        if self.db.get_task(&task.id)?.state == TaskState::Closed {
+            // It closed with its change, which was reopened since.
+            self.db.record_event(
+                Some(&task.id),
+                Some(attempt_id),
+                "orchestrator",
+                "assessment.superseded",
+                payload,
+            )?;
+            return Ok(self.db.save_pull_request_source(&tracked)?);
+        }
         self.db
             .supersede_source_task(&task.id, attempt_id, "orchestrator", payload, &tracked)?;
         Ok(())

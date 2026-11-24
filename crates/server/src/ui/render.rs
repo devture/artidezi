@@ -1103,6 +1103,17 @@ pub(super) fn detail(
         && let Some(view) = detail.attempts.last()
     {
         let message = match view.attempt.state {
+            AttemptState::Valid
+                if detail
+                    .hold
+                    .as_ref()
+                    .is_some_and(|hold| hold.reason == HoldReason::Question) =>
+            {
+                Some((
+                    "Waiting for you",
+                    "The assessment asks for a decision. If the change or its target moves meanwhile, it is evaluated again automatically within its limits.".to_owned(),
+                ))
+            }
             AttemptState::Lost => Some((
                 "Worker did not finish",
                 "The worker stopped responding before it uploaded a result. No assessment was produced. Check the worker health and logs, then evaluate again.".to_owned(),

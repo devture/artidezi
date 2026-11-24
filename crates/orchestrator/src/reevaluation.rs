@@ -390,16 +390,28 @@ impl Orchestrator {
             .forge(&tracked.forge)?
             .list_reviews(&tracked.remote, source.number)?;
         let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
+        // Receipts of older releases have no digest; at least the verdict has to be there.
+        let verdict: Option<artidezi_contract::result::AgentResult> = self
+            .db
+            .latest_attempt(&task.id)?
+            .and_then(|attempt| attempt.result)
+            .and_then(|result| self.artifacts.get_json(&result).ok());
         Ok(!published.iter().all(|(id, receipt)| {
             reviews.iter().any(|review| {
                 review.id == *id
                     && review.body.contains(&marker)
-                    && receipt["body_sha256"]
-                        .as_str()
-                        .is_none_or(|digest| digest == crate::source_publish::digest(&review.body))
+                    && match receipt["body_sha256"].as_str() {
+                        Some(digest) => digest == crate::source_publish::digest(&review.body),
+                        None => verdict.as_ref().is_none_or(|verdict| {
+                            review
+                                .body
+                                .contains(&crate::source_publish::summary(verdict))
+                        }),
+                    }
                     && (review.state != ReviewState::Dismissed
                         // Forges dismiss approvals themselves when the head moves.
-                        || tracked.observed_head != source.input.commit.as_str())
+                        || (receipt["state"] == "approved"
+                            && tracked.observed_head != source.input.commit.as_str()))
             })
         }))
     }

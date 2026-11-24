@@ -864,6 +864,17 @@ impl Orchestrator {
             source.place_hold(budget_reached());
             return Ok(None);
         }
+        if feedback.is_none()
+            && retry.is_none()
+            && same_change
+            && source.reevaluations.pending.take().is_some()
+        {
+            source.place_hold(Hold::new(
+                HoldReason::Budget,
+                "Retries of this change were turned off; explicit resume required",
+            ));
+            return Ok(None);
+        }
         let temp = self
             .artifacts
             .root()

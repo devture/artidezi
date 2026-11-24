@@ -119,7 +119,7 @@ announced retry. `reconsider` then decides, with the next look reserved before a
   provider refusals over credentials or quota, go to a person instead.
 
 Every release first requires that the source is watched and open, nobody's latest review requests
-changes, the published assessment still exists unedited, and all planned proposals are settled; a
+changes, the published assessment still exists unedited (receipts of older releases have no digest, so only its verdict is compared), and all planned proposals are settled; a
 blocked release is looked at again ten minutes later, or ends a failed run's wait. Delivery errors
 decide their own releases (`releases_after`); errors that can stem from a person's decision, revoked
 permission or a foreign edit have none.

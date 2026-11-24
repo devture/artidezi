@@ -83,7 +83,7 @@ fn adaptation_title(number: u64, source_remote: Option<&str>, subject: Option<&s
     format!("{}…", &title[..end])
 }
 
-fn summary(result: &AgentResult) -> String {
+pub(crate) fn summary(result: &AgentResult) -> String {
     let mut body = limited(&result.summary, 3000);
     if let Some(risk) = &result.risk_hint {
         body.push_str(&format!(

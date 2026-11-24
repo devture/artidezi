@@ -242,9 +242,7 @@ fn a_person_s_decision_keeps_a_question_held() {
                         review["body"] = json!("No.");
                         state.reviews.push(review);
                     }
-                    "dismissed" if moved == "target" => {
-                        state.reviews[0]["state"] = json!("DISMISSED")
-                    }
+                    "dismissed" => state.reviews[0]["state"] = json!("DISMISSED"),
                     "edited" => {
                         let body = state.reviews[0]["body"].as_str().unwrap().to_owned();
                         state.reviews[0]["body"] = json!(format!("{body}\nEdited."));
@@ -252,9 +250,6 @@ fn a_person_s_decision_keeps_a_question_held() {
                     "deleted" => state.reviews.clear(),
                     _ => {}
                 }
-            }
-            if case == "dismissed" && moved == "head" {
-                continue;
             }
             if case == "pause" {
                 let tracked = source(&w);
@@ -425,6 +420,27 @@ fn a_restart_keeps_a_lost_run_and_its_retry() {
 fn holds_of_an_older_release_recover_by_themselves() {
     // A question whose change was regenerated meanwhile.
     let (mut w, f, id) = asking();
+    // Those releases recorded no digest of the published body.
+    let mut receipt = w
+        .orchestrator
+        .db
+        .list_events(&id)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "assessment.published")
+        .unwrap()
+        .payload;
+    receipt.as_object_mut().unwrap().remove("body_sha256");
+    w.orchestrator
+        .db
+        .record_event(
+            Some(&id),
+            None,
+            "orchestrator",
+            "assessment.published",
+            receipt,
+        )
+        .unwrap();
     untype(&w, None, &id);
     move_source_head(&w, &f);
     reopen(&mut w, &f);
@@ -531,4 +547,66 @@ fn a_change_that_differs_before_its_retry_starts_uses_the_budget() {
     assert!(tick(&mut w, 6000).discovered.is_empty());
     assert_eq!(hold(&w).reason, HoldReason::Budget);
     assert_eq!(source(&w).runs, 1);
+}
+
+#[test]
+fn a_question_survives_reopening_on_the_same_head_and_still_recovers() {
+    let (mut w, f, id) = asking();
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    f.state.lock().unwrap().open = true;
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(hold(&w).reason, HoldReason::Question);
+    move_source_head(&w, &f);
+    assert_eq!(settle(&mut w).len(), 1);
+    assert_eq!(source(&w).runs, 2);
+}
+
+#[test]
+fn a_rebase_during_the_run_beyond_the_budget_still_earns_its_own_retry() {
+    let (mut w, f) = safe_world(true);
+    discovery(&mut w).max_runs_per_pull_request = 1;
+    let id = scan(&mut w).remove(0);
+    rebase_source(&w, &f);
+    let script = question(&w);
+    assert_eq!(w.work(&script), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(hold(&w).retry, Some(EvaluationRetry::TargetChange));
+    assert_eq!(tick(&mut w, 3700).discovered.len(), 1);
+    assert_eq!(source(&w).runs, 1);
+}
+
+#[test]
+fn a_retry_turned_off_before_it_started_does_not_use_the_budget() {
+    let (mut w, f) = safe_world(true);
+    scan(&mut w);
+    let script = failed(&w);
+    w.work(&script);
+    f.state.lock().unwrap().conclusion = "running".into();
+    assert!(tick(&mut w, 3700).discovered.is_empty());
+    assert!(source(&w).reevaluations.pending.is_some());
+    retries(&mut w).failed.max = 0;
+    f.state.lock().unwrap().conclusion = "success".into();
+    assert!(tick(&mut w, 5000).discovered.is_empty());
+    assert_eq!(hold(&w).reason, HoldReason::Budget);
+    assert_eq!(source(&w).runs, 1);
+}
+
+#[test]
+fn a_pause_of_an_older_release_survives_closing_upgrading_and_reopening() {
+    let (mut w, f, id) = asking();
+    w.orchestrator
+        .db
+        .record_event(Some(&id), None, "human", "discovery.paused", json!({}))
+        .unwrap();
+    untype(&w, None, &id);
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    reopen(&mut w, &f);
+    move_source_head(&w, &f);
+    f.state.lock().unwrap().open = true;
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(hold(&w).reason, HoldReason::OperatorPause);
 }

@@ -404,6 +404,16 @@ impl Orchestrator {
                     "repository {}: reported unchanged but HEAD moved",
                     collection.id
                 ));
+                // What it did there can still have broken a rule.
+                problems.extend(
+                    inspection
+                        .problems
+                        .get(collection.id.as_str())
+                        .into_iter()
+                        .flatten()
+                        .filter(|problem| broke_a_rule(problem))
+                        .cloned(),
+                );
             }
         }
         for missing in expected.difference(&seen) {
