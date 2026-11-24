@@ -1045,3 +1045,69 @@ fn holding_a_task_records_its_state_source_and_event_together() {
     let read: TrackedPullRequest = serde_json::from_value(newer).unwrap();
     assert_eq!(read.hold.unwrap().reason, HoldReason::Unclassified);
 }
+
+#[test]
+fn task_summaries_filter_by_state_and_project_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = Db::open(&dir.path().join("db.sqlite")).unwrap();
+    let mut tasks = vec![];
+    for (project, state) in [
+        ("roles", TaskState::Working),
+        ("roles", TaskState::NeedsHuman),
+        ("playbook", TaskState::NeedsHuman),
+        ("roles", TaskState::Closed),
+    ] {
+        let mut t = task();
+        t.project = project.into();
+        db.insert_task(&t).unwrap();
+        if state != TaskState::Working {
+            db.set_task_state(&t.id, state, "slavi").unwrap();
+        }
+        tasks.push(db.get_task(&t.id).unwrap());
+    }
+    let numbers = |filter: TaskFilter| -> Vec<i64> {
+        db.list_task_summaries(&filter)
+            .unwrap()
+            .iter()
+            .map(|t| t.number)
+            .collect()
+    };
+    assert_eq!(numbers(TaskFilter::default()), [4, 3, 2, 1]);
+    let held = TaskFilter {
+        state: Some(TaskState::NeedsHuman),
+        ..Default::default()
+    };
+    assert_eq!(numbers(held.clone()), [3, 2]);
+    assert_eq!(
+        numbers(TaskFilter {
+            project: Some("roles".into()),
+            ..held.clone()
+        }),
+        [2]
+    );
+    assert_eq!(
+        numbers(TaskFilter {
+            limit: Some(1),
+            ..held
+        }),
+        [3]
+    );
+    assert_eq!(
+        numbers(TaskFilter {
+            project: Some("absent".into()),
+            ..Default::default()
+        }),
+        Vec::<i64>::new()
+    );
+
+    let full = &tasks[1];
+    let summary = db
+        .list_task_summaries(&TaskFilter::default())
+        .unwrap()
+        .remove(2);
+    let mut expected = serde_json::to_value(full).unwrap();
+    let fields = expected.as_object_mut().unwrap();
+    fields.remove("instructions").unwrap();
+    fields.remove("policy_snapshot").unwrap();
+    assert_eq!(serde_json::to_value(&summary).unwrap(), expected);
+}

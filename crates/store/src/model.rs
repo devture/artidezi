@@ -433,6 +433,33 @@ pub struct Task {
     pub repositories: Vec<TaskRepository>,
 }
 
+/// A task without its instructions and frozen policy. Those hold most of a task's size, so listings
+/// leave them out.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub id: String,
+    pub number: i64,
+    pub project: String,
+    pub kind: TaskKind,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub created_by: String,
+    pub delivery_mode: DeliveryMode,
+    pub agent_profile: String,
+    pub policy_digest: String,
+    pub state: TaskState,
+    pub repositories: Vec<TaskRepository>,
+}
+
+/// Which tasks a listing returns. Unset fields don't restrict it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskFilter {
+    pub state: Option<TaskState>,
+    pub project: Option<String>,
+    /// Returns only this many of the matching tasks, newest first.
+    pub limit: Option<u32>,
+}
+
 /// The exact base a task works from. Frozen at creation; revisions record a new base per attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskRepository {

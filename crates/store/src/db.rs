@@ -248,6 +248,10 @@ impl Db {
         self.connection().list_tasks(state)
     }
 
+    pub fn list_task_summaries(&self, filter: &TaskFilter) -> Result<Vec<TaskSummary>> {
+        self.connection().list_task_summaries(filter)
+    }
+
     pub fn set_task_state(&mut self, id: &str, next: TaskState, actor: &str) -> Result<()> {
         self.connection().set_task_state(id, next, actor)
     }

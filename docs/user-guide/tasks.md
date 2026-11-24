@@ -182,6 +182,10 @@ The CLI supports `task create`, `list`, `show`, `revise`, `close` and `tick`. Us
 and the relevant subcommand's help for flags. Set `ARTIDEZI_URL` and `ARTIDEZI_ADMIN_TOKEN_FILE` to
 select the instance without pasting a bearer token into a command.
 
+`task list` (`GET /admin/v1/tasks`) returns every task, newest first, unless `--state`, `--project` or
+`--limit` (`state`, `project` and `limit` in the API) narrows it. Listed tasks leave out `instructions`
+and `policy_snapshot`; `task show` (`GET /admin/v1/tasks/{id}`) returns them.
+
 The admin API exposes the same task workflow plus discovery routes. Worker tokens and UI cookies
 cannot authorize admin requests. API shapes are in [the server routes](../../crates/server/src/lib.rs)
 and [admin handlers](../../crates/server/src/admin.rs). Admin API `actor`/`created_by` strings are

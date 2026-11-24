@@ -440,6 +440,38 @@ async fn worker_daemon_completes_a_task_over_http() {
         "admin-secret",
     );
     assert_eq!(status, 409);
+
+    // The list leaves out what only the task itself needs, and filters combine.
+    assert_eq!(detail["task"]["instructions"], "Record a change.");
+    let list = |query: &str| {
+        admin(
+            &base,
+            "GET",
+            &format!("/admin/v1/tasks{query}"),
+            None,
+            "admin-secret",
+        )
+    };
+    for query in [
+        "",
+        "?limit=1",
+        "?project=roles",
+        "?state=done&project=roles&limit=5",
+    ] {
+        let (status, tasks) = list(query);
+        assert_eq!(status, 200, "{tasks}");
+        let tasks = tasks.as_array().unwrap();
+        assert_eq!(tasks.len(), 1, "{query}");
+        assert_eq!(tasks[0]["id"], task_id.as_str());
+        assert!(tasks[0].get("instructions").is_none());
+        assert!(tasks[0].get("policy_snapshot").is_none());
+    }
+    for query in ["?state=working", "?project=absent"] {
+        assert_eq!(list(query), (200, serde_json::json!([])), "{query}");
+    }
+    for query in ["?limit=0", "?state=queued"] {
+        assert_eq!(list(query).0, 400, "{query}");
+    }
     let _ = &w.state;
 }
 

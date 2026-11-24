@@ -4,6 +4,8 @@
 
 //! Admin routes: the authenticated human input until a UI exists.
 
+use std::num::NonZeroU32;
+
 use artidezi_config::model::DeliveryMode;
 use artidezi_config::resolve::TaskSelection;
 use artidezi_contract::time::Timestamp;
@@ -127,6 +129,10 @@ pub struct WorkflowPublicationRequest {
 pub struct ListQuery {
     #[serde(default)]
     pub state: Option<TaskState>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub limit: Option<NonZeroU32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,9 +170,14 @@ pub async fn list_tasks(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Vec<Task>>, ApiError> {
+) -> Result<Json<Vec<TaskSummary>>, ApiError> {
     require_admin(&state, &headers)?;
-    let tasks = with_state(&state, move |o| Ok(o.db.list_tasks(query.state)?)).await?;
+    let filter = TaskFilter {
+        state: query.state,
+        project: query.project,
+        limit: query.limit.map(NonZeroU32::get),
+    };
+    let tasks = with_state(&state, move |o| Ok(o.db.list_task_summaries(&filter)?)).await?;
     Ok(Json(tasks))
 }
 

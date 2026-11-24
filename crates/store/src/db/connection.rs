@@ -475,13 +475,13 @@ impl ConnectionDb {
         })
     }
 
-    fn load_task_repositories(&self, task: &mut Task) -> Result<()> {
+    fn task_repositories(&self, task_id: &str) -> Result<Vec<TaskRepository>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT repository_id, branch, base_commit FROM task_repositories
              WHERE task_id = ?1 ORDER BY repository_id",
         )?;
-        task.repositories = stmt
-            .query_map([&task.id], |row| {
+        let repositories = stmt
+            .query_map([task_id], |row| {
                 Ok(TaskRepository {
                     repository_id: row.get(0)?,
                     branch: row.get(1)?,
@@ -489,7 +489,7 @@ impl ConnectionDb {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(())
+        Ok(repositories)
     }
 
     pub fn get_task(&self, id: &str) -> Result<Task> {
@@ -505,7 +505,7 @@ impl ConnectionDb {
             entity: "task",
             id: id.to_owned(),
         })?;
-        self.load_task_repositories(&mut task)?;
+        task.repositories = self.task_repositories(&task.id)?;
         Ok(task)
     }
 
@@ -543,7 +543,44 @@ impl ConnectionDb {
             }
         };
         for task in &mut tasks {
-            self.load_task_repositories(task)?;
+            task.repositories = self.task_repositories(&task.id)?;
+        }
+        Ok(tasks)
+    }
+
+    pub fn list_task_summaries(&self, filter: &TaskFilter) -> Result<Vec<TaskSummary>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT tasks.id, task_numbers.number, project, kind, created_at, updated_at, created_by,
+                    delivery_mode, agent_profile, policy_digest, state
+             FROM tasks JOIN task_numbers ON task_numbers.task_id = tasks.id
+             WHERE (?1 IS NULL OR state = ?1) AND (?2 IS NULL OR project = ?2)
+             ORDER BY number DESC LIMIT ?3",
+        )?;
+        // SQLite reads a negative limit as none.
+        let limit = filter.limit.map_or(-1, i64::from);
+        let mut tasks = stmt
+            .query_map(
+                params![filter.state.map(TaskState::as_str), filter.project, limit],
+                |row| {
+                    Ok(TaskSummary {
+                        id: row.get("id")?,
+                        number: row.get("number")?,
+                        project: row.get("project")?,
+                        kind: enum_from_str(&row.get::<_, String>("kind")?)?,
+                        created_at: parse_ts(&row.get::<_, String>("created_at")?)?,
+                        updated_at: parse_ts(&row.get::<_, String>("updated_at")?)?,
+                        created_by: row.get("created_by")?,
+                        delivery_mode: enum_from_str(&row.get::<_, String>("delivery_mode")?)?,
+                        agent_profile: row.get("agent_profile")?,
+                        policy_digest: row.get("policy_digest")?,
+                        state: enum_from_str(&row.get::<_, String>("state")?)?,
+                        repositories: vec![],
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for task in &mut tasks {
+            task.repositories = self.task_repositories(&task.id)?;
         }
         Ok(tasks)
     }

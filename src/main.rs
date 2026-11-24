@@ -142,10 +142,17 @@ enum TaskCommand {
         #[arg(long, default_value = "cli")]
         created_by: String,
     },
-    /// Lists tasks, optionally filtered by state
+    /// Lists tasks, newest first, without their instructions and policy (see `show`)
     List {
+        /// Only tasks in this state, like needs_human
         #[arg(long)]
         state: Option<String>,
+        /// Only tasks of this project
+        #[arg(long)]
+        project: Option<String>,
+        /// Only the newest N of the matching tasks
+        #[arg(long, value_name = "N")]
+        limit: Option<std::num::NonZeroU32>,
     },
     /// Shows a task with its attempts, merge requests and events
     Show { task_id: String },
@@ -575,12 +582,17 @@ fn task(command: TaskCommand, url: &str, token_file: &PathBuf) -> anyhow::Result
         .into();
     let call = |method: &str,
                 path: &str,
+                query: &[(&str, String)],
                 body: Option<serde_json::Value>|
      -> anyhow::Result<serde_json::Value> {
         let full = format!("{}{path}", url.trim_end_matches('/'));
         let auth = format!("Bearer {token}");
         let mut response = match (method, body) {
-            ("GET", _) => agent.get(&full).header("Authorization", &auth).call()?,
+            ("GET", _) => agent
+                .get(&full)
+                .query_pairs(query.iter().map(|(k, v)| (*k, v.as_str())))
+                .header("Authorization", &auth)
+                .call()?,
             (_, Some(b)) => agent
                 .post(&full)
                 .header("Authorization", &auth)
@@ -607,6 +619,7 @@ fn task(command: TaskCommand, url: &str, token_file: &PathBuf) -> anyhow::Result
         } => call(
             "POST",
             "/admin/v1/tasks",
+            &[],
             Some(serde_json::json!({
                 "project": project,
                 "instructions": instructions,
@@ -615,14 +628,24 @@ fn task(command: TaskCommand, url: &str, token_file: &PathBuf) -> anyhow::Result
                 "created_by": created_by,
             })),
         )?,
-        TaskCommand::List { state } => {
-            let path = match state {
-                Some(s) => format!("/admin/v1/tasks?state={s}"),
-                None => "/admin/v1/tasks".into(),
-            };
-            call("GET", &path, None)?
+        TaskCommand::List {
+            state,
+            project,
+            limit,
+        } => {
+            let query: Vec<(&str, String)> = [
+                ("state", state),
+                ("project", project),
+                ("limit", limit.map(|n| n.to_string())),
+            ]
+            .into_iter()
+            .filter_map(|(name, value)| Some((name, value?)))
+            .collect();
+            call("GET", "/admin/v1/tasks", &query, None)?
         }
-        TaskCommand::Show { task_id } => call("GET", &format!("/admin/v1/tasks/{task_id}"), None)?,
+        TaskCommand::Show { task_id } => {
+            call("GET", &format!("/admin/v1/tasks/{task_id}"), &[], None)?
+        }
         TaskCommand::Revise {
             task_id,
             feedback,
@@ -630,17 +653,20 @@ fn task(command: TaskCommand, url: &str, token_file: &PathBuf) -> anyhow::Result
         } => call(
             "POST",
             &format!("/admin/v1/tasks/{task_id}/revisions"),
+            &[],
             Some(serde_json::json!({"feedback": feedback, "actor": actor})),
         )?,
         TaskCommand::Close { task_id, actor } => call(
             "POST",
             &format!("/admin/v1/tasks/{task_id}/close"),
+            &[],
             Some(serde_json::json!({"actor": actor})),
         )?,
-        TaskCommand::Tick => call("POST", "/admin/v1/tick", None)?,
+        TaskCommand::Tick => call("POST", "/admin/v1/tick", &[], None)?,
         TaskCommand::CleanupArtifacts { apply } => call(
             "POST",
             "/admin/v1/artifacts/cleanup",
+            &[],
             Some(serde_json::json!({"apply": apply})),
         )?,
     };
