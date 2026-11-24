@@ -12,7 +12,7 @@ use artidezi_config::model::DeliveryMode;
 use artidezi_config::resolve::TaskSelection;
 use artidezi_contract::Job;
 use artidezi_contract::attempt::AttemptRecord;
-use artidezi_contract::common::{ArtifactRef, CommitSha, RepositoryId};
+use artidezi_contract::common::{ArtifactRef, CommitSha, Outcome, RepositoryId};
 use artidezi_contract::job::{JobRepository, PreviousAttempt};
 use artidezi_contract::result::AgentResult;
 use artidezi_forge::MergeRequestState as ForgeMergeRequestState;
@@ -348,7 +348,13 @@ impl Orchestrator {
             worker_requirements: policy.worker_requirements.clone(),
             network: policy.network.clone(),
             limits: policy.limits,
-            allowed_outcomes: policy.allowed_outcomes.clone(),
+            // A revision has a published proposal, which waiting would leave unattended.
+            allowed_outcomes: policy
+                .allowed_outcomes
+                .iter()
+                .copied()
+                .filter(|outcome| *outcome != Outcome::RetryLater || revision.is_none())
+                .collect(),
             repositories,
             task_document: ArtifactRef {
                 sha256: "0".repeat(64),

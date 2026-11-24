@@ -881,7 +881,7 @@ async fn tokens_are_scoped() {
     assert_eq!(status, 403);
     let (status, _) = admin(&base, "GET", "/admin/v1/tasks", None, "nope");
     assert_eq!(status, 403);
-    let lease = serde_json::json!({"worker_pool": "personal", "worker_id": "w1", "supported_job_schema_versions": [1, 2], "harnesses": [{"name": "fake", "version": "fake-1"}]});
+    let lease = serde_json::json!({"worker_pool": "personal", "worker_id": "w1", "supported_job_schema_versions": artidezi_contract::job::SUPPORTED_JOB_SCHEMA_VERSIONS, "harnesses": [{"name": "fake", "version": "fake-1"}]});
     let (status, _) = admin(
         &base,
         "POST",
@@ -909,7 +909,11 @@ async fn tokens_are_scoped() {
     );
     assert_eq!(status, 200);
     // Reject outdated workers before leasing anything, including after a controller upgrade.
-    for versions in [serde_json::json!([1]), serde_json::json!([2])] {
+    for versions in [
+        serde_json::json!([1]),
+        serde_json::json!([3]),
+        serde_json::json!([1, 2]),
+    ] {
         let mut incompatible = lease.clone();
         incompatible["supported_job_schema_versions"] = versions;
         let (status, _) = admin(
@@ -2450,6 +2454,33 @@ async fn waiting_delivery_retries_show_their_schedule_without_asking_for_attenti
             "orchestrator",
         )
         .unwrap();
+        let postponed = o
+            .create_manual_task(
+                "roles",
+                "Postpone me",
+                "admin",
+                &artidezi_config::resolve::TaskSelection::default(),
+            )
+            .unwrap();
+        let attempt = o.db.latest_attempt(&postponed.id).unwrap().unwrap();
+        let mut hold = Hold::new(HoldReason::TemporaryBlocker, "No image <yet>");
+        hold.retry = Some(EvaluationRetry::RetryLater);
+        hold.retries = 2;
+        hold.max_retries = 4;
+        hold.next_at = Some(Timestamp::now() + SignedDuration::from_mins(170));
+        o.db.hold_task(
+            TaskHold {
+                task_id: &postponed.id,
+                attempt_id: &attempt.id,
+                state: TaskState::WaitingToRetry,
+                event: "evaluation.retry_scheduled",
+                payload: serde_json::json!({"kind": "retry_later", "retry": 2, "max_retries": 4}),
+                source: None,
+                hold: Some(&hold),
+            },
+            "orchestrator",
+        )
+        .unwrap();
         let task = o
             .create_manual_task(
                 "roles",
@@ -2501,7 +2532,13 @@ async fn waiting_delivery_retries_show_their_schedule_without_asking_for_attenti
     assert!(page.contains("Evaluating again at <time"));
     assert!(page.contains("(1 of 1): The worker did not finish"));
     assert!(page.contains("Evaluation 1 of 1 after a failed run scheduled"));
-    let (code, _, page) = browser_request(&w.base_url, "/tasks/2", Some(&cookie), None, None);
+    let (_, _, page) = browser_request(&w.base_url, "/tasks/2", Some(&cookie), None, None);
+    assert!(
+        page.contains("(2 of 4) because of a temporary blocker: No image &lt;yet&gt;"),
+        "{page}"
+    );
+    assert!(page.contains("Evaluation 2 of 4 after a temporary blocker scheduled"));
+    let (code, _, page) = browser_request(&w.base_url, "/tasks/3", Some(&cookie), None, None);
     assert_eq!(code, 200);
     assert!(page.contains("Retrying at <time"), "{page}");
     assert!(page.contains("(2 of 8): GitHub HTTP 503 &lt;script&gt;"));

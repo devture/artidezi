@@ -248,6 +248,12 @@ impl Orchestrator {
                 HoldReason::Question,
                 "agent asked for human input",
             ),
+            // Only jobs of incoming changes offer it.
+            Outcome::RetryLater => self.needs_human(
+                task,
+                attempt,
+                "retry_later applies to incoming changes only",
+            ),
             Outcome::Failed => self.hold_for_person(
                 task,
                 attempt,

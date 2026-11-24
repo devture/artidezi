@@ -68,9 +68,14 @@ pub async fn lease(
         .iter()
         .all(|version| request.supported_job_schema_versions.contains(version))
     {
-        return Err(ApiError::bad_request(
-            "worker must support job schema versions 1 and 2; upgrade the worker",
-        ));
+        return Err(ApiError::bad_request(format!(
+            "worker must support job schema versions {}; upgrade the worker",
+            artidezi_contract::job::SUPPORTED_JOB_SCHEMA_VERSIONS
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
     if request.tags.len() > MAX_WORKER_TAGS
         || !request

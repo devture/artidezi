@@ -17,9 +17,10 @@ use crate::common::{
 };
 
 /// Version 2 permits revision jobs without previous artifacts after an unreported attempt.
-/// Existing version 1 jobs remain readable and retain their original validation rules.
-pub const JOB_SCHEMA_VERSION: u32 = 2;
-pub const SUPPORTED_JOB_SCHEMA_VERSIONS: &[u32] = &[1, JOB_SCHEMA_VERSION];
+/// Version 3 permits the `retry_later` outcome.
+/// Existing jobs of earlier versions remain readable and retain their original validation rules.
+pub const JOB_SCHEMA_VERSION: u32 = 3;
+pub const SUPPORTED_JOB_SCHEMA_VERSIONS: &[u32] = &[1, 2, JOB_SCHEMA_VERSION];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +42,7 @@ pub struct Job {
     /// The rendered `task.md`.
     pub task_document: ArtifactRef,
     /// Previous artifacts for a revision (attempt_number > 1). Required in version 1;
-    /// in version 2 absent when the last attempt returned no execution record.
+    /// since version 2 absent when the last attempt returned no execution record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_attempt: Option<PreviousAttempt>,
 }

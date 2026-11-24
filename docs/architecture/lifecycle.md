@@ -31,7 +31,7 @@ These are separate identities because completing an assessment must not erase it
 | --- | --- |
 | `working` | Queued/running or processing an attempt |
 | `waiting_for_ci` | Accepted unchanged source assessment waits for CI before automatic approval/merge |
-| `waiting_to_retry` | A temporary failure interrupted delivery of a validated result, or the run failed; it is tried again |
+| `waiting_to_retry` | A temporary failure interrupted delivery of a validated result, the run failed or it reported a temporary blocker; it is tried again |
 | `awaiting_review` | Published proposal(s) await review/merge |
 | `needs_human` | A question, invalid/failed result or uncertain delivery requires attention |
 | `done` | Delivery completed, or a shadow assessment was recorded; terminal |
@@ -117,10 +117,13 @@ announced retry. `reconsider` then decides, with the next look reserved before a
 - `run_failed` holds a broken, lost or failed run in `waiting_to_retry` with a `failed` retry. Like a
   delivery retry this doesn't pause the source. Validation problems that `broke_a_rule`, and
   provider refusals over credentials or quota, go to a person instead.
+- `run_postponed` does the same for a `retry_later` result, with a `retry_later` retry and growing
+  delays. It reads nothing from the forge and publishes nothing. The next evaluation of the same change gets
+  the reported blocker as untrusted task text. Once the retries are used, a person is asked.
 
 Every release first requires that the source is watched and open, nobody's latest review requests
 changes, the published assessment still exists unedited (receipts of older releases have no digest, so only its verdict is compared), and all planned proposals are settled; a
-blocked release is looked at again ten minutes later, or ends a failed run's wait. Delivery errors
+blocked release is looked at again ten minutes later, or ends the wait after a failed run or a temporary blocker. Delivery errors
 decide their own releases (`releases_after`); errors that can stem from a person's decision, revoked
 permission or a foreign edit have none.
 

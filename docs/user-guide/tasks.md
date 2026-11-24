@@ -69,6 +69,8 @@ turn on a delivery mode, grant a new repository or authorize tagging outside the
 The task page shows status, attempts, a summary, checks, logs/evidence and any published proposals.
 `waiting_to_retry` means that a temporary failure interrupted delivery of a validated result; it
 [continues by itself](pr-discovery.md#automatic-delivery-retries), also for manual merge-request tasks.
+Assessments of incoming changes that failed or reported a temporary blocker wait in it too, for
+[another evaluation](pr-discovery.md#automatic-reevaluation).
 `needs_human` can mean a question, a failed check, rejected output or a publication conflict. Read
 the recorded reason rather than treating every such task as a model failure.
 
@@ -136,7 +138,10 @@ head alongside target and context snapshots. The default **dry-run mode** retain
 
 - `approve_untouched`: the agent considers the original update acceptable as-is; no merge or approval.
 - `proposal`: a complete candidate adaptation is retained and checked, with no new forge PR.
-- `needs_human` or `failed`: further automatic work is held for human attention.
+- `retry_later`: a temporary blocker prevents a verdict; the change is
+  [evaluated again later](pr-discovery.md#automatic-reevaluation).
+- `failed`: evaluated once more, then held for human attention.
+- `needs_human`: held for a decision, or for the change or its target to move.
 
 A dry-run task marked done means its evaluation was recorded. It appears under **Completed**, like
 other done tasks. The **Dry run** badge and status tooltip explain that nothing was published.

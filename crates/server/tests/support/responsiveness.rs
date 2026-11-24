@@ -144,7 +144,7 @@ impl ForgeAdapter for GatedForge {
 fn lease_body(worker: &str) -> serde_json::Value {
     serde_json::json!({
         "worker_id": worker, "worker_pool": "personal",
-        "supported_job_schema_versions": [1, 2],
+        "supported_job_schema_versions": artidezi_contract::job::SUPPORTED_JOB_SCHEMA_VERSIONS,
         "harnesses": [{"name": "fake", "version": "fake-1"}]
     })
 }

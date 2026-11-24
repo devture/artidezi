@@ -162,15 +162,26 @@ attempt, a Codex HTTP 401 that occurs before agent work may receive two bounded 
 | What happened | What ArtiDezi does | Default limit |
 | --- | --- | --- |
 | A run broke, was lost, produced no acceptable result or reported `failed` | Evaluates again after an hour; until then the task shows **Waiting to retry** | once per change |
+| The assessment reported a temporary blocker (`retry_later`), such as an image that isn't published yet | Evaluates again after 1, 3, 9 and 24 hours, telling the agent what blocked it; until then the task shows **Waiting to retry** | 4 times per change |
 | A held assessment, and the change itself differs now | Evaluates the new revision after it settles | the run budget |
 | A held assessment, and its target branch moved or the change was merely rebased | Evaluates again after an hour; until then it stays with you, in case you answer first | once per change |
 
 ```yaml
 pull_requests:
   retries:                                        # these are the defaults
+    retry_later:                                  # max: 0 turns it off; at most 10
+      max: 4
+      initial_delay_seconds: 3600
+      multiplier: 3
+      max_delay_seconds: 86400                    # at most 604800
     failed: {max: 1, initial_delay_seconds: 3600}        # 0 turns it off; at most 5
     target_change: {max: 1, initial_delay_seconds: 3600}
 ```
+
+`retry_later` is the agent's verdict that something specific outside the change prevents a decision
+for now and will clear by itself. It must say what. The agent doesn't choose times or counts, nothing
+is posted to the forge while waiting, and a person is asked only when the retries run out. With
+`max: 0`, agents aren't offered this outcome.
 
 These evaluations don't count against `max_runs_per_pull_request`, use the current head, target, CI
 and configuration, and pass the usual gates. Their counts start over when the change itself differs,
@@ -178,7 +189,7 @@ or when a person resumes it or gives feedback. “Merely rebased” means that G
 modes, as for [published adaptations](#conflicts-with-the-target-branch); anything unclear counts as
 a different change and uses the run budget.
 
-A held assessment is one that asks a person, failed, or stopped while being delivered, for example
+A held assessment is one that asks a person, failed, ran out of retries, or stopped while being delivered, for example
 because the forge refused the merge or delivery retries ran out. Only a new head, not a moved
 target, releases one that is merely out of date, such as a changed handler, missing checks or a
 protected CI path.

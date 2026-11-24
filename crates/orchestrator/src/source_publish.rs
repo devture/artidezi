@@ -493,6 +493,10 @@ impl Orchestrator {
         record: &AttemptRecord,
         result: &AgentResult,
     ) -> Result<()> {
+        if result.outcome == Outcome::RetryLater {
+            // Nothing to deliver, and the next evaluation takes everything as it is by then.
+            return self.run_postponed(task, attempt, result);
+        }
         let policy: ResolvedProjectPolicy =
             serde_json::from_str(&task.policy_snapshot).map_err(|e| invalid(&e.to_string()))?;
         self.require_source_authority(task, &policy)?;
@@ -625,7 +629,7 @@ impl Orchestrator {
                 "The agent prepared adaptations for human review. The original change remains open."
             }
             Outcome::NeedsHuman => "The assessment needs a maintainer decision.",
-            Outcome::Failed => unreachable!(),
+            Outcome::RetryLater | Outcome::Failed => unreachable!(),
         };
         let mut body = format!("{verdict}\n\n{}", summary(result));
         if without_checks {
@@ -1555,6 +1559,7 @@ mod tests {
                 tag_proposal: None,
             }],
             questions_for_human: vec![],
+            retry_reason: None,
             notes_for_next_attempt: None,
         };
         for index in 2..=9 {

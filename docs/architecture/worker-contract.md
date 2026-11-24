@@ -24,11 +24,12 @@ artidezi schema attempt
 | `attempt.json` | Supervisor → controller | Harness facts, collections, checks, logs and artifact index |
 | Series bundles/patches/logs | Supervisor → controller | Candidate changes and supporting evidence |
 
-New jobs carry schema version 2; stored version 1 jobs remain supported. Version 2 permits a revision
-without `previous_attempt` artifacts when the prior execution returned no record. Version 1 retains
-its requirement for previous artifacts on revisions. Result and attempt records still use version 1.
-Workers advertise support for both job versions; the controller rejects incompatible workers before
-leasing work. Upgrade workers alongside the controller.
+New jobs carry schema version 3; stored version 1 and 2 jobs remain supported. Version 2 permits a
+revision without `previous_attempt` artifacts when the prior execution returned no record; version 1
+retains its requirement for them. Version 3 permits the `retry_later` outcome, whose result carries a
+`retry_reason`. Result and attempt records still use version 1: a result can only use what its job
+allows. Workers advertise the job versions they support; the controller rejects workers that lack one
+before leasing work. Upgrade workers alongside the controller.
 
 The prompt template version is recorded separately in the job. It distinguishes globally enforced
 rules, trusted project-wide `agent_instructions`, repository context and untrusted task/previous-
@@ -163,8 +164,11 @@ are retained as private attempt artifacts. Other harness failures remain held fo
 
 The supervisor collects committed linear series above the recorded bases. It reports dirty trees,
 branch/base changes, read-only violations, size/count limit problems and per-commit metadata.
-A `proposal` must match actual changed writable repositories. `approve_untouched`, `needs_human` and
-`failed` cannot be used to smuggle a changed series through the result contract.
+A `proposal` must match actual changed writable repositories. `approve_untouched`, `needs_human`,
+`retry_later` and `failed` cannot be used to smuggle a changed series through the result contract.
+`retry_later` is allowed only in jobs that assess an incoming change, never for revising its proposal,
+and requires a `retry_reason`; no other outcome may carry one. The agent cannot choose when or how
+often its change is evaluated again.
 
 Verification runs for non-empty valid writable series after the harness finishes. Records capture
 command, directory, exit status, timing, timeout/skip/truncation facts and output artifact references.

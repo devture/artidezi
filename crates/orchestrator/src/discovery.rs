@@ -768,18 +768,22 @@ impl Orchestrator {
         feedback: Option<(&str, &str)>,
         conflict_gate: bool,
     ) -> Result<Option<Task>> {
+        let mut outcomes = vec![
+            Outcome::ApproveUntouched,
+            Outcome::Proposal,
+            Outcome::NeedsHuman,
+        ];
+        if self.offers_retry_later(&source.project) {
+            outcomes.push(Outcome::RetryLater);
+        }
+        outcomes.push(Outcome::Failed);
         let mut policy = self.config.resolve_project(
             &source.project,
             &TaskSelection {
                 agent_profile: handler.agent_profile.clone(),
                 delivery_mode: None,
             },
-            vec![
-                Outcome::ApproveUntouched,
-                Outcome::Proposal,
-                Outcome::NeedsHuman,
-                Outcome::Failed,
-            ],
+            outcomes,
         )?;
         let publishing = handler.mode == artidezi_config::model::PullRequestMode::Publish;
         policy.delivery_mode = if publishing {
@@ -1056,6 +1060,12 @@ impl Orchestrator {
             "Assess source PR #{} in repository `{}`. Identify its own changes using the merge base of `refs/artidezi/inputs/source-pr` and the recorded target base, then assess integration with that target.\n\nSource title:\n{}\n\nSource description:\n{}",
             pull.number, source.repository_id, pull.title, pull.body
         );
+        if same_change
+            && feedback.is_none()
+            && let Some(blocker) = self.last_blocker(source)?
+        {
+            instructions.push_str(&format!("\n\n{blocker}"));
+        }
         if let Some((feedback, _)) = feedback {
             instructions.push_str(&format!("\n\nHuman follow-up:\n{feedback}"));
         }
@@ -1454,6 +1464,10 @@ impl Orchestrator {
                 "inconsistent shadow task policy".into(),
             ));
         }
+        if result.outcome == Outcome::RetryLater {
+            // The next evaluation takes the change as it is by then.
+            return self.run_postponed(task, attempt, result);
+        }
         let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
             .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
         let repository = &policy.repositories[&source.repository_id];
@@ -1488,6 +1502,7 @@ impl Orchestrator {
                 self.db
                     .set_task_state(&task.id, TaskState::Done, "discovery")?
             }
+            Outcome::RetryLater => unreachable!("postponed above"),
             Outcome::Failed => self.run_failed(task, attempt, "The agent reported failure")?,
             Outcome::NeedsHuman => self.hold_for_person(
                 task,

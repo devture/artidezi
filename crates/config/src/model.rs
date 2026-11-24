@@ -331,6 +331,8 @@ pub struct PullRequestDiscovery {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Retries {
+    /// Evaluating again after the agent reported a temporary blocker.
+    pub retry_later: PostponedRetries,
     /// Evaluating again after a run that broke, or produced no acceptable result.
     pub failed: EvaluationRetries,
     /// Evaluating a held change again because its target moved or it was merely rebased.
@@ -386,12 +388,55 @@ impl Default for DeliveryRetries {
 impl DeliveryRetries {
     /// The wait before a retry, given how many were used before it.
     pub fn delay_seconds(&self, used: u32) -> u32 {
-        self.multiplier
-            .checked_pow(used)
-            .and_then(|factor| self.initial_delay_seconds.checked_mul(factor))
-            .unwrap_or(self.max_delay_seconds)
-            .min(self.max_delay_seconds)
+        growing_delay(
+            self.initial_delay_seconds,
+            self.multiplier,
+            self.max_delay_seconds,
+            used,
+        )
     }
+}
+
+/// Evaluations of one change after the agent reported a temporary blocker, counted until the change
+/// itself differs. With `max: 0`, jobs don't offer the `retry_later` outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct PostponedRetries {
+    pub max: u32,
+    pub initial_delay_seconds: u32,
+    pub multiplier: u32,
+    pub max_delay_seconds: u32,
+}
+
+impl Default for PostponedRetries {
+    fn default() -> Self {
+        Self {
+            max: 4,
+            initial_delay_seconds: 3600,
+            multiplier: 3,
+            max_delay_seconds: 86_400,
+        }
+    }
+}
+
+impl PostponedRetries {
+    /// The wait before a retry, given how many were used before it.
+    pub fn delay_seconds(&self, used: u32) -> u32 {
+        growing_delay(
+            self.initial_delay_seconds,
+            self.multiplier,
+            self.max_delay_seconds,
+            used,
+        )
+    }
+}
+
+fn growing_delay(initial: u32, multiplier: u32, max: u32, used: u32) -> u32 {
+    multiplier
+        .checked_pow(used)
+        .and_then(|factor| initial.checked_mul(factor))
+        .unwrap_or(max)
+        .min(max)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

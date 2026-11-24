@@ -53,6 +53,15 @@ fn question(w: &World) -> PathBuf {
 fn failed(w: &World) -> PathBuf {
     w.script("failed.sh", &result_writer(r#"{"schema_version":1,"outcome":"failed","summary":"Assessment failed.","repositories":[{"id":"role","changed":false}]}"#))
 }
+fn blocked(w: &World) -> PathBuf {
+    w.script("blocked.sh", &result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Not decidable yet.","retry_reason":"The image 1.2.3\nis not published yet","repositories":[{"id":"role","changed":false}]}"#))
+}
+fn prompt(w: &World, id: &str) -> String {
+    let attempt = w.orchestrator.db.latest_attempt(id).unwrap().unwrap();
+    let job = w.orchestrator.load_job(&attempt).unwrap();
+    assert_eq!(job.schema_version, 3);
+    String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap()
+}
 /// A published assessment that asks for a decision.
 fn asking() -> (World, Fixture, String) {
     let (mut w, f) = safe_world(true);
@@ -655,4 +664,162 @@ fn an_approval_edited_while_its_merge_waits_keeps_a_moved_head_with_a_person() {
     move_source_head(&w, &f);
     assert!(settle(&mut w).is_empty());
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+}
+
+#[test]
+fn a_temporary_blocker_is_evaluated_again_with_growing_waits_and_then_needs_a_person() {
+    for shadow in [false, true] {
+        let (mut w, f) = if shadow { world() } else { safe_world(true) };
+        let mut id = scan(&mut w).remove(0);
+        assert!(prompt(&w, &id).contains("\"retry_reason\": null"));
+        assert!(!prompt(&w, &id).contains("temporary blocker. Check"));
+        let script = blocked(&w);
+        for (used, hours) in [1, 3, 9, 24].into_iter().enumerate() {
+            assert_eq!(w.work(&script), AttemptState::Valid);
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+            let held = hold(&w);
+            assert_eq!(held.reason, HoldReason::TemporaryBlocker);
+            assert_eq!(held.retry, Some(EvaluationRetry::RetryLater));
+            assert_eq!((held.retries, held.max_retries), (used as u32 + 1, 4));
+            assert_eq!(held.message, "The image 1.2.3 is not published yet");
+            let wait = (held.next_at.unwrap() - held.since).as_secs();
+            assert!((wait - hours * 3600).abs() < 60, "{wait}");
+            assert!(!source(&w).paused);
+            assert!(f.state.lock().unwrap().reviews.is_empty());
+            // Too early, even though the target moved.
+            advance_target(&w);
+            assert!(tick(&mut w, hours * 3600 - 600).discovered.is_empty());
+            reopen(&mut w, &f);
+            let queued = tick(&mut w, hours * 3600 + 120).discovered;
+            assert_eq!(queued.len(), 1, "{shadow} {used}");
+            assert_eq!(task_state(&w, &id), TaskState::Closed);
+            assert_eq!(source(&w).runs, 1);
+            assert_eq!(source(&w).reevaluations.retry_later, used as u32 + 1);
+            id = queued[0].clone();
+            let prompt = prompt(&w, &id);
+            assert!(prompt.contains("was postponed because of a temporary blocker"));
+            assert!(prompt.contains("The image 1.2.3 is not published yet"));
+        }
+        w.work(&script);
+        assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+        let held = hold(&w);
+        assert_eq!(held.reason, HoldReason::TemporaryBlocker);
+        assert_eq!(
+            held.message,
+            "Still blocked after 4 retries: The image 1.2.3 is not published yet"
+        );
+        assert!(source(&w).paused);
+        assert!(f.state.lock().unwrap().reviews.is_empty());
+        assert!(tick(&mut w, 200_000).discovered.is_empty());
+        // A change that differs starts over.
+        move_source_head(&w, &f);
+        let queued = settle(&mut w);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(source(&w).runs, 2);
+        assert_eq!(source(&w).reevaluations, Default::default());
+        assert!(!prompt(&w, &queued[0]).contains("was postponed"));
+    }
+}
+
+#[test]
+fn a_cleared_blocker_is_delivered_and_people_end_the_wait() {
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    let script = blocked(&w);
+    w.work(&script);
+    reopen(&mut w, &f);
+    let queued = tick(&mut w, 3700).discovered;
+    let safe = safe_result(&w, Some("low"), true);
+    assert_eq!(w.work(&safe), AttemptState::Valid);
+    assert_eq!(task_state(&w, &queued[0]), TaskState::Done);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    assert!(f.state.lock().unwrap().merged);
+
+    // A rebase keeps the wait, an objection ends it.
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    w.work(&script);
+    let at = hold(&w).next_at;
+    rebase_source(&w, &f);
+    assert!(settle(&mut w).is_empty());
+    assert_eq!(hold(&w).next_at, at);
+    f.state.lock().unwrap().reviews.push(json!({"id": 900, "user": {"login": "maintainer", "type": "User"}, "commit_id": source(&w).observed_head, "body": "No.", "state": "CHANGES_REQUESTED"}));
+    assert!(tick(&mut w, 3700).discovered.is_empty());
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+
+    // So do a pause and a closed source, and a different change does not wait.
+    let (mut w, _f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    w.work(&script);
+    let tracked = source(&w);
+    w.orchestrator
+        .pause_pull_request(&tracked.id, "operator")
+        .unwrap();
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert!(tick(&mut w, 90_000).discovered.is_empty());
+
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    w.work(&script);
+    f.state.lock().unwrap().open = false;
+    scan(&mut w);
+    assert_eq!(task_state(&w, &id), TaskState::Closed);
+    assert_eq!(source(&w).hold, None);
+
+    let (mut w, f) = safe_world(true);
+    scan(&mut w);
+    w.work(&script);
+    move_source_head(&w, &f);
+    assert_eq!(settle(&mut w).len(), 1);
+    assert_eq!(source(&w).runs, 2);
+}
+
+#[test]
+fn switched_off_blocker_retries_are_not_offered_and_stop_waiting() {
+    let (mut w, _f) = safe_world(true);
+    retries(&mut w).retry_later.max = 0;
+    let id = scan(&mut w).remove(0);
+    assert!(!prompt(&w, &id).contains("retry_later"));
+    assert!(!prompt(&w, &id).contains("retry_reason"));
+    let script = blocked(&w);
+    assert_eq!(w.work(&script), AttemptState::Invalid);
+
+    // Turned off during the run, and during the wait.
+    let (mut w, _f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    retries(&mut w).retry_later.max = 0;
+    assert_eq!(w.work(&script), AttemptState::Valid);
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+    assert_eq!(hold(&w).message, "The image 1.2.3 is not published yet");
+
+    let (mut w, _f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    w.work(&script);
+    retries(&mut w).retry_later.max = 0;
+    assert!(tick(&mut w, 3700).discovered.is_empty());
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+}
+
+#[test]
+fn a_restart_before_a_reported_blocker_was_recorded_still_waits() {
+    let (mut w, f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    let script = blocked(&w);
+    w.work(&script);
+    // As a crash between accepting the result and recording its hold leaves it.
+    w.orchestrator
+        .db
+        .set_task_state(&id, TaskState::Working, "test")
+        .unwrap();
+    let mut tracked = source(&w);
+    tracked.release_hold();
+    w.orchestrator
+        .db
+        .save_pull_request_source(&tracked)
+        .unwrap();
+    reopen(&mut w, &f);
+    tick(&mut w, 300);
+    assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+    assert_eq!(hold(&w).reason, HoldReason::TemporaryBlocker);
+    assert_eq!(tick(&mut w, 8000).discovered.len(), 1);
 }

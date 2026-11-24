@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Slavi Pantaleev
 // SPDX-License-Identifier: Apache-2.0
 
-//! Evaluating a held change again: after a failed run, or once the change or its target moved.
+//! Evaluating a held change again: after a failed run, a temporary blocker, or once the change or its target moved.
 //!
 //! Discovery only notes what it sees. [`Orchestrator::reconsider`] decides, under the gates that a
 //! person's request would meet, and hands the change back to discovery for an ordinary evaluation
@@ -9,9 +9,10 @@
 //! budget; the same change uses the separately limited retries.
 
 use artidezi_config::ResolvedProjectPolicy;
-use artidezi_config::model::{EvaluationRetries, PullRequestDiscovery};
+use artidezi_config::model::PullRequestDiscovery;
 use artidezi_config::resolve::PullRequestSource;
 use artidezi_contract::common::{CommitSha, Outcome};
+use artidezi_contract::result::AgentResult;
 use artidezi_contract::time::{SignedDuration, Timestamp};
 use artidezi_forge::{ForgeError, MergeRequestInfo, MergeRequestState as RemoteState, ReviewState};
 use artidezi_store::model::*;
@@ -46,17 +47,32 @@ impl Orchestrator {
         self.config.projects.get(project)?.pull_requests.as_ref()
     }
 
-    fn evaluation_retries(&self, project: &str, kind: EvaluationRetry) -> EvaluationRetries {
-        let off = EvaluationRetries {
-            max: 0,
-            ..Default::default()
+    /// How many evaluations of this kind a change gets, and the wait before the next one after
+    /// `used` of them, in seconds.
+    fn evaluation_retries(&self, project: &str, kind: EvaluationRetry, used: u32) -> (u32, u32) {
+        let Some(discovery) = self.discovery_of(project) else {
+            return (0, 0);
         };
-        self.discovery_of(project)
-            .map_or(off, |discovery| match kind {
-                EvaluationRetry::Failed => discovery.retries.failed,
-                EvaluationRetry::TargetChange => discovery.retries.target_change,
-                EvaluationRetry::Unknown => off,
-            })
+        let retries = &discovery.retries;
+        match kind {
+            EvaluationRetry::Failed => (retries.failed.max, retries.failed.initial_delay_seconds),
+            EvaluationRetry::TargetChange => (
+                retries.target_change.max,
+                retries.target_change.initial_delay_seconds,
+            ),
+            EvaluationRetry::RetryLater => (
+                retries.retry_later.max,
+                retries.retry_later.delay_seconds(used),
+            ),
+            EvaluationRetry::Unknown => (0, 0),
+        }
+    }
+
+    /// Whether evaluations of this project's changes may end in `retry_later`.
+    pub(crate) fn offers_retry_later(&self, project: &str) -> bool {
+        self.evaluation_retries(project, EvaluationRetry::RetryLater, 0)
+            .0
+            > 0
     }
 
     pub(crate) fn evaluation_retry_left(
@@ -64,7 +80,8 @@ impl Orchestrator {
         source: &TrackedPullRequest,
         kind: EvaluationRetry,
     ) -> bool {
-        source.reevaluations.used(kind) < self.evaluation_retries(&source.project, kind).max
+        let used = source.reevaluations.used(kind);
+        used < self.evaluation_retries(&source.project, kind, used).0
     }
 
     /// Announces the next evaluation of this kind on `hold`.
@@ -75,12 +92,12 @@ impl Orchestrator {
         kind: EvaluationRetry,
         now: Timestamp,
     ) {
-        let limits = self.evaluation_retries(&source.project, kind);
+        let used = source.reevaluations.used(kind);
+        let (max, delay) = self.evaluation_retries(&source.project, kind, used);
         hold.retry = Some(kind);
-        hold.retries = source.reevaluations.used(kind) + 1;
-        hold.max_retries = limits.max;
-        hold.next_at =
-            Some(now + SignedDuration::from_secs(i64::from(limits.initial_delay_seconds)));
+        hold.retries = used + 1;
+        hold.max_retries = max;
+        hold.next_at = Some(now + SignedDuration::from_secs(i64::from(delay)));
     }
 
     /// A run of a source evaluation broke, or produced no acceptable result: try once more later,
@@ -91,12 +108,38 @@ impl Orchestrator {
         attempt: &Attempt,
         message: &str,
     ) -> Result<()> {
+        self.retry_run(task, attempt, EvaluationRetry::Failed, message.to_owned())
+    }
+
+    /// The agent reported a temporary blocker: evaluate again later, else ask.
+    pub(crate) fn run_postponed(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        result: &AgentResult,
+    ) -> Result<()> {
+        let reason = excerpt(result.retry_reason.as_deref().unwrap_or_default(), 500);
+        self.retry_run(task, attempt, EvaluationRetry::RetryLater, reason)
+    }
+
+    fn retry_run(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+        kind: EvaluationRetry,
+        message: String,
+    ) -> Result<()> {
         let task = self.db.get_task(&task.id)?;
         let attempt = self.db.get_attempt(&attempt.id)?;
-        let mut hold = self.new_hold(&task, HoldReason::FailedRun, message)?;
-        match self.run_retry(&task, &attempt)? {
+        let reason = match kind {
+            EvaluationRetry::RetryLater => HoldReason::TemporaryBlocker,
+            _ => HoldReason::FailedRun,
+        };
+        let mut hold = self.new_hold(&task, reason, message)?;
+        match self.run_retry(&task, &attempt, kind)? {
             RunRetry::Never => {}
             RunRetry::Exhausted => {
+                hold.message = self.exhausted_message(&task, kind, hold.message)?;
                 hold.releases = vec![HoldRelease::NewHead, HoldRelease::TargetMoved];
             }
             RunRetry::Allowed => {
@@ -108,15 +151,15 @@ impl Orchestrator {
                     HoldRelease::TargetMoved,
                 ];
                 let now = Timestamp::now();
-                self.schedule_evaluation(&tracked, &mut hold, EvaluationRetry::Failed, now);
+                self.schedule_evaluation(&tracked, &mut hold, kind, now);
                 return self.record_hold(
                     &task,
                     &attempt,
                     TaskState::WaitingToRetry,
                     EVALUATION_RETRY_SCHEDULED,
                     serde_json::json!({
-                        "reason": message,
-                        "kind": EvaluationRetry::Failed,
+                        "reason": hold.message,
+                        "kind": kind,
                         "retry": hold.retries,
                         "max_retries": hold.max_retries,
                         "at": hold.next_at,
@@ -125,7 +168,7 @@ impl Orchestrator {
                 );
             }
         }
-        let payload = serde_json::json!({"reason": message, "hold": hold.reason});
+        let payload = serde_json::json!({"reason": hold.message, "hold": hold.reason});
         self.record_hold(
             &task,
             &attempt,
@@ -136,7 +179,59 @@ impl Orchestrator {
         )
     }
 
-    fn run_retry(&self, task: &Task, attempt: &Attempt) -> Result<RunRetry> {
+    /// A blocker that outlasted its retries says so; a failed run's message needs nothing.
+    fn exhausted_message(
+        &self,
+        task: &Task,
+        kind: EvaluationRetry,
+        message: String,
+    ) -> Result<String> {
+        let Some(source) = source_of(task)? else {
+            return Ok(message);
+        };
+        let used = self
+            .db
+            .get_pull_request_source(&source.tracking_id)?
+            .reevaluations
+            .used(kind);
+        Ok(match kind {
+            EvaluationRetry::RetryLater if used == 1 => {
+                format!("Still blocked after 1 retry: {message}")
+            }
+            EvaluationRetry::RetryLater if used > 1 => {
+                format!("Still blocked after {used} retries: {message}")
+            }
+            _ => message,
+        })
+    }
+
+    /// The temporary blocker that the source's last evaluation reported, for the next one to check.
+    pub(crate) fn last_blocker(&self, source: &TrackedPullRequest) -> Result<Option<String>> {
+        let Some(task_id) = &source.last_task_id else {
+            return Ok(None);
+        };
+        let Some(attempt) = self.db.latest_attempt(task_id)? else {
+            return Ok(None);
+        };
+        if attempt.outcome != Some(Outcome::RetryLater) || attempt.state != AttemptState::Valid {
+            return Ok(None);
+        }
+        // Only context, so that a result that is gone must not prevent the evaluation.
+        let result: Option<AgentResult> = attempt
+            .result
+            .and_then(|result| self.artifacts.get_json(&result).ok());
+        Ok(result
+            .and_then(|result| result.retry_reason)
+            .map(|reason| {
+                format!(
+                    "An earlier evaluation of this change, at {}, was postponed because of a temporary blocker. Check whether it still applies. It reported:\n{}",
+                    attempt.updated_at.to_rfc3339(),
+                    excerpt(&reason, 2000)
+                )
+            }))
+    }
+
+    fn run_retry(&self, task: &Task, attempt: &Attempt, kind: EvaluationRetry) -> Result<RunRetry> {
         let Some(source) = source_of(task)? else {
             return Ok(RunRetry::Never);
         };
@@ -150,7 +245,13 @@ impl Orchestrator {
                     .any(|problem| crate::ingest::broke_a_rule(problem))
                     && !self.model_refused(attempt)
             }
-            AttemptState::Valid => attempt.outcome == Some(Outcome::Failed),
+            AttemptState::Valid => {
+                attempt.outcome
+                    == Some(match kind {
+                        EvaluationRetry::RetryLater => Outcome::RetryLater,
+                        _ => Outcome::Failed,
+                    })
+            }
             _ => false,
         };
         // A proposal published earlier in this task is still there.
@@ -162,7 +263,7 @@ impl Orchestrator {
                 && !tracked.paused
                 && !tracked.closed
                 && tracked.last_task_id.as_deref() == Some(&task.id)
-                && self.evaluation_retry_left(&tracked, EvaluationRetry::Failed)
+                && self.evaluation_retry_left(&tracked, kind)
             {
                 RunRetry::Allowed
             } else {
@@ -333,7 +434,7 @@ impl Orchestrator {
         }
         if due && let Some(kind) = hold.retry {
             let applies = match kind {
-                EvaluationRetry::Failed => true,
+                EvaluationRetry::Failed | EvaluationRetry::RetryLater => true,
                 EvaluationRetry::TargetChange => moved || self.target_moved(&tracked, hold)?,
                 EvaluationRetry::Unknown => false,
             };
@@ -391,7 +492,7 @@ impl Orchestrator {
             .list_reviews(&tracked.remote, source.number)?;
         let marker = format!("<!-- artidezi:assessment:{} -->", task.id);
         // Receipts of older releases have no digest; at least the verdict has to be there.
-        let verdict: Option<artidezi_contract::result::AgentResult> = self
+        let verdict: Option<AgentResult> = self
             .db
             .latest_attempt(&task.id)?
             .and_then(|attempt| attempt.result)
@@ -511,6 +612,7 @@ impl Orchestrator {
         }
         let cause = match kind {
             Some(EvaluationRetry::Failed) => "failed_run",
+            Some(EvaluationRetry::RetryLater) => "temporary_blocker",
             Some(_) => "target_change",
             None => "held_change",
         };
@@ -666,6 +768,15 @@ impl Orchestrator {
     }
 }
 
+/// Agent text on one line and of bounded length.
+fn excerpt(text: &str, max_chars: usize) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(max_chars) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line,
+    }
+}
+
 enum Verdict {
     Done,
     Blocked(&'static str),
@@ -677,6 +788,7 @@ fn reconsiderable(hold: &Hold) -> bool {
         hold.reason,
         HoldReason::Question
             | HoldReason::FailedRun
+            | HoldReason::TemporaryBlocker
             | HoldReason::DeliveryStopped
             | HoldReason::Unclassified
     )

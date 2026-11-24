@@ -254,6 +254,14 @@ pub(super) fn card(task: &Task, view: &AttemptView, timezone: &str) -> String {
         for question in &result.questions_for_human {
             write!(out, r#"<p class="question">{}</p>"#, e(question)).unwrap();
         }
+        if let Some(reason) = &result.retry_reason {
+            write!(
+                out,
+                r#"<p class="prewrap"><strong>Temporary blocker:</strong> {}</p>"#,
+                e(reason)
+            )
+            .unwrap();
+        }
         out.push_str("</section>");
     } else if a.state == AttemptState::Queued {
         if let Some(at) = a.not_before.filter(|at| *at > Timestamp::now()) {

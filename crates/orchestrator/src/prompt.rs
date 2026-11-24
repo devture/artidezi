@@ -12,7 +12,9 @@ use artidezi_contract::Job;
 use artidezi_contract::common::{Outcome, RepositoryAccess};
 use artidezi_contract::result::AgentResult;
 
-pub const PROMPT_TEMPLATE_VERSION: u32 = 13;
+pub const PROMPT_TEMPLATE_VERSION: u32 = 14;
+
+const RETRY_LATER_RULES: &str = "Use `retry_later` when a specific temporary blocker outside this change prevents a verdict now and can be expected to clear within days without anyone acting on this change, such as a release artifact that is announced but not published yet or an upstream service that is down. Set `retry_reason` to what is missing and how you checked it, so that the next evaluation can check it again; leave it null for every other outcome. The controller decides when and how often this change is evaluated again. Do not use it for a defect in the change, for pending checks, for work you could do now, or as a substitute for a verdict you are unsure about; if a person has to decide or act whatever happens, use `needs_human`. ";
 
 pub struct PreviousAttemptSummary<'a> {
     pub number: u32,
@@ -27,6 +29,7 @@ fn outcome_name(outcome: Outcome) -> &'static str {
         Outcome::ApproveUntouched => "approve_untouched",
         Outcome::Proposal => "proposal",
         Outcome::NeedsHuman => "needs_human",
+        Outcome::RetryLater => "retry_later",
         Outcome::Failed => "failed",
     }
 }
@@ -233,18 +236,20 @@ pub fn render(
         writeln!(out, "Start from the current checkout (a fresh base), not from the previous commits; re-apply what is still right and address the feedback.\n").unwrap();
     }
 
+    let retry_later = job.allowed_outcomes.contains(&Outcome::RetryLater);
     writeln!(
         out,
         "## Result document\n\n\
          Write JSON to `ARTIDEZI_RESULT_PATH` with exactly these fields:\n\n\
          ```json\n\
-         {{\n  \"schema_version\": 1,\n  \"outcome\": \"{}\",\n  \"summary\": \"Markdown summary for the reviewer\",\n  \"risk_hint\": {{\"level\": \"low|medium|high\", \"rationale\": \"one sentence\"}},\n  \"evidence\": [{{\"kind\": \"release_notes|changelog|upstream_diff|documentation|local_check|other\", \"source\": \"URL or description\", \"note\": \"what it shows\"}}],\n  \"repositories\": [{}],\n  \"questions_for_human\": [],\n  \"notes_for_next_attempt\": null\n}}\n\
+         {{\n  \"schema_version\": 1,\n  \"outcome\": \"{}\",\n  \"summary\": \"Markdown summary for the reviewer\",\n  \"risk_hint\": {{\"level\": \"low|medium|high\", \"rationale\": \"one sentence\"}},\n  \"evidence\": [{{\"kind\": \"release_notes|changelog|upstream_diff|documentation|local_check|other\", \"source\": \"URL or description\", \"note\": \"what it shows\"}}],\n  \"repositories\": [{}],\n  \"questions_for_human\": [],\n{}  \"notes_for_next_attempt\": null\n}}\n\
          ```\n\n\
          `repositories` must list every read_write repository exactly once with `changed` (true/false), `head_commit` (the `git rev-parse HEAD` of your checkout when changed) and optionally `tag_proposal`. \
          Use `proposal` only when you committed changes, with `questions_for_human: []`. \
          Use `needs_human` when an unanswered question prevents a decision: supply at least one question and leave every repository unchanged. \
+         {}\
          Use `failed` when the environment prevented the work. \
-         `approve_untouched` and `failed` also require every repository unchanged and an empty question list. \
+         Every outcome except `proposal` and `needs_human` requires every repository unchanged and an empty question list. \
          Only `proposal` permits committed changes; only `needs_human` permits questions. Do not combine those outcomes. \
          Put nonblocking review notes and deployment precautions for a proposal in its summary or evidence. If a decision really is blocked, return `needs_human` instead of a partial proposal. \
          Keep `summary` concise: explain the change or verdict, why it is needed, and relevant testing or uncertainty in a few sentences. Put supporting details in `evidence`; avoid repeating the task history.\n\
@@ -254,7 +259,9 @@ pub fn render(
         job.read_write_repositories()
             .map(|r| format!("{{\"id\": \"{}\", \"changed\": true, \"head_commit\": \"<sha>\"}}", r.id))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
+        if retry_later { "  \"retry_reason\": null,\n" } else { "" },
+        if retry_later { RETRY_LATER_RULES } else { "" },
     )
     .unwrap();
     out

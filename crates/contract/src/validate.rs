@@ -74,6 +74,9 @@ pub fn validate_job(job: &Job) -> Vec<Problem> {
     if job.allowed_outcomes.is_empty() {
         problems.push(problem("allowed_outcomes must not be empty"));
     }
+    if job.schema_version < 3 && job.allowed_outcomes.contains(&Outcome::RetryLater) {
+        problems.push(problem("retry_later requires job schema_version 3"));
+    }
     if !job.task_document.is_well_formed() {
         problems.push(problem("task_document digest is malformed"));
     }
@@ -300,7 +303,9 @@ pub fn validate_result(job: &Job, result: &AgentResult) -> Vec<Problem> {
         Outcome::Proposal if !any_changed => {
             problems.push(problem("proposal requires at least one changed repository"));
         }
-        Outcome::ApproveUntouched | Outcome::NeedsHuman | Outcome::Failed if any_changed => {
+        Outcome::ApproveUntouched | Outcome::NeedsHuman | Outcome::RetryLater | Outcome::Failed
+            if any_changed =>
+        {
             problems.push(problem(format!(
                 "outcome {:?} requires every repository to be unchanged",
                 result.outcome
@@ -319,6 +324,17 @@ pub fn validate_result(job: &Job, result: &AgentResult) -> Vec<Problem> {
             "questions_for_human must be empty unless the outcome is needs_human",
         )),
         (_, true) => {}
+    }
+    match (result.outcome, result.retry_reason.as_deref()) {
+        (Outcome::RetryLater, reason) => {
+            if reason.is_none_or(|reason| reason.trim().is_empty()) {
+                problems.push(problem("retry_later requires a retry_reason"));
+            }
+        }
+        (_, Some(_)) => problems.push(problem(
+            "retry_reason must be null unless the outcome is retry_later",
+        )),
+        (_, None) => {}
     }
 
     problems
@@ -433,6 +449,7 @@ mod tests {
                 tag_proposal: Some("v1.2.3-0".into()),
             }],
             questions_for_human: vec![],
+            retry_reason: None,
             notes_for_next_attempt: None,
         }
     }
@@ -489,6 +506,49 @@ mod tests {
             problems
                 .iter()
                 .any(|p| p.0.contains("requires every repository to be unchanged"))
+        );
+    }
+
+    #[test]
+    fn retry_later_requires_job_version_three_and_a_reason() {
+        let mut j = job();
+        j.allowed_outcomes.push(Outcome::RetryLater);
+        for (version, valid) in [(1, false), (2, false), (3, true)] {
+            j.schema_version = version;
+            assert_eq!(validate_job(&j).is_empty(), valid, "{version}");
+        }
+        let mut r = proposal();
+        r.outcome = Outcome::RetryLater;
+        r.repositories[0] = ResultRepository {
+            id: "rw".into(),
+            changed: false,
+            head_commit: None,
+            tag_proposal: None,
+        };
+        for (reason, valid) in [(None, false), (Some(" "), false), (Some("No image"), true)] {
+            r.retry_reason = reason.map(Into::into);
+            assert_eq!(validate_result(&j, &r).is_empty(), valid, "{reason:?}");
+        }
+        r.repositories[0].changed = true;
+        r.repositories[0].head_commit = Some(sha('1'));
+        assert!(
+            validate_result(&j, &r)
+                .iter()
+                .any(|p| p.0.contains("requires every repository to be unchanged"))
+        );
+        // Only with its own outcome, which the job must allow.
+        let mut r = proposal();
+        r.retry_reason = Some("No image".into());
+        assert!(
+            validate_result(&j, &r)
+                .iter()
+                .any(|p| p.0.contains("retry_reason must be null"))
+        );
+        r.outcome = Outcome::RetryLater;
+        assert!(
+            validate_result(&job(), &r)
+                .iter()
+                .any(|p| p.0.contains("allowed outcomes"))
         );
     }
 

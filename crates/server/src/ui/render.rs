@@ -348,7 +348,7 @@ fn status(task: &Task) -> String {
         ),
         TaskState::WaitingToRetry => (
             "Waiting to retry",
-            "The run failed, or a temporary failure interrupted delivery; it is tried again automatically.",
+            "A temporary blocker, a failed run or an interrupted delivery; it is tried again automatically.",
         ),
         TaskState::AwaitingReview => (
             "Ready for review",
@@ -438,6 +438,7 @@ fn retry_line(hold: &Hold, timezone: &str) -> String {
             " because the change was rebased"
         }
         Some(EvaluationRetry::TargetChange) => " because the target branch moved",
+        Some(EvaluationRetry::RetryLater) => " because of a temporary blocker",
         _ => "",
     };
     format!("{what}{when}{count}{why}: {}", e(&hold.message))
@@ -1114,6 +1115,20 @@ pub(super) fn detail(
                     "The assessment asks for a decision. If the change or its target moves meanwhile, it is evaluated again automatically within its limits.".to_owned(),
                 ))
             }
+            AttemptState::Valid
+                if detail
+                    .hold
+                    .as_ref()
+                    .is_some_and(|hold| hold.reason == HoldReason::TemporaryBlocker) =>
+            {
+                Some((
+                    "Waiting for you",
+                    format!(
+                        "The assessment reported a temporary blocker that automatic retries no longer cover. If the change or its target moves, it is evaluated again automatically within its limits. {}",
+                        detail.hold.as_ref().map_or("", |hold| hold.message.as_str())
+                    ),
+                ))
+            }
             AttemptState::Lost => Some((
                 "Worker did not finish",
                 "The worker stopped responding before it uploaded a result. No assessment was produced. Check the worker health and logs, then evaluate again.".to_owned(),
@@ -1333,8 +1348,14 @@ pub(super) fn detail(
                 event.payload["retry"], event.payload["max_retries"]
             ),
             "evaluation.retry_scheduled" => format!(
-                "Evaluation {} of {} after a failed run scheduled",
-                event.payload["retry"], event.payload["max_retries"]
+                "Evaluation {} of {} after a {} scheduled",
+                event.payload["retry"],
+                event.payload["max_retries"],
+                if event.payload["kind"] == "retry_later" {
+                    "temporary blocker"
+                } else {
+                    "failed run"
+                }
             ),
             "delivery.retry_started" => "Retrying delivery".into(),
             "publication.planned" => "Publication prepared".into(),

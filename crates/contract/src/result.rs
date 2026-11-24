@@ -26,6 +26,9 @@ pub struct AgentResult {
     /// Required non-empty for `needs_human`, empty otherwise.
     #[serde(default)]
     pub questions_for_human: Vec<String>,
+    /// The temporary blocker. Required non-empty for `retry_later`, absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_for_next_attempt: Option<String>,
 }

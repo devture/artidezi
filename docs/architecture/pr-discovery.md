@@ -77,6 +77,7 @@ the Open/Paused/Closed tabs continue to describe the request itself.
 | New eligible source head that conflicts with its target (default `target_conflicts`) | No task or budget charge; record the head, target and paths and wait for either to move |
 | New eligible source head | Queue within project capacity and the persisted source budget |
 | Failed/lost/needs-human work | Hold, and [evaluate again](lifecycle.md#reevaluation) within its limits; a pool can opt into immediate lost and transient retries |
+| Temporary blocker reported (`retry_later`) | No new work until its [retry](lifecycle.md#reevaluation) is due or the change differs |
 | Delivery interrupted by a temporary failure or restart | No new work; the [delivery retry](lifecycle.md#delivery-retries) owns the source, and a new head brings it forward |
 | Temporary forge or Git failure while preparing | Try again in two minutes without a hold |
 | Valid approval/proposal superseded before any publication activity | Close the obsolete task; settle and evaluate the new head within the existing budget |

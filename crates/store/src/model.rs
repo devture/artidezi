@@ -94,6 +94,8 @@ pub struct Reevaluations {
     pub failed: u32,
     #[serde(default)]
     pub target_change: u32,
+    #[serde(default)]
+    pub retry_later: u32,
 }
 
 impl Reevaluations {
@@ -105,6 +107,7 @@ impl Reevaluations {
         match kind {
             EvaluationRetry::Failed => self.failed,
             EvaluationRetry::TargetChange => self.target_change,
+            EvaluationRetry::RetryLater => self.retry_later,
             EvaluationRetry::Unknown => u32::MAX,
         }
     }
@@ -113,6 +116,7 @@ impl Reevaluations {
         match kind {
             EvaluationRetry::Failed => self.failed += 1,
             EvaluationRetry::TargetChange => self.target_change += 1,
+            EvaluationRetry::RetryLater => self.retry_later += 1,
             EvaluationRetry::Unknown => {}
         }
     }
@@ -125,6 +129,8 @@ pub enum EvaluationRetry {
     Failed,
     /// The target moved, or the change was rebased without changing itself.
     TargetChange,
+    /// The agent reported a temporary blocker.
+    RetryLater,
     /// Not understood by this controller.
     #[serde(other)]
     Unknown,
@@ -194,6 +200,7 @@ impl Hold {
         match self.reason {
             HoldReason::Delivery => true,
             HoldReason::FailedRun => self.retry == Some(EvaluationRetry::Failed),
+            HoldReason::TemporaryBlocker => self.retry == Some(EvaluationRetry::RetryLater),
             _ => false,
         }
     }
@@ -214,6 +221,8 @@ pub enum HoldReason {
     OperatorPause,
     /// The agent needs a decision from a person.
     Question,
+    /// The agent reported a temporary blocker.
+    TemporaryBlocker,
     /// The run broke, or produced no acceptable result.
     FailedRun,
     /// Forge checks of the assessed head failed before approval or merging.

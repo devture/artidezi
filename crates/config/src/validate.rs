@@ -484,6 +484,14 @@ pub fn validate(config: &Config) -> Vec<Problem> {
             {
                 problems.push(problem(format!("{ctx}: retries.delivery needs max 0-20, multiplier 1-10 and 10 <= initial_delay_seconds <= max_delay_seconds <= 86400")));
             }
+            let retries = discovery.retries.retry_later;
+            if retries.max > 10
+                || !(1..=10).contains(&retries.multiplier)
+                || !(60..=604_800).contains(&retries.initial_delay_seconds)
+                || !(retries.initial_delay_seconds..=604_800).contains(&retries.max_delay_seconds)
+            {
+                problems.push(problem(format!("{ctx}: retries.retry_later needs max 0-10, multiplier 1-10 and 60 <= initial_delay_seconds <= max_delay_seconds <= 604800")));
+            }
             for (name, retries) in [
                 ("failed", discovery.retries.failed),
                 ("target_change", discovery.retries.target_change),

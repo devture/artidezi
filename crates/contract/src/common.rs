@@ -122,6 +122,8 @@ pub enum Outcome {
     Proposal,
     /// The agent could not decide or act and has questions for a human.
     NeedsHuman,
+    /// A specific temporary blocker, which clears without a person, prevents a verdict for now.
+    RetryLater,
     /// The agent could not complete the work, for example because of an environment problem.
     Failed,
 }
