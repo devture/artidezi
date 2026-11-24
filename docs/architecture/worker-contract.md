@@ -147,10 +147,12 @@ or turn limit) or a missing result makes the attempt a harness error even after 
 or a written result document, so nothing from that run is acted on. Profiles supply
 model/harness settings, and the adapters build fresh noninteractive invocations. For Claude,
 `model_settings.max_output_tokens` sets `CLAUDE_CODE_MAX_OUTPUT_TOKENS` for that invocation. When
-omitted, Claude Code chooses its model-specific default. This code does not
-provision the worker VM, install its Docker daemon or enforce an external network firewall. Other modes
-represented in types may not have runtime implementations. Consult adapter code before claiming support
-for a new auth/execution mode.
+omitted, Claude Code chooses its model-specific default. Claude Code 2.1.330 restored the automatic
+retry when an API error reports a lower `max_tokens` limit.
+
+This code does not provision the worker VM, install its Docker daemon or enforce an external
+network firewall. Other modes represented in types may not have runtime implementations. Consult
+adapter code before claiming support for a new auth/execution mode.
 
 Adapters that can tell report prompt-cache reads and writes and the harness's own cost estimate next
 to the token counts. These fields are optional in attempt records. Lease responses carry
