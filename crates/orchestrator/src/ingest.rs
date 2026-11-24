@@ -404,6 +404,14 @@ impl Orchestrator {
                     "repository {}: reported unchanged but HEAD moved",
                     collection.id
                 ));
+                if !series.commits.is_empty()
+                    && !inspection.problems.contains_key(collection.id.as_str())
+                {
+                    problems.push(format!(
+                        "repository {}: unreported commits could not be inspected",
+                        collection.id
+                    ));
+                }
             }
         }
         // Whatever else is wrong with the result, what it did can still have broken a rule.
@@ -439,6 +447,7 @@ pub(crate) fn broke_a_rule(problem: &str) -> bool {
         "adds submodule entry",
         "contains a gitlink entry",
         "pointing outside the tree",
+        "unreported commits could not be inspected",
         "is not among the job's allowed outcomes",
     ]
     .iter()

@@ -393,6 +393,30 @@ fn rule_breaking_or_refused_runs_and_switched_off_retries_ask_right_away() {
 }
 
 #[test]
+fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
+    let (mut w, _f) = safe_world(true);
+    let id = scan(&mut w).remove(0);
+    let script = w.script(
+        "oversized.sh",
+        &format!(
+            "head -c 3000000 /dev/urandom | base64 > big.txt; git add -A; git commit -q -m Big; {}",
+            result_writer(r#"{"schema_version":1,"outcome":"retry_later","summary":"Later.","retry_reason":"No image","repositories":[{"id":"role","changed":false}]}"#)
+        ),
+    );
+    assert_eq!(w.work(&script), AttemptState::Invalid);
+    let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
+    assert!(
+        attempt
+            .validation_problems
+            .iter()
+            .any(|problem| problem.contains("unreported commits could not be inspected")),
+        "{:?}",
+        attempt.validation_problems
+    );
+    assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
+}
+
+#[test]
 fn a_restart_keeps_a_lost_run_and_its_retry() {
     let (mut w, f) = safe_world(true);
     let id = scan(&mut w).remove(0);
@@ -673,6 +697,10 @@ fn a_temporary_blocker_is_evaluated_again_with_growing_waits_and_then_needs_a_pe
         let mut id = scan(&mut w).remove(0);
         assert!(prompt(&w, &id).contains("\"retry_reason\": null"));
         assert!(!prompt(&w, &id).contains("temporary blocker. Check"));
+        assert!(prompt(&w, &id).contains("return `needs_human` (or `retry_later` for"));
+        assert!(
+            prompt(&w, &id).contains("broke in a way you cannot name as such a blocker. Every")
+        );
         let script = blocked(&w);
         for (used, hours) in [1, 3, 9, 24].into_iter().enumerate() {
             assert_eq!(w.work(&script), AttemptState::Valid);
@@ -780,6 +808,9 @@ fn switched_off_blocker_retries_are_not_offered_and_stop_waiting() {
     retries(&mut w).retry_later.max = 0;
     let id = scan(&mut w).remove(0);
     assert!(!prompt(&w, &id).contains("retry_later"));
+    assert!(
+        prompt(&w, &id).contains("Use `failed` when the environment prevented the work. Every")
+    );
     assert!(!prompt(&w, &id).contains("retry_reason"));
     let script = blocked(&w);
     assert_eq!(w.work(&script), AttemptState::Invalid);
@@ -817,10 +848,11 @@ fn a_restart_before_a_reported_blocker_was_recorded_still_waits() {
         .db
         .save_pull_request_source(&tracked)
         .unwrap();
+    discovery(&mut w).retries.delivery.max = 0;
     reopen(&mut w, &f);
-    tick(&mut w, 300);
     assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
     assert_eq!(hold(&w).reason, HoldReason::TemporaryBlocker);
+    assert_eq!(hold(&w).retries, 1);
     assert_eq!(tick(&mut w, 8000).discovered.len(), 1);
 }
 

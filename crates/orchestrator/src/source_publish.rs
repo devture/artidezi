@@ -717,7 +717,7 @@ impl Orchestrator {
                         Some(&attempt.id),
                         "orchestrator",
                         "assessment.comment_planned",
-                        serde_json::json!({"head":source.input.commit}),
+                        serde_json::json!({"head":source.input.commit,"body_sha256":digest(&body)}),
                     )?;
                     self.forge(&repo.forge)?.create_comment_review(
                         &repo.remote,

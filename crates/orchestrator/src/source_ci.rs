@@ -223,7 +223,12 @@ impl Orchestrator {
             // Discovery reconciles closed and merged sources.
             return Ok(());
         }
-        if current.head_commit != source.input.commit {
+        // A task that closed with its change cannot deliver after a reopening; a new one can.
+        let closed = task.state == TaskState::Closed;
+        if closed && current.checks != ChecksState::Success {
+            return Ok(());
+        }
+        if closed || current.head_commit != source.input.commit {
             // Equivalence preserves published adaptations only; it cannot reuse a source
             // approval or authorize a merge of this different commit.
             // A maintainer objection made during the hold is a human decision; a new head alone
@@ -245,7 +250,7 @@ impl Orchestrator {
                 None,
             );
         }
-        if task.state == TaskState::Closed || current.checks != ChecksState::Success {
+        if current.checks != ChecksState::Success {
             return Ok(());
         }
         self.db.record_event(

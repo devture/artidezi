@@ -889,7 +889,12 @@ fn switching_retries_off_stops_the_one_already_scheduled() {
 #[test]
 fn an_objection_while_waiting_keeps_a_moved_head_with_a_person() {
     // Before anything was planned, and after an approval that arrived although its response did not.
-    for case in ["unplanned", "lost_then_edited", "lost_then_stripped"] {
+    for case in [
+        "unplanned",
+        "lost_then_edited",
+        "lost_then_stripped",
+        "lost_then_extended",
+    ] {
         let (mut w, f, id) = safe_run();
         match case {
             "unplanned" => respond(&f, REVIEWS, 503),
@@ -908,6 +913,10 @@ fn an_objection_while_waiting_keeps_a_moved_head_with_a_person() {
                     let body = state.reviews[0]["body"].as_str().unwrap().to_owned();
                     let marker = &body[body.find("<!-- artidezi:assessment:").unwrap()..];
                     state.reviews[0]["body"] = json!(format!("Not yet. {marker}"));
+                }
+                "lost_then_extended" => {
+                    let body = state.reviews[0]["body"].as_str().unwrap().to_owned();
+                    state.reviews[0]["body"] = json!(format!("{body}\nNot yet."));
                 }
                 _ => state.reviews[0]["body"] = json!("Not yet."),
             }

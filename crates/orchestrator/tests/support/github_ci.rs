@@ -606,13 +606,13 @@ fn failed_checks_hold_still_recovers_after_reopening_on_the_same_head() {
     };
     assert!(pass(&mut w, 601).is_empty());
     assert_eq!(held_source(&w).runs, 1);
-    move_source_head(&w, &f);
     f.state.lock().unwrap().conclusion = "success".into();
     for seconds in [1300, 2000] {
         assert!(pass(&mut w, seconds).is_empty());
     }
     assert_eq!(held_source(&w).runs, 2);
     assert_ne!(held_source(&w).last_task_id, Some(id));
+    assert!(!f.state.lock().unwrap().merged);
 }
 
 /// An approval whose response was lost is bound to its head. Failed checks on the retry hold it like

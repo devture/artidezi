@@ -122,6 +122,31 @@ impl Orchestrator {
         self.retry_run(task, attempt, EvaluationRetry::RetryLater, reason)
     }
 
+    /// A restart came between accepting a result that needs no delivery and acting on it.
+    pub(crate) fn resume_undelivered_run(
+        &mut self,
+        task: &Task,
+        attempt: &Attempt,
+    ) -> Result<bool> {
+        if task.kind != TaskKind::PullRequest {
+            return Ok(false);
+        }
+        match attempt.outcome {
+            Some(Outcome::Failed) => {
+                self.run_failed(task, attempt, "The agent reported failure")?;
+            }
+            Some(Outcome::RetryLater) => {
+                let Some(result) = &attempt.result else {
+                    return Ok(false);
+                };
+                let result: AgentResult = self.artifacts.get_json(result)?;
+                self.run_postponed(task, attempt, &result)?;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
     fn retry_run(
         &mut self,
         task: &Task,
@@ -483,13 +508,17 @@ impl Orchestrator {
             .filter(|event| event.kind == "assessment.published")
             .filter_map(|event| Some((event.payload["review_id"].as_u64()?, &event.payload)))
             .collect();
-        let planned = events.iter().any(|event| {
-            matches!(
-                event.kind.as_str(),
-                "assessment.approval_planned" | "assessment.comment_planned"
-            )
-        });
-        if published.is_empty() && !planned {
+        let planned: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "assessment.approval_planned" | "assessment.comment_planned"
+                )
+            })
+            .map(|event| &event.payload)
+            .collect();
+        if published.is_empty() && planned.is_empty() {
             return Ok(false);
         }
         let reviews = self
@@ -511,13 +540,22 @@ impl Orchestrator {
                 let altered = Some(&review.author_login) == source.publisher_login.as_ref()
                     && review.head_commit == source.input.commit
                     && !review.body.contains("<!-- artidezi:assessment:");
-                altered
-                    || (ours
-                        && (verdict.as_ref().is_some_and(|verdict| {
-                            !review
+                let as_planned = planned.iter().any(|plan| {
+                    if let Some(body) = plan["body"].as_str() {
+                        review.body == body
+                    } else if let Some(sha256) = plan["body_sha256"].as_str() {
+                        crate::source_publish::digest(&review.body) == sha256
+                    } else {
+                        // Plans of older releases for a comment.
+                        verdict.as_ref().is_none_or(|verdict| {
+                            review
                                 .body
                                 .contains(&crate::source_publish::summary(verdict))
-                        }) || (review.state == ReviewState::Dismissed && !moved)))
+                        })
+                    }
+                });
+                altered
+                    || (ours && (!as_planned || (review.state == ReviewState::Dismissed && !moved)))
             }));
         }
         Ok(!published.iter().all(|(id, receipt)| {

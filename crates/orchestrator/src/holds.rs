@@ -316,15 +316,14 @@ impl Orchestrator {
         let mut holds: BTreeMap<String, Hold> = self.db.list_task_holds()?.into_iter().collect();
         // Held assessments that their source or schedule gives a reason to look at.
         let mut reconsider = BTreeSet::new();
-        // Changes held for failed checks whose head moved.
-        let mut moved = BTreeSet::new();
+        let mut open = BTreeSet::new();
         for source in self.db.list_pull_request_sources(None)? {
             if let Some(hold) = &source.hold
                 && let Some(task_id) = &source.last_task_id
                 && hold.task_id.as_ref() == Some(task_id)
             {
-                if !source.closed && hold.head.as_ref() != Some(&source.observed_head) {
-                    moved.insert(task_id.clone());
+                if !source.closed {
+                    open.insert(task_id.clone());
                 }
                 if Self::worth_reconsidering(&source, now) {
                     reconsider.insert(task_id.clone());
@@ -349,8 +348,7 @@ impl Orchestrator {
                 let task = self.db.get_task(&task_id)?;
                 // A task can have closed with its change, which was then reopened.
                 if task.state == TaskState::NeedsHuman
-                    || (task.state == TaskState::Closed
-                        && (reconsider.contains(&task_id) || moved.contains(&task_id)))
+                    || (task.state == TaskState::Closed && open.contains(&task_id))
                 {
                     due.push((task, Some(hold)));
                 }

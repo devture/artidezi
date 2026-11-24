@@ -248,10 +248,10 @@ pub fn render(
          Use `proposal` only when you committed changes, with `questions_for_human: []`. \
          Use `needs_human` when an unanswered question prevents a decision: supply at least one question and leave every repository unchanged. \
          {}\
-         Use `failed` when the environment prevented the work. \
+         Use `failed` when the environment prevented the work{}. \
          Every outcome except `proposal` and `needs_human` requires every repository unchanged and an empty question list. \
          Only `proposal` permits committed changes; only `needs_human` permits questions. Do not combine those outcomes. \
-         Put nonblocking review notes and deployment precautions for a proposal in its summary or evidence. If a decision really is blocked, return `needs_human` instead of a partial proposal. \
+         Put nonblocking review notes and deployment precautions for a proposal in its summary or evidence. If a decision really is blocked, return {} instead of a partial proposal. \
          Keep `summary` concise: explain the change or verdict, why it is needed, and relevant testing or uncertainty in a few sentences. Put supporting details in `evidence`; avoid repeating the task history.\n\
          Ad hoc test files are not automatically collected and the workspace may be removed. Include each check's command, result and limits in evidence, and print concise supporting output to the transcript; do not cite temporary files as retrievable logs.\n\
          `risk_hint` is your own estimate, not independent proof. Record material deployment risk and uncertainty accurately; the controller records this context alongside the configured approval/merge action.",
@@ -262,6 +262,16 @@ pub fn render(
             .join(", "),
         if retry_later { "  \"retry_reason\": null,\n" } else { "" },
         if retry_later { RETRY_LATER_RULES } else { "" },
+        if retry_later {
+            " or broke in a way you cannot name as such a blocker"
+        } else {
+            ""
+        },
+        if retry_later {
+            "`needs_human` (or `retry_later` for a temporary blocker)"
+        } else {
+            "`needs_human`"
+        },
     )
     .unwrap();
     out

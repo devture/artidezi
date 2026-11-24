@@ -167,6 +167,7 @@ impl Orchestrator {
             if task.kind != TaskKind::Renovate
                 && let Some(attempt) = orchestrator.db.latest_attempt(&task.id)?
                 && attempt.state == AttemptState::Valid
+                && !orchestrator.resume_undelivered_run(&task, &attempt)?
                 && !orchestrator.schedule_delivery_retry(
                     &task,
                     &attempt,
