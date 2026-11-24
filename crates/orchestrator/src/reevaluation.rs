@@ -297,8 +297,8 @@ impl Orchestrator {
         )
     }
 
-    /// Whether the model provider refused the run over credentials or quota, which no later run
-    /// fixes.
+    /// Whether the model provider refused the run over credentials or quota, or the run reached its
+    /// own budget, which no later run fixes.
     fn model_refused(&self, attempt: &Attempt) -> bool {
         (|| -> Option<bool> {
             let record: artidezi_contract::attempt::AttemptRecord = self
@@ -307,10 +307,10 @@ impl Orchestrator {
                 .ok()?;
             let stdout = record.harness.stdout.as_ref()?;
             let tail = self.artifacts.tail(stdout, 64 * 1024).ok()?;
-            Some(
-                record.harness.name == "codex"
-                    && artidezi_contract::transient::codex_refused(&tail),
-            )
+            Some(artidezi_contract::transient::refused(
+                &record.harness.name,
+                &tail,
+            ))
         })()
         .unwrap_or(false)
     }

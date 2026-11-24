@@ -196,8 +196,8 @@ protected CI path.
 
 Never evaluated again automatically: pauses by a person; while a reviewer requests changes, or after
 someone edited, dismissed or deleted the assessment; open or foreign adaptation proposals; results
-that broke a rule (paths, read-only repositories, forged records); and runs that Codex refused over
-credentials or quota. Holds from releases before this feature are adopted at startup where their
+that broke a rule (paths, read-only repositories, forged records); and runs that ended because
+the model provider refused credentials, permissions or quota, or because Claude Code reached its budget or turn limit. Holds from releases before this feature are adopted at startup where their
 reason is certain, so they can recover without a person.
 
 A failed run can have started work outside ArtiDezi's control. Raise `initial_delay_seconds` beyond

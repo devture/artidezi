@@ -2048,29 +2048,44 @@ fn retention_preserves_malformed_model_results_without_blocking_cleanup() {
 
 #[test]
 fn model_capacity_failure_schedules_a_retry_and_adopts_old_holds() {
-    for enabled_initially in [true, false] {
+    for (enabled_initially, claude) in [(true, false), (false, false), (true, true), (false, true)]
+    {
         let mut w = World::new();
-        // Drive a synthetic Codex transcript with the disposable scripted harness.
+        // Drive a synthetic transcript with the disposable scripted harness.
+        let harness = if claude {
+            artidezi_contract::job::Harness::Claude
+        } else {
+            artidezi_contract::job::Harness::Codex
+        };
         w.orchestrator
             .config
             .agent_profiles
             .get_mut("fake")
             .unwrap()
-            .harness = artidezi_contract::job::Harness::Codex;
+            .harness = harness;
         w.orchestrator
             .config
             .worker_pools
             .get_mut("personal")
             .unwrap()
-            .harnesses = vec![artidezi_contract::job::Harness::Codex];
+            .harnesses = vec![harness];
         let endpoint = w
             .orchestrator
             .config
             .model_endpoints
             .get_mut("fake")
             .unwrap();
-        endpoint.provider = artidezi_config::model::ModelProvider::Openai;
-        endpoint.auth_mode = "chatgpt_login".into();
+        (endpoint.provider, endpoint.auth_mode) = if claude {
+            (
+                artidezi_config::model::ModelProvider::Anthropic,
+                "anthropic_api_key".into(),
+            )
+        } else {
+            (
+                artidezi_config::model::ModelProvider::Openai,
+                "chatgpt_login".into(),
+            )
+        };
         w.orchestrator
             .config
             .worker_pools
@@ -2086,10 +2101,20 @@ fn model_capacity_failure_schedules_a_retry_and_adopts_old_holds() {
                 &TaskSelection::default(),
             )
             .unwrap();
-        let script = w.script("capacity.sh", r#"printf '%s\n' '{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}'
-exit 1"#);
+        let event = if claude {
+            r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"api_error_type":"overloaded_error","result":"API Error: 529 Overloaded."}"#
+        } else {
+            r#"{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}"#
+        };
+        let script = w.script("capacity.sh", &format!("printf '%s\\n' '{event}'\nexit 1"));
         assert_eq!(
-            w.work_with_record(&script, |record| record.harness.name = "codex".into()),
+            w.work_with_record(&script, |record| {
+                record.harness.name = if claude { "claude" } else { "codex" }.into();
+                if claude {
+                    // As Claude Code's adapter records an error result.
+                    record.status = artidezi_contract::attempt::AttemptStatus::HarnessError;
+                }
+            }),
             AttemptState::Invalid
         );
         if !enabled_initially {

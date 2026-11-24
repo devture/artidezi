@@ -194,7 +194,7 @@ pub struct WorkerPool {
     /// Opt-in reruns of lost, unreported execution. Recipes must tolerate overlapping execution.
     #[serde(default)]
     pub lost_attempt_retries: u32,
-    /// Opt-in retries of explicit terminal model capacity/rate/transport failures.
+    /// Opt-in retries of explicit terminal model capacity/rate/transport failures (Codex, Claude Code).
     #[serde(default)]
     pub transient_failure_retries: u32,
     pub harness_sandbox: HarnessSandbox,

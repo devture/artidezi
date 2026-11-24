@@ -4,6 +4,7 @@
 use super::*;
 use artidezi_contract::attempt::{AttemptStatus, VerificationStep};
 use artidezi_contract::time::Timestamp;
+use artidezi_contract::transient;
 use artidezi_store::ArtifactStore;
 use std::collections::BTreeSet;
 
@@ -84,23 +85,28 @@ pub(in crate::ui) fn missing_result_diagnostic(
     {
         summary.push_str(" Captured Codex diagnostics indicate an HTTP 401 authentication rejection; check whether the worker login recovered before retrying.");
     }
-    if record.harness.name == "codex"
-        && let Some(reference) = &record.harness.stdout
+    if let Some(reference) = &record.harness.stdout
         && record.artifacts.iter().any(|entry| {
             entry.name == "harness-stdout.log"
                 && entry.sha256 == reference.sha256
                 && entry.size == reference.size
         })
         && let Ok(tail) = store.tail(reference, MAX_DIAGNOSTIC_LOG_BYTES)
-        && let Some(reason) = artidezi_contract::transient::codex_failure(&tail)
     {
-        summary.push_str(match reason {
-            "model_capacity" => {
-                " The model provider reported that the selected model was at capacity."
+        match transient::failure(&record.harness.name, &tail) {
+            Some("model_capacity") => summary.push_str(
+                " The model provider reported that the selected model was at capacity.",
+            ),
+            Some("model_rate_limit") => {
+                summary.push_str(" The model provider reported a temporary rate limit.");
             }
-            "model_rate_limit" => " The model provider reported a temporary rate limit.",
-            _ => " The model provider reported a temporary connection or availability failure.",
-        });
+            Some(_) => summary.push_str(
+                " The model provider reported a temporary connection or availability failure.",
+            ),
+            None if record.harness.name == "claude" && transient::claude_refused(&tail) => summary
+                .push_str(" Claude Code stopped over credentials, permissions, quota or its budget or turn limit; check these before retrying."),
+            None => {}
+        }
     }
     summary
 }
@@ -656,6 +662,35 @@ mod tests {
         let diagnostic = missing_result_diagnostic(&record, &store);
         assert!(diagnostic.contains("selected model was at capacity"));
         assert!(!diagnostic.contains("never-show-me"));
+        record.harness.name = "claude".into();
+        assert!(!missing_result_diagnostic(&record, &store).contains("capacity"));
+        for (event, expected) in [
+            (
+                r#""api_error_status":529"#,
+                "selected model was at capacity",
+            ),
+            (r#""api_error_status":429"#, "temporary rate limit"),
+            (
+                r#""api_error_status":503"#,
+                "connection or availability failure",
+            ),
+            (
+                r#""api_error_status":401"#,
+                "credentials, permissions, quota",
+            ),
+            (r#""api_error_status":400"#, "before a result was written."),
+        ] {
+            let stream = format!(
+                r#"{{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",{event},"result":"secret=never-show-me"}}"#
+            );
+            let reference = store.put(stream.as_bytes()).unwrap();
+            record.harness.stdout = Some(reference.clone());
+            record.artifacts[0].sha256 = reference.sha256;
+            record.artifacts[0].size = reference.size;
+            let diagnostic = missing_result_diagnostic(&record, &store);
+            assert!(diagnostic.contains(expected), "{diagnostic}");
+            assert!(!diagnostic.contains("never-show-me"));
+        }
         record.status = AttemptStatus::Timeout;
         assert!(missing_result_diagnostic(&record, &store).contains("timed out"));
         record.status = AttemptStatus::Completed;

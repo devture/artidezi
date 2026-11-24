@@ -4,7 +4,10 @@
 
 use artidezi_contract::common::RepositoryAccess;
 use artidezi_contract::time::Timestamp;
-use artidezi_contract::{Job, attempt::AttemptRecord};
+use artidezi_contract::{
+    Job,
+    attempt::{AttemptRecord, AttemptStatus},
+};
 use artidezi_store::ArtifactStore;
 use artidezi_store::model::{Attempt, AttemptState, Task, TaskState};
 
@@ -140,11 +143,17 @@ pub(crate) fn transient_failure(
     record: &AttemptRecord,
     problems: &[String],
 ) -> Option<&'static str> {
-    if job.agent_profile.harness != artidezi_contract::job::Harness::Codex
-        || record.harness.name != "codex"
-        || record.result.is_some()
-        || !record.harness.exit_code.is_some_and(|code| code != 0)
-    {
+    use artidezi_contract::job::Harness;
+    // Claude Code's adapter marks a run that ended in an error result.
+    let error_status = match (&job.agent_profile.harness, record.harness.name.as_str()) {
+        (Harness::Codex, "codex") => None,
+        (Harness::Claude, "claude") => Some(format!(
+            "harness did not complete: {:?}",
+            AttemptStatus::HarnessError
+        )),
+        _ => return None,
+    };
+    if record.result.is_some() || !record.harness.exit_code.is_some_and(|code| code != 0) {
         return None;
     }
     if !problems
@@ -152,6 +161,7 @@ pub(crate) fn transient_failure(
         .any(|problem| problem == "no result document")
         || !problems.iter().all(|problem| {
             problem == "no result document"
+                || Some(problem) == error_status.as_ref()
                 || job
                     .repositories
                     .iter()
@@ -173,5 +183,5 @@ pub(crate) fn transient_failure(
         return None;
     }
     let bytes = store.tail(reference, 64 * 1024).ok()?;
-    artidezi_contract::transient::codex_failure(&bytes)
+    artidezi_contract::transient::failure(&record.harness.name, &bytes)
 }

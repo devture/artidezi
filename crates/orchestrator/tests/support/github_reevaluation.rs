@@ -392,6 +392,92 @@ fn rule_breaking_or_refused_runs_and_switched_off_retries_ask_right_away() {
     assert_eq!(task_state(&w, &id), TaskState::NeedsHuman);
 }
 
+/// Claude Code's adapter marks every run that ended in an error result; what ended it decides.
+#[test]
+fn a_failed_claude_run_is_retried_at_once_later_or_not_at_all() {
+    use artidezi_contract::attempt::AttemptStatus;
+    #[derive(Debug, PartialEq)]
+    enum Next {
+        AtOnce,
+        Later,
+        Person,
+    }
+    let api = |fields: &str| {
+        format!(
+            r#"{{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error",{fields}}}"#
+        )
+    };
+    let overloaded = api(r#""api_error_status":529,"result":"API Error: 529 Overloaded.""#);
+    let rejected = api(r#""api_error_status":401,"result":"Invalid API key""#);
+    let spent = r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"terminal_reason":"budget_exhausted"}"#.to_owned();
+    let unknown = api(r#""api_error_status":400,"result":"API Error: 400""#);
+    let error = AttemptStatus::HarnessError;
+    let done = "true".to_owned();
+    for (event, status, before, retries, expected) in [
+        (&overloaded, error, &done, 2, Next::AtOnce),
+        (
+            &overloaded,
+            error,
+            &"git commit -q --allow-empty -m Half".into(),
+            2,
+            Next::AtOnce,
+        ),
+        (&overloaded, error, &done, 0, Next::Later),
+        (&overloaded, AttemptStatus::Timeout, &done, 2, Next::Later),
+        // A run's result is not acted on when its harness failed afterwards, nor thrown away unseen.
+        (
+            &overloaded,
+            error,
+            &result_writer(
+                r#"{"schema_version":1,"outcome":"failed","summary":"Broke.","repositories":[{"id":"role","changed":false}]}"#,
+            ),
+            2,
+            Next::Later,
+        ),
+        (&unknown, error, &done, 2, Next::Later),
+        (&rejected, error, &done, 2, Next::Person),
+        (&spent, error, &done, 2, Next::Person),
+    ] {
+        let (mut w, _f) = safe_world(true);
+        let config = &mut w.orchestrator.config;
+        config.agent_profiles.get_mut("fake").unwrap().harness =
+            artidezi_contract::job::Harness::Claude;
+        let pool = config.worker_pools.get_mut("personal").unwrap();
+        pool.harnesses = vec![artidezi_contract::job::Harness::Claude];
+        pool.transient_failure_retries = retries;
+        let endpoint = config.model_endpoints.get_mut("fake").unwrap();
+        endpoint.provider = artidezi_config::model::ModelProvider::Anthropic;
+        endpoint.auth_mode = "anthropic_api_key".into();
+        let id = scan(&mut w).remove(0);
+        let script = w.script(
+            "claude.sh",
+            &format!("{before}\nprintf '%s\\n' '{event}'\nexit 1"),
+        );
+        assert_eq!(
+            w.work_with_record(&script, |record| {
+                record.harness.name = "claude".into();
+                record.status = status;
+            }),
+            AttemptState::Invalid
+        );
+        let next = match task_state(&w, &id) {
+            TaskState::Working => Next::AtOnce,
+            TaskState::WaitingToRetry => Next::Later,
+            _ => Next::Person,
+        };
+        let attempt = w.orchestrator.db.list_attempts(&id).unwrap().remove(0);
+        assert_eq!(
+            next, expected,
+            "{event} {before} {:?}",
+            attempt.validation_problems
+        );
+        assert_eq!(
+            w.orchestrator.db.list_attempts(&id).unwrap().len(),
+            if next == Next::AtOnce { 2 } else { 1 }
+        );
+    }
+}
+
 #[test]
 fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
     let (mut w, _f) = safe_world(true);

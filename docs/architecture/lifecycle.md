@@ -116,13 +116,14 @@ announced retry. `reconsider` then decides, with the next look reserved before a
   checked again when due; an undone move cancels it.
 - `run_failed` holds a broken, lost or failed run in `waiting_to_retry` with a `failed` retry. Like a
   delivery retry this doesn't pause the source. Validation problems that `broke_a_rule`, and
-  provider refusals over credentials or quota, go to a person instead.
+  provider refusals over credentials, permissions or quota and Claude Code's own budget or turn
+  limit, go to a person instead.
 - `run_postponed` does the same for a `retry_later` result, with a `retry_later` retry and growing
   delays. It reads nothing from the forge and publishes nothing. The next evaluation of the same change gets
   the reported blocker as untrusted task text. Once the retries are used, a person is asked.
 
 Every release first requires that the source is watched and open, nobody's latest review requests
-changes, the published assessment still exists unedited (receipts of older releases have no digest, so only its verdict is compared), and all planned proposals are settled; a
+changes, the published assessment still exists unedited (receipts of older releases have no digest, so the planned approval body or else its verdict and marker are compared), and all planned proposals are settled; a
 blocked release is looked at again ten minutes later, or ends the wait after a failed run or a temporary blocker. Delivery errors
 decide their own releases (`releases_after`); errors that can stem from a person's decision, revoked
 permission or a foreign edit have none.
@@ -224,9 +225,12 @@ automatic rerunning for that task. Classified transient failures can precede a l
 Late uploads/records remain fenced by the old attempt's expired lease and cannot publish.
 
 `worker_pools.<name>.transient_failure_retries` independently allows zero to five retries (default
-zero) for terminal Codex model-capacity, temporary rate-limit and transport failures with no result
-document. Backoff is 60, 120, 300, 600 and 1800 seconds. The controller matches fixed categories from
-the final terminal event in a bounded log tail, never command output or model prose. Other failures follow
+zero) for terminal Codex and Claude Code model-capacity, temporary rate-limit and transport failures with no
+result document. Backoff is 60, 120, 300, 600 and 1800 seconds. The controller matches fixed categories from
+the final terminal event in a bounded log tail, never command output or model prose
+([`transient.rs`](../../crates/contract/src/transient.rs)). For Claude Code that is the `result`
+event that ends the session, read by its error status, type and code; its text only distinguishes an exhausted quota from a rate
+limit and recognizes timeouts, which have no code. Other failures, including Claude Code's budget and turn limits, follow
 [reevaluation](#reevaluation). Each retry
 uses a fresh workspace and the same frozen inputs; dirty changes from the failed run are discarded.
 Retry limits count all replacements of that category within the task, including mixed loss/failure

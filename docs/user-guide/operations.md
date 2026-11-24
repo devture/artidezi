@@ -299,12 +299,12 @@ The worker that lost its lease is held from new assignments for five minutes, al
 worker to take over. With one worker, recovery can wait for its cooldown and environment recovery.
 
 `transient_failure_retries` separately allows up to five fresh executions after recognized terminal
-Codex capacity, temporary rate-limit, connection or timeout errors with no result. It defaults to zero.
+Codex or Claude Code capacity, temporary rate-limit, connection, server or timeout errors with no result. It defaults to zero.
 Retries wait 1, 2, 5, 10 and 30 minutes and retain the original frozen inputs. The task shows its
 scheduled retry time; no comment or manual action is needed. If discovery already observed
 a newer source head, recovery schedules a fresh evaluation within the existing source budget. It
 does not rerun the obsolete snapshot. Authentication errors, exhausted
-quota, invalid results, failed verification and exhausted retries still require attention.
+quota, a Claude Code run that reached its budget, invalid results, failed verification and exhausted retries still require attention.
 
 Enable retries only for workflows that tolerate repeated and potentially overlapping execution.
 Losing contact does not prove the original process or its detached containers stopped. The controller
