@@ -2048,8 +2048,13 @@ fn retention_preserves_malformed_model_results_without_blocking_cleanup() {
 
 #[test]
 fn model_capacity_failure_schedules_a_retry_and_adopts_old_holds() {
-    for (enabled_initially, claude) in [(true, false), (false, false), (true, true), (false, true)]
-    {
+    for (enabled_initially, claude, committed) in [
+        (true, false, false),
+        (false, false, false),
+        (true, true, true),
+        (false, true, false),
+        (false, true, true),
+    ] {
         let mut w = World::new();
         // Drive a synthetic transcript with the disposable scripted harness.
         let harness = if claude {
@@ -2106,7 +2111,17 @@ fn model_capacity_failure_schedules_a_retry_and_adopts_old_holds() {
         } else {
             r#"{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}"#
         };
-        let script = w.script("capacity.sh", &format!("printf '%s\\n' '{event}'\nexit 1"));
+        let script = w.script(
+            "capacity.sh",
+            &format!(
+                "{}\nprintf '%s\\n' '{event}'\nexit 1",
+                if committed {
+                    "git commit -q --allow-empty -m Half"
+                } else {
+                    "true"
+                }
+            ),
+        );
         assert_eq!(
             w.work_with_record(&script, |record| {
                 record.harness.name = if claude { "claude" } else { "codex" }.into();
@@ -2129,6 +2144,11 @@ fn model_capacity_failure_schedules_a_retry_and_adopts_old_holds() {
                 .unwrap()
                 .transient_failure_retries = 2;
             w.orchestrator.tick().unwrap();
+        }
+        if committed && !enabled_initially {
+            // Nobody knows whether the release that held it looked at its commits.
+            assert_eq!(w.orchestrator.db.list_attempts(&task.id).unwrap().len(), 1);
+            continue;
         }
         let latest = w.orchestrator.db.latest_attempt(&task.id).unwrap().unwrap();
         assert_eq!(latest.number, 2);

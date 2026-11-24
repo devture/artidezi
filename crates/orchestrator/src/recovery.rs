@@ -80,6 +80,11 @@ impl Orchestrator {
         if attempt.state == AttemptState::Invalid
             && attempt.result.is_none()
             && !self.db.transient_failure_recorded(&attempt.id)?
+            // Older releases did not look at what such a run had committed.
+            && !attempt
+                .validation_problems
+                .iter()
+                .any(|problem| problem.contains("reported unchanged but HEAD moved"))
             && self
                 .config
                 .worker_pools

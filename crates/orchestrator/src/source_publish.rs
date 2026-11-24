@@ -695,7 +695,7 @@ impl Orchestrator {
                     e.kind == "assessment.approval_planned"
                         || (e.kind == "assessment.comment_planned"
                             && e.attempt_id.as_deref() == Some(&attempt.id))
-                });
+                }) || crate::holds::restarted(&events);
                 let confirmed = events.iter().any(|e| {
                     e.kind == "assessment.published" && e.attempt_id.as_deref() == Some(&attempt.id)
                 });

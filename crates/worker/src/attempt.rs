@@ -112,7 +112,7 @@ impl Staging<'_> {
                 let kept = (self.max_log_bytes / 4).min(MAX_LOG_TAIL_BYTES);
                 let mut head = vec![0u8; (self.max_log_bytes - kept) as usize];
                 file.read_exact(&mut head).map_err(io_err(path))?;
-                head.extend_from_slice(b"\n[truncated by artidezi worker]\n");
+                head.extend_from_slice(artidezi_contract::transient::TRUNCATED.as_bytes());
                 let mut tail = vec![0u8; kept as usize];
                 file.seek(SeekFrom::Start(len - kept))
                     .and_then(|_| file.read_exact(&mut tail))

@@ -305,6 +305,12 @@ impl Orchestrator {
             }
             let Some(series) = &collection.series else {
                 problems.push(format!("repository {}: no series collected", collection.id));
+                if collection.head_commit != job_repo.base_commit {
+                    problems.push(format!(
+                        "repository {}: unreported commits could not be inspected",
+                        collection.id
+                    ));
+                }
                 continue;
             };
             let reported = result

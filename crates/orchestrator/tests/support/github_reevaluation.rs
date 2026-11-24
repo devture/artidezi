@@ -514,12 +514,12 @@ fn unreported_commits_that_cannot_be_inspected_ask_right_away() {
 
 #[test]
 fn unreported_commits_beyond_what_is_collected_or_inspected_ask_right_away() {
-    for limit in ["message", "bundle", "partial"] {
+    for limit in ["message", "bundle", "partial", "missing"] {
         let (mut w, _f) = safe_world(true);
         let id = scan(&mut w).remove(0);
         let message = match limit {
             "message" => "$(head -c 4000 /dev/zero | tr '\\0' x)",
-            "partial" => "Second",
+            "partial" | "missing" => "Second",
             _ => {
                 w.orchestrator.config.instance.limits.max_bundle_bytes = 1;
                 "Change"
@@ -539,6 +539,11 @@ fn unreported_commits_beyond_what_is_collected_or_inspected_ask_right_away() {
                     if let Some(series) = &mut repository.series {
                         series.commits.remove(0);
                     }
+                }
+            }
+            if limit == "missing" {
+                for repository in &mut record.repositories {
+                    repository.series = None;
                 }
             }
         });
@@ -1023,7 +1028,7 @@ fn a_restart_goes_on_without_a_result_that_is_gone() {
 /// Those releases planned the exact body of an approval, but not of a comment.
 #[test]
 fn a_comment_of_an_older_release_that_was_edited_stays_with_a_person() {
-    for case in ["untouched", "inserted", "removed"] {
+    for case in ["untouched", "inserted", "paragraph", "removed"] {
         let (mut w, f, id) = asking();
         let mut receipt = event(&w, &id, "assessment.published");
         receipt.as_object_mut().unwrap().remove("body_sha256");
@@ -1039,6 +1044,16 @@ fn a_comment_of_an_older_release_that_was_edited_stays_with_a_person() {
                 "{}Do not approve this.\n\n{}",
                 &body[..marker],
                 &body[marker..]
+            ));
+        }
+        if case == "paragraph" {
+            // Only an approval can say this.
+            let body = review["body"].as_str().unwrap();
+            let end = body.find("\n\nAssessed source").unwrap();
+            let text = body[..end].trim_end();
+            review["body"] = json!(format!(
+                "{text}\n\n**No forge checks were reported for this commit.** This handler accepts that, so the approval rests on ArtiDezi's assessment alone.{}",
+                &body[text.len()..]
             ));
         }
         if case != "removed" {
@@ -1065,6 +1080,71 @@ fn a_comment_of_an_older_release_that_was_edited_stays_with_a_person() {
             usize::from(case == "untouched"),
             "{case}"
         );
+    }
+}
+
+/// Those releases posted comments without a plan: a restart could leave one without any record.
+#[test]
+fn an_unrecorded_comment_of_an_older_release_that_was_edited_stays_with_a_person() {
+    for moved in [false, true] {
+        for edited in [false, true] {
+            let (mut w, f) = safe_world(true);
+            let id = scan(&mut w).remove(0);
+            // As a crash between accepting the result and any record of its delivery leaves it.
+            f.state.lock().unwrap().overrides.insert(
+                "/repos/org/app/pulls/33".into(),
+                Reply::new(503, json!({"message":"fixture"})),
+            );
+            let script = question(&w);
+            assert_eq!(w.work(&script), AttemptState::Valid);
+            f.state.lock().unwrap().overrides.clear();
+            assert!(
+                w.orchestrator
+                    .db
+                    .list_events(&id)
+                    .unwrap()
+                    .iter()
+                    .all(|event| !event.kind.starts_with("assessment."))
+            );
+            w.orchestrator
+                .db
+                .set_task_state(&id, TaskState::Working, "test")
+                .unwrap();
+            let mut tracked = source(&w);
+            tracked.release_hold();
+            w.orchestrator
+                .db
+                .save_pull_request_source(&tracked)
+                .unwrap();
+            reopen(&mut w, &f);
+            assert_eq!(task_state(&w, &id), TaskState::WaitingToRetry);
+            if edited {
+                f.state.lock().unwrap().reviews.push(json!({"id": 901, "user": {"login": "artidezi-fixture[bot]", "type": "Bot"}, "commit_id": source(&w).observed_head, "body": "Do not approve this.", "state": "COMMENTED"}));
+            }
+            if moved {
+                move_source_head(&w, &f);
+            }
+            // The delivery retry, then whatever its end leads to.
+            let mut discovered = 0;
+            for seconds in [700, 1400, 4000] {
+                scan(&mut w);
+                discovered += tick(&mut w, seconds).discovered.len();
+            }
+            let case = format!("moved {moved}, edited {edited}");
+            assert_eq!(
+                source(&w).runs,
+                if moved && !edited { 2 } else { 1 },
+                "{case}"
+            );
+            let reviews = f.state.lock().unwrap().reviews.len();
+            if moved && !edited {
+                assert!(discovered <= 1, "{case}");
+            } else {
+                assert_eq!(task_state(&w, &id), TaskState::NeedsHuman, "{case}");
+                assert_eq!(reviews, 1, "{case}");
+                assert_eq!(hold(&w).reason == HoldReason::Question, !edited, "{case}");
+            }
+        }
     }
 }
 

@@ -21,8 +21,20 @@ use crate::{Orchestrator, OrchestratorError, Result, discovery::source_of};
 
 pub(crate) const RETRY_SCHEDULED: &str = "delivery.retry_scheduled";
 pub(crate) const RETRY_STARTED: &str = "delivery.retry_started";
+pub(crate) const RESTARTED: &str = "a restart interrupted delivery";
 /// Actors of `publication.retry_requested` that are not people.
 const AUTOMATIC_ACTORS: [&str; 2] = ["orchestrator", "recovery"];
+
+/// Whether a restart came in the middle of a delivery. Releases that posted comments without a plan
+/// could leave one without any record.
+pub(crate) fn restarted(events: &[Event]) -> bool {
+    events.iter().any(|event| {
+        let reason = event.payload["reason"].as_str().unwrap_or_default();
+        (event.kind == RETRY_SCHEDULED && reason.starts_with(RESTARTED))
+            || (event.kind == "task.needs_human"
+                && reason.starts_with("Publication interrupted by restart"))
+    })
+}
 
 impl Orchestrator {
     /// A hold on `task`, carrying what its assessment was based on.

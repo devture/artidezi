@@ -171,7 +171,7 @@ impl Orchestrator {
                 && !orchestrator.schedule_delivery_retry(
                     &task,
                     &attempt,
-                    &crate::holds::Interruption::new("a restart interrupted delivery"),
+                    &crate::holds::Interruption::new(crate::holds::RESTARTED),
                 )?
             {
                 orchestrator.needs_human(

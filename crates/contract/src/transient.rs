@@ -4,9 +4,18 @@
 
 //! Fixed transient-error categories from terminal harness events, never repository/tool output.
 
+/// What the worker puts in place of the middle of a log above its limit.
+pub const TRUNCATED: &str = "\n[truncated by artidezi worker]\n";
+
+/// The part of a stream that tells how it ended. What precedes a cut can look like an end.
+fn ending(stream: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stream);
+    text.rsplit(TRUNCATED).next().unwrap_or_default().to_owned()
+}
+
 /// Only terminal Codex errors qualify. Embedded command output and agent prose are ignored.
 pub fn codex_failure(stream: &[u8]) -> Option<&'static str> {
-    let text = String::from_utf8_lossy(stream);
+    let text = ending(stream);
     let event = text
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -47,7 +56,7 @@ pub fn codex_failure(stream: &[u8]) -> Option<&'static str> {
 
 /// Whether the provider refused a Codex run over credentials or quota, which time alone does not fix.
 pub fn codex_refused(stream: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(stream);
+    let text = ending(stream);
     text.lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .rfind(|event| event["type"] == "turn.failed")
@@ -74,7 +83,7 @@ pub fn codex_refused(stream: &[u8]) -> bool {
 /// Claude Code's final `result` event, when it reports a failed run. Anything the session did after
 /// an earlier result makes that one no longer final.
 fn claude_error(stream: &[u8]) -> Option<serde_json::Value> {
-    let text = String::from_utf8_lossy(stream);
+    let text = ending(stream);
     text.lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .rfind(|event| {
@@ -346,6 +355,18 @@ mod tests {
             assert_eq!(failure("claude", stream.as_bytes()), expected);
             assert_eq!(failure("codex", stream.as_bytes()), None);
             assert_eq!(failure("pi", stream.as_bytes()), None);
+        }
+        // What precedes a cut is not how the session ended.
+        let error = status(529, "overloaded_error", "API Error: 529 Overloaded.");
+        for (stream, expected) in [
+            (format!("{error}{TRUNCATED}"), None),
+            (format!("{error}{TRUNCATED}{{\"type\":\"system\"}}\n"), None),
+            (
+                format!("{{\"type\":\"as{TRUNCATED}{error}\n"),
+                Some("model_capacity"),
+            ),
+        ] {
+            assert_eq!(claude_failure(stream.as_bytes()), expected, "{stream}");
         }
         // A result that the session went on after is not its final one.
         let error = status(529, "overloaded_error", "API Error: 529 Overloaded.");

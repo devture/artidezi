@@ -527,7 +527,7 @@ impl Orchestrator {
             })
             .map(|event| &event.payload)
             .collect();
-        if published.is_empty() && planned.is_empty() {
+        if published.is_empty() && planned.is_empty() && !crate::holds::restarted(&events) {
             return Ok(false);
         }
         let reviews = self
@@ -537,7 +537,10 @@ impl Orchestrator {
         // Plans and receipts of older releases can lack what was posted. It is built from the result.
         let policy: ResolvedProjectPolicy = serde_json::from_str(&task.policy_snapshot)
             .map_err(|e| OrchestratorError::Invalid(e.to_string()))?;
-        let as_built = |attempt: Option<&str>, review: &MergeRequestReview| -> Result<bool> {
+        let as_built = |attempt: Option<&str>,
+                        approved: bool,
+                        review: &MergeRequestReview|
+         -> Result<bool> {
             let attempt = match attempt {
                 Some(id) => Some(self.db.get_attempt(id)?),
                 None => self.db.latest_attempt(&task.id)?,
@@ -549,14 +552,19 @@ impl Orchestrator {
             else {
                 return Ok(false);
             };
-            for (automatic, without_checks) in [(false, false), (true, false), (true, true)] {
-                if review.body
-                    == self.assessment_body(task, &result, &policy, automatic, without_checks)?
-                {
-                    return Ok(true);
-                }
+            let mut matches = false;
+            for without_checks in [false, true] {
+                matches |= (approved || !without_checks)
+                    && review.body
+                        == self.assessment_body(
+                            task,
+                            &result,
+                            &policy,
+                            approved,
+                            without_checks,
+                        )?;
             }
-            Ok(false)
+            Ok(matches)
         };
         // Forges dismiss approvals themselves when the head moves.
         let moved = tracked.observed_head != source.input.commit.as_str();
@@ -573,14 +581,14 @@ impl Orchestrator {
                 if !ours {
                     continue;
                 }
-                let mut as_planned = false;
+                let mut as_planned = planned.is_empty() && as_built(None, false, review)?;
                 for plan in &planned {
                     as_planned |= if let Some(body) = plan["body"].as_str() {
                         review.body == body
                     } else if let Some(sha256) = plan["body_sha256"].as_str() {
                         crate::source_publish::digest(&review.body) == sha256
                     } else {
-                        as_built(None, review)?
+                        as_built(None, false, review)?
                     };
                 }
                 if !as_planned {
@@ -604,7 +612,11 @@ impl Orchestrator {
             } else if bodies.peek().is_some() {
                 bodies.any(|body| body == review.body)
             } else {
-                as_built(event.attempt_id.as_deref(), review)?
+                as_built(
+                    event.attempt_id.as_deref(),
+                    receipt["state"] == "approved",
+                    review,
+                )?
             };
             if !unedited
                 || !review.body.contains(&marker)
