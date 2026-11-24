@@ -11,6 +11,8 @@ SPDX-License-Identifier: Apache-2.0
 The controller owns forge/admin credentials, repository scope, resolved policy and effects. Treat
 PR text, source code, release notes, model output and worker uploads as untrusted input. A convincing
 instruction in a source repository cannot grant additional repositories, publication modes or tokens.
+With `allowed_paths`, the controller matches the old and new paths of each proposed commit against the
+configured globs.
 
 The supervisor mechanically records work, but runs in the same execution environment as the agent.
 The current full-access Codex path trusts the provisioned worker VM as its execution boundary. The
