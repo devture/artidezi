@@ -398,7 +398,7 @@ fn selected_failed_log_is_frozen_as_private_evidence_and_rendered_only_for_the_w
     assert!(!task.policy_snapshot.contains("setup\\nfailed"));
     let attempt = w.orchestrator.db.latest_attempt(&id).unwrap().unwrap();
     let job = w.orchestrator.load_job(&attempt).unwrap();
-    assert_eq!(job.prompt_template_version, 15);
+    assert_eq!(job.prompt_template_version, 16);
     let prompt =
         String::from_utf8(w.orchestrator.artifacts.get(&job.task_document).unwrap()).unwrap();
     assert!(prompt.contains("Selected source CI logs"));
