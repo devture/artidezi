@@ -48,7 +48,7 @@ COPY --from=docker.io/node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 python3 wget \
  && rm -rf /var/lib/apt/lists/* \
- && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.6.0 \
+ && npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.6.1 \
  && claude_arch="$(dpkg --print-architecture | sed 's/amd64/x64/')" \
  && npm install --global --ignore-scripts "@anthropic-ai/claude-code-linux-${claude_arch}@2.1.332" \
  && ln -s "/usr/local/lib/node_modules/@anthropic-ai/claude-code-linux-${claude_arch}/claude" /usr/local/bin/claude \
